@@ -10,7 +10,7 @@ El perfil recoge objetivo, nombre, experiencia, aportación, fechas, disponibili
 
 La conversación y su borrador persisten por sesión, separados del perfil confirmado. Reintentos, fallos de proveedor y conflictos entre pestañas conservan los datos. Los perfiles guardados con la versión anterior se recuperan al abrir el chat.
 
-**Conexión real pendiente:** la interfaz, API, extracción estructurada y persistencia están implementadas. No se ha realizado una llamada real a OpenAI porque el propietario añadirá la key después. Las pruebas automatizadas usan una respuesta de proveedor simulada y no demuestran la calidad lingüística del modelo. Sin key, la UI muestra «OpenAI por conectar» y no inventa respuestas.
+**Conexión real verificada el 24 de octubre de 2026:** tres turnos reales con `gpt-5.4-mini`, un perfil ficticio y una sesión aislada comprobaron extracción múltiple, negación de intención, aclaración de fechas, disponibilidad en SF, corrección del objetivo y confirmación persistente. Las respuestas tardaron 2,6 s, 2,6 s y 1,9 s en esta prueba; no es una medición general de rendimiento. El [registro de verificación](docs/verification/onboarding-live-2026-10-24.json) conserva entradas, respuestas y comprobaciones sin credenciales. Las pruebas automatizadas siguen usando un proveedor simulado y esta prueba real no constituye una evaluación exhaustiva de calidad. Sin key, la UI muestra «OpenAI por conectar» y no inventa respuestas.
 
 Las siguientes fases son descubrimiento/ranking con evidencia y autenticación/matching bilateral. Aún no hay recomendaciones, presentaciones, registro en eventos ni escrituras de calendario. El onboarding tampoco otorga esos permisos.
 
@@ -57,14 +57,14 @@ Detén antes cualquier `next dev` de este repositorio. `PREVIEW_DIR=/ruta/absolu
 
 | Comprobación | Evidencia |
 | --- | --- |
-| Revisar y corregir por chat antes de confirmar | Recorrido con proveedor simulado en `tests/e2e/onboarding.spec.ts` |
+| Revisar y corregir por chat antes de confirmar | Pruebas automatizadas y tres turnos reales documentados en el registro de verificación |
 | Rechazar fechas/horarios inválidos y confirmación ausente | Pruebas de dominio y API |
 | Conservar estado y cambiar objetivo con nueva revisión | Recarga y edición en navegador; reapertura de SQLite en `tests/store.test.ts` |
 | No duplicar al perder una respuesta | Reintento del mismo `requestId`, sin repetir llamada al proveedor |
 | No sobrescribir una edición más reciente | Conflicto de revisión y elección explícita de versión |
 | No mezclar datos de navegadores | Dos sesiones diferentes en pruebas de almacén y API |
 
-SQLite conserva el borrador en `onboarding_chats` y registra turnos/confirmaciones aceptados en `runs`, ligados a sesión, operación y revisión. El modelo no tiene herramientas para escribir el perfil, enviar intros ni modificar calendarios. Antes de considerar verificada la extracción real, añadir una key y comprobar: varios datos en un párrafo, «no contrato, busco trabajo», fechas ambiguas y correcciones posteriores.
+SQLite conserva el borrador en `onboarding_chats` y registra turnos/confirmaciones aceptados en `runs`, ligados a sesión, operación y revisión. El modelo no tiene herramientas para escribir el perfil, enviar intros ni modificar calendarios. La prueba real verificó que «esta semana» no inventara fechas, «no estoy contratando» mantuviera `seeking_role` y una corrección a `hiring` no cambiara el perfil confirmado hasta volver a confirmar. El reintento de un turno no duplicó mensajes y la recarga recuperó la revisión 2.
 
 El plan describe el producto completo; sus funciones futuras no se consideran implementadas por aparecer en el documento.
 

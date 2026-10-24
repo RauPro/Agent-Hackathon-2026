@@ -3,7 +3,7 @@
 **Versión:** 1.2 · Auditoría e introducciones con agenda bilateral
 
 **Fecha:** 24 de octubre de 2026 · San Francisco  
-**Estado:** onboarding por chat e integración OpenAI implementados; llamada real pendiente de credencial. El resto sigue siendo especificación. Véase el [README](README.md) para alcance y verificación actuales.
+**Estado:** onboarding por chat e integración OpenAI implementados y verificados con tres turnos reales de prueba el 24 de octubre de 2026. El resto sigue siendo especificación. Véase el [README](README.md) para alcance y límites de la verificación.
 
 **Equipo previsto:** dos personas.  
 **Horizonte:** MVP para el hackathon, seguido de mejoras verificables.  
@@ -76,7 +76,7 @@ Las recomendaciones, clics y registros son métricas intermedias. Ninguna demues
 
 ## 2. Qué hará el sistema
 
-Esta sección es el contrato de aceptación del producto: describe lo que debe poder ver el usuario, lo que debe validar el servidor y cómo comprobar el resultado. A1 usa conversación libre y extracción estructurada con OpenAI, resumen corregible y confirmación explícita. El flujo está probado con un proveedor simulado; la calidad de la extracción real requiere la key. El README registra las comprobaciones realizadas.
+Esta sección es el contrato de aceptación del producto: describe lo que debe poder ver el usuario, lo que debe validar el servidor y cómo comprobar el resultado. A1 usa conversación libre y extracción estructurada con OpenAI, resumen corregible y confirmación explícita. El flujo está probado automáticamente con un proveedor simulado y con un escenario real de tres turnos usando datos ficticios. El README registra las comprobaciones y sus límites; no implica que se hayan validado todos los posibles mensajes.
 
 | Momento | Trabajo del sistema | Resultado visible |
 | --- | --- | --- |
