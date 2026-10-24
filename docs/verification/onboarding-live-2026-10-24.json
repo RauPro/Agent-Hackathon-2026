@@ -1,0 +1,106 @@
+{
+  "testedAt": "2026-10-24T19:14:56.299Z",
+  "provider": "OpenAI live",
+  "fixture": "Fictitious Alex Rivera profile",
+  "turns": [
+    {
+      "message": "Me llamo Alex Rivera. Soy ingeniero de producto y he construido agentes con TypeScript en producción; puedo compartir esa experiencia y la de trabajar en equipos pequeños. Estoy en SF esta semana. No estoy contratando: busco un puesto de founding engineer en un equipo de agentes. Aún no sé mis franjas disponibles y no he revisado mis compromisos.",
+      "elapsedMs": 2572,
+      "reply": "Perfecto, Alex. Ya tengo tu nombre, experiencia y objetivo. Solo me falta una cosa: ¿cuáles son tus fechas exactas de llegada y salida en SF esta semana?",
+      "draft": {
+        "name": "Alex Rivera",
+        "bio": "Ingeniero de producto; he construido agentes con TypeScript en producción y he trabajado en equipos pequeños.",
+        "offers": "Puedo compartir experiencia construyendo agentes en producción y trabajando en equipos pequeños.",
+        "goalType": "seeking_role",
+        "goalText": "Busco un puesto de founding engineer en un equipo de agentes.",
+        "arrival": "",
+        "departure": "",
+        "availability": {
+          "status": "unknown",
+          "windows": []
+        },
+        "commitments": {
+          "status": "unknown",
+          "items": []
+        },
+        "preferences": {
+          "meetingFormat": "any",
+          "budgetUsd": null
+        }
+      }
+    },
+    {
+      "message": "Llego el 24 de octubre de 2026 y salgo el 5 de noviembre de 2026. Puedo conversar el 26 de octubre de 15:30 a 17:00, hora de San Francisco. Ya revisé mi agenda: no tengo compromisos fijos.",
+      "elapsedMs": 2629,
+      "reply": "Genial, Alex. Ya tengo tus fechas, una franja disponible y que no tienes compromisos fijos. Si quieres, ahora puedes revisar tu perfil y confirmar cuando esté listo.",
+      "draft": {
+        "name": "Alex Rivera",
+        "bio": "Ingeniero de producto; he construido agentes con TypeScript en producción y he trabajado en equipos pequeños.",
+        "offers": "Puedo compartir experiencia construyendo agentes en producción y trabajando en equipos pequeños.",
+        "goalType": "seeking_role",
+        "goalText": "Busco un puesto de founding engineer en un equipo de agentes.",
+        "arrival": "2026-10-24",
+        "departure": "2026-11-05",
+        "availability": {
+          "status": "provided",
+          "windows": [
+            {
+              "date": "2026-10-26",
+              "start": "15:30",
+              "end": "17:00"
+            }
+          ]
+        },
+        "commitments": {
+          "status": "none",
+          "items": []
+        },
+        "preferences": {
+          "meetingFormat": "any",
+          "budgetUsd": null
+        }
+      }
+    },
+    {
+      "message": "Corrijo mi objetivo: ahora estoy contratando un founding engineer para mi startup de agentes. Ya no estoy buscando empleo. Mi experiencia, fechas y disponibilidad siguen igual.",
+      "elapsedMs": 1940,
+      "reply": "Entendido, Alex. Actualicé tu objetivo a contratación: estás buscando un founding engineer para tu startup de agentes, y ya no estás buscando empleo. Si quieres, puedes revisar el perfil y confirmar cuando esté listo.",
+      "draft": {
+        "name": "Alex Rivera",
+        "bio": "Ingeniero de producto; he construido agentes con TypeScript en producción y he trabajado en equipos pequeños.",
+        "offers": "Puedo compartir experiencia construyendo agentes en producción y trabajando en equipos pequeños.",
+        "goalType": "hiring",
+        "goalText": "Busco contratar un founding engineer para mi startup de agentes.",
+        "arrival": "2026-10-24",
+        "departure": "2026-11-05",
+        "availability": {
+          "status": "provided",
+          "windows": [
+            {
+              "date": "2026-10-26",
+              "start": "15:30",
+              "end": "17:00"
+            }
+          ]
+        },
+        "commitments": {
+          "status": "none",
+          "items": []
+        },
+        "preferences": {
+          "meetingFormat": "any",
+          "budgetUsd": null
+        }
+      }
+    }
+  ],
+  "checks": [
+    "Negation, multi-field extraction and ambiguous dates handled without guessing or confirming.",
+    "Specific dates and SF availability validated; profile saved only on explicit confirmation.",
+    "Correction preserved other facts and the prior confirmed profile until reconfirmation.",
+    "Retry did not duplicate the turn; reloading restored the confirmed conversation and revision 2."
+  ],
+  "status": "passed",
+  "model": "gpt-5.4-mini",
+  "scope": "Three real calls using fictional data in an isolated application session; not an exhaustive language-quality evaluation."
+}

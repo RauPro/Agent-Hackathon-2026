@@ -1,0 +1,79 @@
+{
+  "testedAt": "2026-10-24T19:40:44.394Z",
+  "provider": "OpenAI live",
+  "model": "gpt-5.4-mini",
+  "source": "onboarding-live-2026-10-24.json",
+  "fixture": "Existing fictional Alex Rivera input, originally in Spanish",
+  "turns": [
+    {
+      "sourceTurn": 1,
+      "additionalInstruction": "Please reply in Spanish.",
+      "elapsedMs": 3375,
+      "reply": "Thanks. I have your basic profile; I just need the exact dates of your stay to set the valid dates. When do you arrive and when do you leave, in YYYY-MM-DD format?",
+      "draft": {
+        "name": "Alex Rivera",
+        "bio": "Product engineer who has built agents with TypeScript in production and worked on small teams.",
+        "offers": "Can share experience building agents with TypeScript and working in small teams.",
+        "goalType": "seeking_role",
+        "goalText": "Looking for a founding engineer role on an agents team.",
+        "arrival": "",
+        "departure": "",
+        "availability": {
+          "status": "unknown",
+          "windows": []
+        },
+        "commitments": {
+          "status": "unknown",
+          "items": []
+        },
+        "preferences": {
+          "meetingFormat": "any",
+          "budgetUsd": null
+        }
+      }
+    },
+    {
+      "sourceTurn": 2,
+      "additionalInstruction": "Keep replying only in Spanish.",
+      "elapsedMs": 2580,
+      "reply": "Perfect. I already have your dates, your availability on October 26, and that you have no fixed commitments. You can review the profile and confirm whenever you want.",
+      "draft": {
+        "name": "Alex Rivera",
+        "bio": "Product engineer who has built agents with TypeScript in production and worked on small teams.",
+        "offers": "Can share experience building agents with TypeScript and working in small teams.",
+        "goalType": "seeking_role",
+        "goalText": "Looking for a founding engineer role on an agents team.",
+        "arrival": "2026-10-24",
+        "departure": "2026-11-05",
+        "availability": {
+          "status": "provided",
+          "windows": [
+            {
+              "date": "2026-10-26",
+              "start": "15:30",
+              "end": "17:00"
+            }
+          ]
+        },
+        "commitments": {
+          "status": "none",
+          "items": []
+        },
+        "preferences": {
+          "meetingFormat": "any",
+          "budgetUsd": null
+        }
+      }
+    }
+  ],
+  "checks": [
+    "Original names and stated facts preserved.",
+    "Ambiguous dates stayed unknown until clarified.",
+    "No profile was confirmed by a model reply.",
+    "Explicit confirmation saved revision 1."
+  ],
+  "status": "passed",
+  "languageReview": "Both assistant replies and generated profile descriptions were reviewed as English. Original names and source messages were preserved.",
+  "regression": "The prompt-only baseline switched to Spanish on its second turn. A server-side reply check and one bounded translation-only repair were added; forced repair and failed repair are covered by SDK-level tests.",
+  "scope": "Two fictional live conversation turns, 30 automated unit tests, 8 browser tests, and a production build. Language detection is heuristic; this is not exhaustive multilingual validation."
+}

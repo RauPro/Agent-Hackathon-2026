@@ -18,13 +18,18 @@ Use the [implementation plan](../../../SF-Sidekick-Implementation-Plan.md) as th
 - Put source links, checked time, coverage, and `live`/`saved`/`demo` status within easy reach. Details may expand, but uncertainty that affects a decision stays visible.
 - Present a proposed schedule change as a short before/after list, with accept and keep-plan actions. Adding one event already expresses that choice; avoid a redundant confirmation dialog.
 
+## Keep copy necessary
+
+- Keep visible text that helps the user decide, understand a consequence, provide missing information, or recover from an error. Remove slogans and explanations of obvious interactions, such as "In your own words. No forms."
+- Give each instruction once. Avoid repeating the same message across a heading, placeholder, helper text, and footer. Add helper text only when the control would otherwise be ambiguous.
+
 ## Design from the narrow screen
 
 - Start at 360–390 CSS px with one column; preserve reflow at 320 px. Widen deliberately for tablet/desktop. Use a day list for the agenda; a calendar grid must earn its complexity.
 - Use a small type/spacing scale, a restrained palette with one primary accent, and existing components. Keep body and form text around 16 px or larger. Prefer content and hierarchy over ornamental panels, hero sections, or motion.
 - Target touch controls of at least 44 × 44 CSS px with separation between adjacent actions. No required hover, drag, or swipe-only interaction.
 - Respect safe-area insets. Sticky navigation or actions must leave enough content padding and remain usable with the software keyboard open. Avoid viewport-height assumptions that crop forms on mobile browsers.
-- Use semantic links/buttons, visible labels and focus, sufficient contrast, and text alongside status color. Keep zoom available; honor reduced motion. A sheet/dialog needs focus management and a clear close action.
+- Use semantic controls with one clear accessible name, visible keyboard focus, and sufficient contrast. Icon-only actions need a nonvisual label, not an extra visible explanation. Avoid duplicate screen-reader announcements. Preserve zoom, reduced motion, and dialog focus management.
 - Reuse the planned Next.js/TypeScript/Tailwind stack. Keep interactive client boundaries small; add dependencies only when they simplify a required flow. Open location/directions via a map link for the MVP.
 
 ## Make real states usable
