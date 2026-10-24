@@ -3,7 +3,13 @@
 import { useRef, useState, type FormEvent } from "react";
 import { Brand } from "./brand";
 
-export function AuthForm({ mode }: { mode: "register" | "login" }) {
+export function AuthForm({
+  mode,
+  next = "/onboarding",
+}: {
+  mode: "register" | "login";
+  next?: string;
+}) {
   const registering = mode === "register";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -32,7 +38,7 @@ export function AuthForm({ mode }: { mode: "register" | "login" }) {
         setErrors(result.errors || {});
         return;
       }
-      window.location.replace("/onboarding");
+      window.location.replace(next);
     } catch {
       setNotice("Could not reach SF Sidekick. Try again.");
     } finally {
@@ -133,7 +139,9 @@ export function AuthForm({ mode }: { mode: "register" | "login" }) {
         </form>
         <p className="auth-switch">
           {registering ? "Already have an account?" : "New to SF Sidekick?"}{" "}
-          <a href={registering ? "/login" : "/register"}>
+          <a
+            href={`${registering ? "/login" : "/register"}${next !== "/onboarding" ? `?next=${encodeURIComponent(next)}` : ""}`}
+          >
             {registering ? "Sign in" : "Create account"}
           </a>
         </p>

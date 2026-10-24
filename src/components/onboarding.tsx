@@ -186,6 +186,9 @@ export function Onboarding({ account }: { account: Account }) {
       </a>
       <header className="site-header">
         <Brand />
+        <a className="text-button" href="/network">
+          Network
+        </a>
         <AccountMenu account={account} disabled={!!busy} />
       </header>
       <main className="chat-layout">

@@ -1,6 +1,7 @@
 import { isStoreError, getStore } from "@/lib/server/store";
 
-import { NextRequest } from "next/server";
+import { after, NextRequest } from "next/server";
+import { drainNetworkWork } from "@/lib/server/network-worker";
 import { calendarStatus } from "@/lib/server/calendar-service";
 import { chatRequestSchema } from "@/lib/domain/onboarding-chat";
 import { json, readJson, sameOrigin, SESSION_COOKIE } from "@/lib/server/http";
@@ -22,14 +23,14 @@ export async function GET(request: NextRequest) {
   try {
     const store = getStore();
     const token = request.cookies.get(SESSION_COOKIE)?.value;
-    const account = store.requireAccount(
+    const account = await store.requireAccount(
       token,
       request.headers.get("x-sidekick-account"),
     );
     const response = json({
-      chat: store.readChat(token),
+      chat: await store.readChat(token),
       configured: assistantConfigured(),
-      calendar: calendarStatus(store, token),
+      calendar: await calendarStatus(store, token),
       account,
     });
     return response;
@@ -90,17 +91,24 @@ export async function POST(request: NextRequest) {
       400,
     );
   try {
-    getStore().requireAccount(
+    await getStore().requireAccount(
       request.cookies.get(SESSION_COOKIE)?.value,
       request.headers.get("x-sidekick-account"),
     );
-    return json(
-      await handleChat(
-        getStore(),
-        request.cookies.get(SESSION_COOKIE)?.value,
-        parsed.data,
-      ),
+    const result = await handleChat(
+      getStore(),
+      request.cookies.get(SESSION_COOKIE)?.value,
+      parsed.data,
     );
+    if (parsed.data.action === "confirm")
+      after(async () => {
+        try {
+          await drainNetworkWork();
+        } catch {
+          console.error("network_jobs_pending_retry");
+        }
+      });
+    return json(result);
   } catch (error) {
     if (isStoreError(error, "session_missing"))
       return json(

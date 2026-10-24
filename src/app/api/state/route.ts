@@ -10,8 +10,11 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   try {
     const token = request.cookies.get(SESSION_COOKIE)?.value;
-    getStore().requireAccount(token, request.headers.get("x-sidekick-account"));
-    return json(getStore().read(token));
+    await getStore().requireAccount(
+      token,
+      request.headers.get("x-sidekick-account"),
+    );
+    return json(await getStore().read(token));
   } catch (error) {
     if (isStoreError(error, "session_missing"))
       return json(

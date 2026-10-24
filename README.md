@@ -2,7 +2,11 @@
 
 A mobile-first web app that turns a visitor's goal in San Francisco into relevant people, useful conversations, and a daily plan. See the [product and implementation plan](SF-Sidekick-Implementation-Plan.md) for the full scope.
 
-## Current phase: email accounts, chat onboarding, and Google Calendar
+Live app: **[sf-sidekick-raupro.vercel.app](https://sf-sidekick-raupro.vercel.app)**. Vercel hosts the application with durable Turso storage; production tracks `feat/vercel-deployment`. See the [deployment guide](docs/vercel-deployment.md) for configuration and verified release behavior. Production uses a separate database, so local accounts are not automatically available there.
+
+## Current phase: onboarding and an agent-powered social graph
+
+The new `/network` screen supports opt-in people discovery, persistent QR connections, permission-controlled agent queries, shared event plans, and bilateral meeting coordination. Read the [architecture and phased acceptance plan](docs/agent-social-graph.md) for data relationships, contracts, permissions, triggers, and boundaries.
 
 New visitors register with email and password before onboarding. Returning users sign in to the same account from any browser. Email is normalized for uniqueness, while a stable user ID owns the saved profile, conversation, and calendar connection. Sign-out revokes that browser's session without deleting the account or its progress. The header shows the signed-in email.
 
@@ -22,13 +26,54 @@ Repeated slogans, instructions, and helper captions have been removed. The inter
 
 A server-side language check examines generated replies. If a reply is not identified as English, the same OpenAI model gets one translation-only repair request. That request contains only the reply text and cannot change profile facts. Both calls share a 25-second deadline; an unsuccessful repair returns an English error and leaves the conversation unchanged. Language detection is heuristic; the live check covers the recorded scenarios, not every possible multilingual input.
 
-Conversation drafts and confirmed profiles are stored separately in SQLite. Reloads restore the conversation; retries do not duplicate turns or confirmations. Existing profiles from the earlier form-based onboarding remain available. Unknown availability and unreviewed commitments are distinct from explicitly having no commitments.
+Conversation drafts and confirmed profiles are stored separately in the database: SQLite locally and Turso/libSQL on Vercel. Reloads restore the conversation; retries do not duplicate turns or confirmations. Existing profiles from the earlier form-based onboarding remain available. Unknown availability and unreviewed commitments are distinct from explicitly having no commitments.
 
 **Onboarding is complete only when the profile is confirmed and Google Calendar availability is verified for the current trip dates.** Users can save their profile before connecting. A connection alone, a failed check, or an old snapshot never counts as verified availability.
 
 The calendar card starts a real Google OAuth flow, shows the connected account, and checks busy times. The primary calendar is included by default; users can include other calendars containing their commitments. Each selected calendar must return a successful free/busy result. Checks cover inclusive trip dates in San Francisco time and expire after five minutes. The open page rechecks on date/profile changes, focus, reconnecting to the network, and once a minute when visible. This is a foreground availability check, not background event mirroring.
 
-Event discovery, ranking, introductions, event registration, and calendar writes are future phases. Profile confirmation and read-only calendar consent do not authorize those actions. Future scheduling must recheck both participants' availability immediately before booking, apply their meeting preferences, and require both participants' consent. A calendar without busy events does not establish willingness to meet.
+External event discovery, event registration, email introductions, and Google Calendar writes remain future work. Network matching uses registered users and explicitly shared event plans. Meeting coordination checks both participants' availability after their permission and again before the final agreement, applies their meeting preferences and additional commitments, and requires both approvals. A calendar without busy events does not establish willingness to meet.
+
+## Network and agent collaboration
+
+The screen has three destinations: **For you** for recommendations, **Agents** for conversations between Sidekicks, and **People** for connections and incoming requests. Sharing and QR tools are available from the compact toolbar. Each person has a persistent agent conversation with timestamped requests, permitted replies, owner-approved answers and meeting activity. Actions open the relevant conversation directly; its URL survives reload and browser navigation.
+
+These are recorded backend exchanges, not a simulated chat or a model's private reasoning. New responses record their actual time and whether discovery started the exchange. Older records show only known request timestamps and explicitly label saved replies whose response time was not recorded. Historical shared data is filtered again against current permissions, including per-event visibility and revoked connections.
+
+Discovery is off by default. In **Discovery and sharing**, users choose which confirmed profile fields can be seen by connections or by the network. The QR only identifies its owner for a connection request; the other person must accept. QR rotation, removal, blocking, and visibility changes revoke future access. Declined connection requests have a 24-hour retry cooldown.
+
+The agent runtime uses typed `PROFILE_QUERY` requests with an allowlist of profile, goal, trip and shared-event fields. It can answer from authorized information or ask its user for a one-time answer. Requests and results persist, expire after seven days, and are rechecked against current permissions on retrieval. No model can read another user's private memory or grant itself permission.
+
+The deterministic matcher looks for reciprocal professional fit and overlapping SF dates. It supports complementary hiring/role searches, collaboration, and shared-event reunions between existing connections. Explanations show benefits for both people and the signals used. Its finite English vocabulary and conservative role matching can miss valid matches; scores are heuristics, not probabilities. Unfamiliar roles and customer/supplier matching are not covered yet. It never contacts a new person automatically. For accepted connections, a new compatible context can trigger a bounded query of already-shared professional information.
+
+Confirmed profile changes, sharing settings, accepted connections and explicit event plans enqueue matching in the database. Relevant HTTP responses trigger bounded async processing with `after()`; each drain evaluates up to five eligible pairs and persists its cursor. Database leases prevent competing workers, and each pair commits separately without external calls inside the transaction. Failed work remains queued for retry. Local hosting uses a 30-second process timer; Vercel uses an authenticated cron every minute on the configured Pro team. The inbox refreshes while open. No email, push-notification service, Redis or separate worker service is required.
+
+Meeting requests appear inside the relevant conversation in **Agents**. Each person first permits an availability comparison. Connected Google calendars are read on demand; raw busy intervals, calendar identities and event details never reach the other person. If no calendar is connected, the meeting flow accepts explicit manual windows. Provider failures never fall back to an empty calendar. Up to three 30-minute options are searched on weekdays, 9 AM–6 PM SF time, within the first 14 days of overlapping stays. A counterproposal clears previous approvals. Profile or relationship changes invalidate existing consent; reconnecting cannot revive old approvals.
+
+After both people approve the same time and place, each can download an `.ics` file. **The file needs importing; Sidekick has not sent an invitation or written to Google Calendar.** The current Google OAuth scopes are read-only, and registration emails are unverified. No new API keys are needed for these networking phases. Live calendar creation would require an additional write grant, verified invitation addresses, retry reconciliation and cancellation support.
+
+Events added in Network are user-reported plans, not verified registrations. No external event or places provider is integrated. Meeting locations are proposed by a participant; venue quality, travel time and hotel proximity are not inferred.
+
+### Isolated demo
+
+Run an additional local server using a separate database. The `.demo.sqlite` suffix is enforced, and the interface labels demo records. The fixture script refuses a server without demo mode.
+
+```bash
+SIDEKICK_DEMO=1 DATABASE_PATH=/private/tmp/sidekick-network.demo.sqlite npm run dev -- --port 3001
+# In another terminal:
+node scripts/demo-network.mjs
+```
+
+Open `http://localhost:3001/login?next=%2Fnetwork` in a separate browser profile for each participant. Use `localhost` for the demo if your real session uses `127.0.0.1`; browser cookies are shared across ports on the same hostname. The script prints the fictional credentials and future SF date range. It creates Raul Demo, Agustin Demo and Pedro Demo, plus an explicitly labeled meetup; it never calls OpenAI, Google or an event provider.
+
+1. **Proactive networking:** sign in as Raul Demo; Agustin Demo appears automatically. Request a connection, accept as Agustin, propose a public meeting place, enter the printed manual windows from both accounts, then approve the same option and download the calendar file.
+2. **QR collaboration:** show Pedro Demo's QR, scan it as Raul (camera, image or connection link), request, then accept as Pedro. Open the person’s conversation in Agents and ask about an opportunity and inspect the authorized reply in their Agents conversation. Change Pedro's confirmed goal through the existing onboarding to hiring a founding engineer with ICPC/algorithms experience. The queue detects the new fit, records an authorized agent query and updates opportunities. Their shared meetup also supports a reunion recommendation.
+
+For a private-answer demo, set Pedro's profile visibility to private before Raul sends a query. Pedro can share a one-time answer or decline; blocking the connection immediately removes the response from future reads. For a CTO demo, confirm a compatible technical leadership goal for the seeker rather than assuming someone explicitly seeking only a founding engineer role wants a CTO role.
+
+For a ready-to-review conversation between the fictional Raul and Pedro accounts, run `DEMO_CONVERSATION=1 node scripts/demo-network.mjs`. This optional fixture uses the normal request/accept APIs and records a real typed query and permitted reply. It does not simulate an external model or Google call.
+
+The production server and development server share `.next`; stop the extra demo server before rebuilding. Use `npm run build` followed by `SIDEKICK_DEMO=1 DATABASE_PATH=/private/tmp/sidekick-network.demo.sqlite npm start -- --port 3001` to preview a production build.
 
 ## Run locally
 
@@ -44,7 +89,7 @@ Add `OPENAI_API_KEY` to `.env.local`, then restart the server. `OPENAI_MODEL` de
 
 The integration uses the official OpenAI SDK, Responses API, structured output, and Zod, with `store: false`. See [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs). Conversations are sent to OpenAI for extraction and response generation.
 
-`DATABASE_PATH` defaults to `./data/sidekick.sqlite`. Run one Node instance with a persistent writable disk. Local SQLite is unsuitable for ephemeral function storage. Google connections store a verified Google subject and Google email under the registered account's persistent profile. The Google email may differ from the registration email; connecting it does not silently merge accounts or verify the registration email. Deduplicating actors during matching remains future work.
+`DATABASE_PATH` defaults to `./data/sidekick.sqlite` for local hosting with a persistent writable disk. Vercel uses `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`; local SQLite is rejected there because ephemeral functions do not share durable disk storage. Google connections store a verified Google subject and Google email under the registered account's persistent profile. The Google email may differ from the registration email; connecting it does not silently merge accounts or verify the registration email. Deduplicating actors during matching remains future work.
 
 ### Account storage and access
 
@@ -70,9 +115,9 @@ Requested scopes are `openid`, `email`, `calendar.events.freebusy`, and `calenda
 
 Access/refresh tokens and temporary PKCE verifiers are encrypted with AES-256-GCM, bound to the session owner. OAuth state is session-bound, single-use, and expires after ten minutes. Successful connection rotates the browser session and preserves its profile and chat. Refresh tokens renew expired access; revoked access requires reconnection. Disconnect immediately deletes local tokens and availability, then attempts Google revocation. If that cannot be verified, the UI says so. Personal responses are never shared-cacheable.
 
-For deployment, use HTTPS, update the registered redirect and environment value, retain the encryption key and SQLite disk, and complete any Google consent-screen verification required for your audience and scopes. While the OAuth app is in testing, Google authorizations and refresh tokens expire after seven days; see [Google's audience rules](https://support.google.com/cloud/answer/15549945?hl=en).
+For deployment, use HTTPS, update the registered redirect and environment value, preserve the encryption key and durable database, and complete any Google consent-screen verification required for your audience and scopes. The current Vercel callback is `https://sf-sidekick-raupro.vercel.app/api/calendar/callback`; the local callback remains registered. While the OAuth app is in testing, Google authorizations and refresh tokens expire after seven days; see [Google's audience rules](https://support.google.com/cloud/answer/15549945?hl=en).
 
-Live Google authorization and availability retrieval were verified with one account on October 24, 2026. The app's primary-calendar result matched an independent Google free/busy check, including the SF daylight-saving boundary, and survived manual refresh and reload. That live date range had no busy blocks; occupied intervals and provider failures remain covered by the automated fixtures. Private account details and calendar results are kept out of the repository.
+Live Google authorization and availability retrieval were verified locally with one account on October 24, 2026. The app's primary-calendar result matched an independent Google free/busy check, including the SF daylight-saving boundary, and survived manual refresh and reload. That live date range had no busy blocks; occupied intervals and provider failures remain covered by the automated fixtures. The production callback is configured, but a Google connection in the deployed application has not yet been tested. Private account details and calendar results are kept out of the repository.
 
 ## Verification
 
@@ -109,31 +154,31 @@ LIVE_ONBOARDING_EVAL=1 npm test -- --run tests/onboarding-live.test.ts
 
 ### Acceptance checks
 
-| Behavior | Evidence |
-| --- | --- |
-| Draft changes do not silently update a confirmed profile | Domain tests, browser flow, and live runs |
-| Invalid dates, times, and incomplete profiles cannot be confirmed | Domain and API tests |
-| A lost response can be retried without duplicate effects | Service and browser tests |
-| Stale tabs cannot overwrite newer state | Revision-conflict tests |
-| Session data stays isolated | Store and API tests |
-| Greeting updates preserve message history and revisions | Focused migration test |
-| A non-English reply is repaired once or rejected | SDK-level regression tests and live verification |
-| Natural dates are normalized without asking for technical formats or manual availability | Opt-in live conversation regressions |
-| Calendar connection alone cannot complete onboarding | Service and browser checks |
-| Denied/partial Google permissions preserve the profile without claiming connection | Browser OAuth checks |
-| Missing or failed calendars never become empty/free availability | Provider and browser checks |
-| Expiry, changed dates, and changed calendar selection invalidate readiness | Service checks |
-| OAuth state rejects expiry, reuse, and another browser session | Store and API checks |
-| Session rotation preserves chat/profile and invalidates the old cookie | Service and browser checks |
-| A late sync cannot restore a disconnected calendar | Concurrent service check |
-| Calendar selection and connection survive reload | Browser check |
-| Registration precedes onboarding, including legacy URLs | Page and API browser checks |
-| Duplicate normalized emails cannot replace an account | Service and browser checks |
-| Sign-in restores the same profile/calendar in another browser | Service and browser checks |
-| Sign-out and session expiry revoke access without deleting progress | Service and API checks |
-| Existing anonymous data is preserved only on first registration | Migration and service checks |
-| Stale account requests cannot modify the newly signed-in account | API check |
-| Passwords are salted, sessions are revocable, and guessing is throttled | Service and API checks |
+| Behavior                                                                                 | Evidence                                         |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Draft changes do not silently update a confirmed profile                                 | Domain tests, browser flow, and live runs        |
+| Invalid dates, times, and incomplete profiles cannot be confirmed                        | Domain and API tests                             |
+| A lost response can be retried without duplicate effects                                 | Service and browser tests                        |
+| Stale tabs cannot overwrite newer state                                                  | Revision-conflict tests                          |
+| Session data stays isolated                                                              | Store and API tests                              |
+| Greeting updates preserve message history and revisions                                  | Focused migration test                           |
+| A non-English reply is repaired once or rejected                                         | SDK-level regression tests and live verification |
+| Natural dates are normalized without asking for technical formats or manual availability | Opt-in live conversation regressions             |
+| Calendar connection alone cannot complete onboarding                                     | Service and browser checks                       |
+| Denied/partial Google permissions preserve the profile without claiming connection       | Browser OAuth checks                             |
+| Missing or failed calendars never become empty/free availability                         | Provider and browser checks                      |
+| Expiry, changed dates, and changed calendar selection invalidate readiness               | Service checks                                   |
+| OAuth state rejects expiry, reuse, and another browser session                           | Store and API checks                             |
+| Session rotation preserves chat/profile and invalidates the old cookie                   | Service and browser checks                       |
+| A late sync cannot restore a disconnected calendar                                       | Concurrent service check                         |
+| Calendar selection and connection survive reload                                         | Browser check                                    |
+| Registration precedes onboarding, including legacy URLs                                  | Page and API browser checks                      |
+| Duplicate normalized emails cannot replace an account                                    | Service and browser checks                       |
+| Sign-in restores the same profile/calendar in another browser                            | Service and browser checks                       |
+| Sign-out and session expiry revoke access without deleting progress                      | Service and API checks                           |
+| Existing anonymous data is preserved only on first registration                          | Migration and service checks                     |
+| Stale account requests cannot modify the newly signed-in account                         | API check                                        |
+| Passwords are salted, sessions are revocable, and guessing is throttled                  | Service and API checks                           |
 
 `GET /api/onboarding` returns the account, conversation, and connection status. `POST /api/onboarding` accepts `message`, `confirm`, or `reload_saved`; clients cannot supply another session identity or a model draft. `GET /api/state` and `POST /api/context` expose confirmed context. Personal responses disable shared caching.
 
@@ -147,11 +192,11 @@ To audit the visible flow: confirm a chat profile, verify onboarding is incomple
 
 Three focused skills live in `.agents/skills`. Load the skill relevant to the work; supporting product details stay in the implementation plan.
 
-| Skill | Use it for | Origin |
-| --- | --- | --- |
-| [sf-sidekick-mobile-first](.agents/skills/sf-sidekick-mobile-first/SKILL.md) | Phone-first onboarding, opportunity cards, preparation, daily plan, and responsive interaction states | Custom for this project |
-| [sf-sidekick-core](.agents/skills/sf-sidekick-core/SKILL.md) | Evidence-backed matching, domain contracts, reliable plan changes, and focused acceptance checks | Custom for this project |
-| [web-design-guidelines](.agents/skills/web-design-guidelines/SKILL.md) | UI and accessibility review of implemented screens | Vercel, discovered on [skills.sh](https://skills.sh/vercel-labs/agent-skills/web-design-guidelines) |
+| Skill                                                                        | Use it for                                                                                            | Origin                                                                                              |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| [sf-sidekick-mobile-first](.agents/skills/sf-sidekick-mobile-first/SKILL.md) | Phone-first onboarding, opportunity cards, preparation, daily plan, and responsive interaction states | Custom for this project                                                                             |
+| [sf-sidekick-core](.agents/skills/sf-sidekick-core/SKILL.md)                 | Evidence-backed matching, domain contracts, reliable plan changes, and focused acceptance checks      | Custom for this project                                                                             |
+| [web-design-guidelines](.agents/skills/web-design-guidelines/SKILL.md)       | UI and accessibility review of implemented screens                                                    | Vercel, discovered on [skills.sh](https://skills.sh/vercel-labs/agent-skills/web-design-guidelines) |
 
 Codex discovers these project-local skills automatically. They can also be invoked explicitly, for example: “Use $sf-sidekick-mobile-first to build the opportunity screen.” See [skill discovery](https://learn.chatgpt.com/docs/customization/overview#skills).
 

@@ -41,34 +41,34 @@ export async function authenticate(
 ) {
   const request = authRequestSchema.parse(input);
   if (request.action === "logout") {
-    store.logout(previousToken);
+    await store.logout(previousToken);
     return null;
   }
-  if (store.account(previousToken)) throw new AccountConflict();
-  store.reserveAuthAttempt(request.email);
+  if (await store.account(previousToken)) throw new AccountConflict();
+  await store.reserveAuthAttempt(request.email);
   if (hashing >= 2) throw new AuthRateLimit();
   hashing++;
   try {
     if (request.action === "register") {
       // Hash before the uniqueness check so existing addresses do not get a fast path.
       const passwordHash = await hashPassword(request.password);
-      const result = store.registerAccount(
+      const result = await store.registerAccount(
         request.email,
         passwordHash,
         previousToken,
       );
-      store.clearAuthAttempts(request.email);
+      await store.clearAuthAttempts(request.email);
       return result;
     }
-    const credentials = store.credentials(request.email);
+    const credentials = await store.credentials(request.email);
     const verified = await verifyPassword(
       request.password,
       credentials?.password_hash ?? DUMMY_HASH,
     );
     if (!verified || !credentials) throw new InvalidCredentials();
-    const token = store.createLogin(credentials.id);
-    store.clearAuthAttempts(request.email);
-    return { token, account: store.requireAccount(token) };
+    const token = await store.createLogin(credentials.id);
+    await store.clearAuthAttempts(request.email);
+    return { token, account: await store.requireAccount(token) };
   } finally {
     hashing--;
   }

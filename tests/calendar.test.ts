@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CALENDAR_SCOPES,
@@ -41,7 +44,8 @@ const reply = (body: unknown, status = 200) =>
     status,
     headers: { "Content-Type": "application/json" },
   });
-function connection(owner = store.calendarOwner(token)): CalendarConnection {
+async function connection(owner?: string): Promise<CalendarConnection> {
+  owner ??= await store.calendarOwner(token);
   return {
     subject: "test-google-subject",
     email: "alex@example.test",
@@ -65,8 +69,8 @@ function connection(owner = store.calendarOwner(token)): CalendarConnection {
     issue: null,
   };
 }
-function draft() {
-  return store.commitChat(
+async function draft() {
+  return await store.commitChat(
     token,
     {
       action: "message",
@@ -77,9 +81,9 @@ function draft() {
     { reply: "Ready to review.", draft: draftFromContext(validContext()) },
   );
 }
-function attached() {
-  draft();
-  store.writeCalendar(token, 0, connection());
+async function attached() {
+  await draft();
+  await store.writeCalendar(token, 0, await connection());
 }
 function freeBusyBody(ids = ["primary@example.test"]) {
   return {
@@ -89,7 +93,7 @@ function freeBusyBody(ids = ["primary@example.test"]) {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.stubEnv("TOKEN_ENCRYPTION_KEY", "a".repeat(64));
   vi.stubEnv("GOOGLE_CLIENT_ID", "test-client");
   vi.stubEnv("GOOGLE_CLIENT_SECRET", "test-secret");
@@ -98,7 +102,7 @@ beforeEach(() => {
     "http://127.0.0.1:3000/api/calendar/callback",
   );
   store = new ContextStore(":memory:");
-  token = store.ensureSession().token;
+  token = (await store.ensureSession()).token;
 });
 afterEach(() => {
   store.close();
@@ -145,7 +149,7 @@ describe("calendar credentials and OAuth", () => {
     ).rejects.toThrow("missing_permissions");
   });
 
-  it("encrypts tokens for one owner and rejects tampering", () => {
+  it("encrypts tokens for one owner and rejects tampering", async () => {
     const encrypted = sealCalendarData(tokens, "owner");
     expect(encrypted).not.toContain(tokens.refreshToken);
     expect(openCalendarData(encrypted, "owner")).toEqual(tokens);
@@ -157,8 +161,8 @@ describe("calendar credentials and OAuth", () => {
     expect(googleCalendarConfig()).toBeNull();
   });
 
-  it("uses least-privilege scopes and a PKCE challenge without exposing secrets", () => {
-    const url = new URL(beginCalendarConnection(store, token));
+  it("uses least-privilege scopes and a PKCE challenge without exposing secrets", async () => {
+    const url = new URL(await beginCalendarConnection(store, token));
     expect(url.origin).toBe("https://accounts.google.com");
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.searchParams.get("scope")?.split(" ")).toEqual([
@@ -168,35 +172,36 @@ describe("calendar credentials and OAuth", () => {
     expect(url.searchParams.get("access_type")).toBe("offline");
   });
 
-  it("binds state to the session, expires it, and consumes it only once", () => {
-    const other = store.ensureSession().token;
-    store.startCalendarOAuth(token, "state", "encrypted", 100);
-    expect(() => store.consumeCalendarOAuth(other, "state", 101)).toThrow(
-      "invalid_state",
-    );
-    expect(() => store.consumeCalendarOAuth(token, "wrong", 101)).toThrow(
-      "invalid_state",
-    );
+  it("binds state to the session, expires it, and consumes it only once", async () => {
+    const other = (await store.ensureSession()).token;
+    await store.startCalendarOAuth(token, "state", "encrypted", 100);
+    await expect(
+      store.consumeCalendarOAuth(other, "state", 101),
+    ).rejects.toThrow("invalid_state");
+    await expect(
+      store.consumeCalendarOAuth(token, "wrong", 101),
+    ).rejects.toThrow("invalid_state");
     expect(
-      store.consumeCalendarOAuth(token, "state", 101).encrypted_verifier,
+      (await store.consumeCalendarOAuth(token, "state", 101))
+        .encrypted_verifier,
     ).toBe("encrypted");
-    expect(() => store.consumeCalendarOAuth(token, "state", 101)).toThrow(
-      "invalid_state",
-    );
-    store.startCalendarOAuth(token, "expired", "encrypted", 100);
-    expect(() => store.consumeCalendarOAuth(token, "expired", 600101)).toThrow(
-      "invalid_state",
-    );
-    expect(() => store.consumeCalendarOAuth(token, "expired", 101)).toThrow(
-      "invalid_state",
-    );
+    await expect(
+      store.consumeCalendarOAuth(token, "state", 101),
+    ).rejects.toThrow("invalid_state");
+    await store.startCalendarOAuth(token, "expired", "encrypted", 100);
+    await expect(
+      store.consumeCalendarOAuth(token, "expired", 600101),
+    ).rejects.toThrow("invalid_state");
+    await expect(
+      store.consumeCalendarOAuth(token, "expired", 101),
+    ).rejects.toThrow("invalid_state");
   });
 
   it("consumes denied attempts without contacting Google", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
     const state = new URL(
-      beginCalendarConnection(store, token),
+      await beginCalendarConnection(store, token),
     ).searchParams.get("state")!;
     await expect(
       finishCalendarConnection(store, token, state, null, true),
@@ -208,14 +213,14 @@ describe("calendar credentials and OAuth", () => {
   });
 
   it("verifies account and scopes, rotates the session, and preserves profile history", async () => {
-    const chat = draft();
-    store.commitChat(token, {
+    const chat = await draft();
+    await store.commitChat(token, {
       action: "confirm",
       revision: chat.revision,
       requestId: randomUUID(),
     });
     const state = new URL(
-      beginCalendarConnection(store, token),
+      await beginCalendarConnection(store, token),
     ).searchParams.get("state")!;
     vi.stubGlobal(
       "fetch",
@@ -249,36 +254,37 @@ describe("calendar credentials and OAuth", () => {
       false,
     );
     expect(next).not.toBe(token);
-    expect(store.read(token)).toBeNull();
-    expect(store.readChat(next).confirmed).toBe(true);
-    expect(store.readChat(next).messages).toHaveLength(3);
-    const saved = store.readCalendar(next).connection!;
+    expect(await store.read(token)).toBeNull();
+    expect((await store.readChat(next)).confirmed).toBe(true);
+    expect((await store.readChat(next)).messages).toHaveLength(3);
+    const saved = (await store.readCalendar(next)).connection!;
     expect(saved.subject).toBe("google-subject");
     expect(saved.selectedIds).toEqual(["primary@example.test"]);
     expect(
       openCalendarData<GoogleTokens>(
         saved.encryptedTokens,
-        store.calendarOwner(next),
+        await store.calendarOwner(next),
       ).refreshToken,
     ).toBe("test-refresh");
-    expect(JSON.stringify(calendarStatus(store, next))).not.toMatch(
+    expect(JSON.stringify(await calendarStatus(store, next))).not.toMatch(
       /test-access|test-refresh|encryptedTokens|subject/,
     );
-    expect(calendarStatus(store, next).onboardingComplete).toBe(false);
+    expect((await calendarStatus(store, next)).onboardingComplete).toBe(false);
   });
 
-  it("does not let an older OAuth attempt replace a later disconnect", () => {
-    store.writeCalendar(token, 0, connection());
-    store.writeCalendar(token, 1, null);
-    expect(() => store.connectCalendar(token, 1, connection)).toThrow(
-      "calendar_changed",
-    );
-    expect(store.readCalendar(token).connection).toBeNull();
+  it("does not let an older OAuth attempt replace a later disconnect", async () => {
+    const connected = await connection();
+    await store.writeCalendar(token, 0, await connection());
+    await store.writeCalendar(token, 1, null);
+    await expect(
+      store.connectCalendar(token, 1, () => connected),
+    ).rejects.toThrow("calendar_changed");
+    expect((await store.readCalendar(token)).connection).toBeNull();
   });
 });
 
 describe("availability and completion", () => {
-  it("uses inclusive SF dates across the daylight-saving transition", () => {
+  it("uses inclusive SF dates across the daylight-saving transition", async () => {
     const day = calendarWindow("2026-11-01", "2026-11-01")!;
     expect(Date.parse(day.timeMax) - Date.parse(day.timeMin)).toBe(
       25 * 3600000,
@@ -288,31 +294,33 @@ describe("availability and completion", () => {
   });
 
   it("requires both confirmation and current successful calendar coverage", async () => {
-    attached();
+    await attached();
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => reply(freeBusyBody())),
     );
-    expect(calendarStatus(store, token).onboardingComplete).toBe(false);
+    expect((await calendarStatus(store, token)).onboardingComplete).toBe(false);
     expect((await syncCalendar(store, token)).availabilityReady).toBe(true);
-    expect(calendarStatus(store, token).onboardingComplete).toBe(false);
-    store.commitChat(token, {
+    expect((await calendarStatus(store, token)).onboardingComplete).toBe(false);
+    await store.commitChat(token, {
       action: "confirm",
       revision: 1,
       requestId: randomUUID(),
     });
-    expect(calendarStatus(store, token).onboardingComplete).toBe(true);
+    expect((await calendarStatus(store, token)).onboardingComplete).toBe(true);
     expect(
-      calendarStatus(store, token, Date.now() + 300001).onboardingComplete,
+      (await calendarStatus(store, token, Date.now() + 300001))
+        .onboardingComplete,
     ).toBe(false);
     expect(
-      calendarStatus(store, store.ensureSession().token).onboardingComplete,
+      (await calendarStatus(store, (await store.ensureSession()).token))
+        .onboardingComplete,
     ).toBe(false);
-    const status = JSON.stringify(calendarStatus(store, token));
+    const status = JSON.stringify(await calendarStatus(store, token));
     expect(status).not.toContain('"busy"');
     const next = draftFromContext(validContext());
     next.departure = "2026-11-06";
-    store.commitChat(
+    await store.commitChat(
       token,
       {
         action: "message",
@@ -322,29 +330,31 @@ describe("availability and completion", () => {
       },
       { reply: "Updated your draft.", draft: next },
     );
-    expect(calendarStatus(store, token).availabilityReady).toBe(false);
+    expect((await calendarStatus(store, token)).availabilityReady).toBe(false);
   });
 
   it("invalidates coverage when selected calendars change and rejects foreign IDs", async () => {
-    attached();
+    await attached();
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => reply(freeBusyBody())),
     );
     await syncCalendar(store, token);
-    expect(() => selectCalendars(store, token, 2, ["unowned-id"])).toThrow(
-      "invalid_selection",
-    );
+    await expect(
+      selectCalendars(store, token, 2, ["unowned-id"]),
+    ).rejects.toThrow("invalid_selection");
     expect(
-      selectCalendars(store, token, 2, [
-        "primary@example.test",
-        "work@example.test",
-      ]).availabilityReady,
+      (
+        await selectCalendars(store, token, 2, [
+          "primary@example.test",
+          "work@example.test",
+        ])
+      ).availabilityReady,
     ).toBe(false);
-    expect(() =>
+    await expect(
       selectCalendars(store, token, 2, ["primary@example.test"]),
-    ).toThrow("calendar_changed");
-    const c = store.readCalendar(token).connection!;
+    ).rejects.toThrow("calendar_changed");
+    const c = (await store.readCalendar(token)).connection!;
     expect(
       snapshotIsFresh(
         {
@@ -372,7 +382,7 @@ describe("availability and completion", () => {
   ])(
     "never treats missing or failed calendars as free: %j",
     async (partial) => {
-      attached();
+      await attached();
       vi.stubGlobal(
         "fetch",
         vi.fn(async () => reply({ ...freeBusyBody(), ...partial })),
@@ -380,8 +390,10 @@ describe("availability and completion", () => {
       await expect(syncCalendar(store, token)).rejects.toThrow(
         "calendar_unavailable",
       );
-      expect(calendarStatus(store, token).availabilityReady).toBe(false);
-      expect(store.readCalendar(token).connection!.snapshot).toBeNull();
+      expect((await calendarStatus(store, token)).availabilityReady).toBe(
+        false,
+      );
+      expect((await store.readCalendar(token)).connection!.snapshot).toBeNull();
     },
   );
 
@@ -418,13 +430,13 @@ describe("availability and completion", () => {
   });
 
   it("refreshes expired access, saves the new token, and rejects revoked grants", async () => {
-    attached();
-    let record = store.readCalendar(token);
-    store.writeCalendar(token, record.revision, {
+    await attached();
+    let record = await store.readCalendar(token);
+    await store.writeCalendar(token, record.revision, {
       ...record.connection!,
       encryptedTokens: sealCalendarData(
         { ...tokens, expiresAt: 0 },
-        store.calendarOwner(token),
+        await store.calendarOwner(token),
       ),
     });
     const fetch = vi.fn(async (url: string) =>
@@ -438,18 +450,18 @@ describe("availability and completion", () => {
     );
     vi.stubGlobal("fetch", fetch);
     expect((await syncCalendar(store, token)).availabilityReady).toBe(true);
-    record = store.readCalendar(token);
+    record = await store.readCalendar(token);
     expect(
       openCalendarData<GoogleTokens>(
         record.connection!.encryptedTokens,
-        store.calendarOwner(token),
+        await store.calendarOwner(token),
       ).accessToken,
     ).toBe("refreshed-access");
-    store.writeCalendar(token, record.revision, {
+    await store.writeCalendar(token, record.revision, {
       ...record.connection!,
       encryptedTokens: sealCalendarData(
         { ...tokens, expiresAt: 0 },
-        store.calendarOwner(token),
+        await store.calendarOwner(token),
       ),
     });
     vi.stubGlobal(
@@ -457,12 +469,12 @@ describe("availability and completion", () => {
       vi.fn(async () => reply({ error: "invalid_grant" }, 400)),
     );
     await expect(syncCalendar(store, token)).rejects.toThrow("needs_reconnect");
-    expect(calendarStatus(store, token).status).toBe("needs_reconnect");
-    expect(calendarStatus(store, token).availabilityReady).toBe(false);
+    expect((await calendarStatus(store, token)).status).toBe("needs_reconnect");
+    expect((await calendarStatus(store, token)).availabilityReady).toBe(false);
   });
 
   it("prevents an in-flight sync from resurrecting a disconnected calendar", async () => {
-    attached();
+    await attached();
     let release!: (value: Response) => void;
     vi.stubGlobal(
       "fetch",
@@ -475,16 +487,51 @@ describe("availability and completion", () => {
       ),
     );
     const sync = syncCalendar(store, token);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
     await expect(syncCalendar(store, token)).rejects.toThrow("busy");
     const disconnected = await disconnectCalendar(store, token, 1);
     expect(disconnected.status).toBe("not_connected");
     release(reply(freeBusyBody()));
     await expect(sync).rejects.toThrow("calendar_changed");
-    expect(store.readCalendar(token).connection).toBeNull();
+    expect((await store.readCalendar(token)).connection).toBeNull();
+  });
+
+  it("shares the calendar sync lease across independent database clients and releases it after completion", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "sidekick-calendar-lease-"));
+    const path = join(directory, "test.sqlite");
+    store.close();
+    store = new ContextStore(path);
+    token = (await store.ensureSession()).token;
+    await attached();
+    const other = new ContextStore(path);
+    let release!: (value: Response) => void;
+    const fetch = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const pending = syncCalendar(store, token);
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      await expect(syncCalendar(other, token)).rejects.toThrow("busy");
+      expect(fetch).toHaveBeenCalledTimes(1);
+      release(reply(freeBusyBody()));
+      expect((await pending).availabilityReady).toBe(true);
+      fetch.mockImplementation(async () => reply(freeBusyBody()));
+      expect((await syncCalendar(other, token)).availabilityReady).toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      other.close();
+      store.close();
+      store = new ContextStore(":memory:");
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("removes local access even when remote revocation cannot be verified", async () => {
-    attached();
+    await attached();
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
@@ -496,6 +543,6 @@ describe("availability and completion", () => {
       status: "not_connected",
       onboardingComplete: false,
     });
-    expect(store.readCalendar(token).connection).toBeNull();
+    expect((await store.readCalendar(token)).connection).toBeNull();
   });
 });
