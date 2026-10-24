@@ -101,6 +101,8 @@ export function CalendarConnect({
                   "This connection attempt expired or was already used. Connect again.",
                 missing_permissions:
                   "Allow calendar access in Google to check availability.",
+                api_disabled:
+                  "Google Calendar is not enabled for this app yet. Contact the app owner.",
                 calendar_unavailable:
                   "Your primary calendar could not be accessed. Try connecting again.",
               };

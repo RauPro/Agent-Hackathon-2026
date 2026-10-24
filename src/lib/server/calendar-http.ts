@@ -17,6 +17,8 @@ export function calendarFailure(error: unknown) {
     denied: "Google Calendar was not connected. Connect when you are ready.",
     missing_permissions:
       "Allow calendar access in Google to check availability.",
+    api_disabled:
+      "Google Calendar is not enabled for this app yet. Contact the app owner.",
     needs_reconnect: "Reconnect Google Calendar to check availability.",
     sync_failed: "Could not check calendar availability. Try again.",
     calendar_unavailable:
@@ -34,9 +36,12 @@ export function calendarFailure(error: unknown) {
         ? 409
         : code === "busy"
           ? 429
-          : ["not_configured", "sync_failed", "calendar_unavailable"].includes(
-                code,
-              )
+          : [
+                "not_configured",
+                "api_disabled",
+                "sync_failed",
+                "calendar_unavailable",
+              ].includes(code)
             ? 503
             : 400;
   return json({ code, message: messages[code] }, status);
