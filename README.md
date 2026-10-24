@@ -2,6 +2,8 @@
 
 A mobile-first web app that turns a visitor's goal in San Francisco into relevant people, useful conversations, and a daily plan. See the [product and implementation plan](SF-Sidekick-Implementation-Plan.md) for the full scope.
 
+Live app: **[sf-sidekick-raupro.vercel.app](https://sf-sidekick-raupro.vercel.app)**. Vercel hosts the application with durable Turso storage; production tracks `feat/vercel-deployment`. See the [deployment guide](docs/vercel-deployment.md) for configuration and verified release behavior. Production uses a separate database, so local accounts are not automatically available there.
+
 ## Current phase: onboarding and an agent-powered social graph
 
 The new `/network` screen supports opt-in people discovery, persistent QR connections, permission-controlled agent queries, shared event plans, and bilateral meeting coordination. Read the [architecture and phased acceptance plan](docs/agent-social-graph.md) for data relationships, contracts, permissions, triggers, and boundaries.
@@ -24,7 +26,7 @@ Repeated slogans, instructions, and helper captions have been removed. The inter
 
 A server-side language check examines generated replies. If a reply is not identified as English, the same OpenAI model gets one translation-only repair request. That request contains only the reply text and cannot change profile facts. Both calls share a 25-second deadline; an unsuccessful repair returns an English error and leaves the conversation unchanged. Language detection is heuristic; the live check covers the recorded scenarios, not every possible multilingual input.
 
-Conversation drafts and confirmed profiles are stored separately in SQLite. Reloads restore the conversation; retries do not duplicate turns or confirmations. Existing profiles from the earlier form-based onboarding remain available. Unknown availability and unreviewed commitments are distinct from explicitly having no commitments.
+Conversation drafts and confirmed profiles are stored separately in the database: SQLite locally and Turso/libSQL on Vercel. Reloads restore the conversation; retries do not duplicate turns or confirmations. Existing profiles from the earlier form-based onboarding remain available. Unknown availability and unreviewed commitments are distinct from explicitly having no commitments.
 
 **Onboarding is complete only when the profile is confirmed and Google Calendar availability is verified for the current trip dates.** Users can save their profile before connecting. A connection alone, a failed check, or an old snapshot never counts as verified availability.
 
@@ -44,7 +46,7 @@ The agent runtime uses typed `PROFILE_QUERY` requests with an allowlist of profi
 
 The deterministic matcher looks for reciprocal professional fit and overlapping SF dates. It supports complementary hiring/role searches, collaboration, and shared-event reunions between existing connections. Explanations show benefits for both people and the signals used. Its finite English vocabulary and conservative role matching can miss valid matches; scores are heuristics, not probabilities. Unfamiliar roles and customer/supplier matching are not covered yet. It never contacts a new person automatically. For accepted connections, a new compatible context can trigger a bounded query of already-shared professional information.
 
-Confirmed profile changes, sharing settings, accepted connections and explicit event plans enqueue matching in SQLite. A timer in the existing Node process drains up to 20 coalesced jobs every 30 seconds; relevant HTTP responses also trigger a drain. Work is synchronous and transactional, with no external calls inside the transaction. Failed work remains queued for retry, and startup resumes pending work. The inbox refreshes while open. This requires the existing always-running single Node deployment; there is no email, push-notification service, Redis or extra worker service.
+Confirmed profile changes, sharing settings, accepted connections and explicit event plans enqueue matching in the database. Relevant HTTP responses trigger bounded async processing with `after()`; each drain evaluates up to five eligible pairs and persists its cursor. Database leases prevent competing workers, and each pair commits separately without external calls inside the transaction. Failed work remains queued for retry. Local hosting uses a 30-second process timer; Vercel uses an authenticated cron every minute on the configured Pro team. The inbox refreshes while open. No email, push-notification service, Redis or separate worker service is required.
 
 Meeting requests appear inside the relevant conversation in **Agents**. Each person first permits an availability comparison. Connected Google calendars are read on demand; raw busy intervals, calendar identities and event details never reach the other person. If no calendar is connected, the meeting flow accepts explicit manual windows. Provider failures never fall back to an empty calendar. Up to three 30-minute options are searched on weekdays, 9 AM–6 PM SF time, within the first 14 days of overlapping stays. A counterproposal clears previous approvals. Profile or relationship changes invalidate existing consent; reconnecting cannot revive old approvals.
 
@@ -87,7 +89,7 @@ Add `OPENAI_API_KEY` to `.env.local`, then restart the server. `OPENAI_MODEL` de
 
 The integration uses the official OpenAI SDK, Responses API, structured output, and Zod, with `store: false`. See [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs). Conversations are sent to OpenAI for extraction and response generation.
 
-`DATABASE_PATH` defaults to `./data/sidekick.sqlite`. Run one Node instance with a persistent writable disk. Local SQLite is unsuitable for ephemeral function storage. Google connections store a verified Google subject and Google email under the registered account's persistent profile. The Google email may differ from the registration email; connecting it does not silently merge accounts or verify the registration email. Deduplicating actors during matching remains future work.
+`DATABASE_PATH` defaults to `./data/sidekick.sqlite` for local hosting with a persistent writable disk. Vercel uses `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`; local SQLite is rejected there because ephemeral functions do not share durable disk storage. Google connections store a verified Google subject and Google email under the registered account's persistent profile. The Google email may differ from the registration email; connecting it does not silently merge accounts or verify the registration email. Deduplicating actors during matching remains future work.
 
 ### Account storage and access
 
@@ -113,9 +115,9 @@ Requested scopes are `openid`, `email`, `calendar.events.freebusy`, and `calenda
 
 Access/refresh tokens and temporary PKCE verifiers are encrypted with AES-256-GCM, bound to the session owner. OAuth state is session-bound, single-use, and expires after ten minutes. Successful connection rotates the browser session and preserves its profile and chat. Refresh tokens renew expired access; revoked access requires reconnection. Disconnect immediately deletes local tokens and availability, then attempts Google revocation. If that cannot be verified, the UI says so. Personal responses are never shared-cacheable.
 
-For deployment, use HTTPS, update the registered redirect and environment value, retain the encryption key and SQLite disk, and complete any Google consent-screen verification required for your audience and scopes. While the OAuth app is in testing, Google authorizations and refresh tokens expire after seven days; see [Google's audience rules](https://support.google.com/cloud/answer/15549945?hl=en).
+For deployment, use HTTPS, update the registered redirect and environment value, preserve the encryption key and durable database, and complete any Google consent-screen verification required for your audience and scopes. The current Vercel callback is `https://sf-sidekick-raupro.vercel.app/api/calendar/callback`; the local callback remains registered. While the OAuth app is in testing, Google authorizations and refresh tokens expire after seven days; see [Google's audience rules](https://support.google.com/cloud/answer/15549945?hl=en).
 
-Live Google authorization and availability retrieval were verified with one account on October 24, 2026. The app's primary-calendar result matched an independent Google free/busy check, including the SF daylight-saving boundary, and survived manual refresh and reload. That live date range had no busy blocks; occupied intervals and provider failures remain covered by the automated fixtures. Private account details and calendar results are kept out of the repository.
+Live Google authorization and availability retrieval were verified locally with one account on October 24, 2026. The app's primary-calendar result matched an independent Google free/busy check, including the SF daylight-saving boundary, and survived manual refresh and reload. That live date range had no busy blocks; occupied intervals and provider failures remain covered by the automated fixtures. The production callback is configured, but a Google connection in the deployed application has not yet been tested. Private account details and calendar results are kept out of the repository.
 
 ## Verification
 

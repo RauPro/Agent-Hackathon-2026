@@ -1,5 +1,7 @@
 # Vercel deployment
 
+Live application: **[sf-sidekick-raupro.vercel.app](https://sf-sidekick-raupro.vercel.app)**. The Vercel project `sf-sidekick-raupro` tracks `feat/vercel-deployment` in `RauPro/Agent-Hackathon-2026`; pushes to that branch deploy to production. The first verified production deployment used commit `4b87832`.
+
 Sidekick keeps one Next.js application. Vercel hosts the UI and route handlers; a remote SQLite-compatible libSQL database stores accounts, context, relationships, agent exchanges, meeting approvals and queued work. Local SQLite remains available for development. A writable local database is deliberately rejected when `VERCEL=1` because Vercel functions do not share persistent local storage. [Vercel guidance](https://vercel.com/kb/guide/is-sqlite-supported-in-vercel)
 
 ## Deployment configuration
@@ -18,6 +20,10 @@ Sidekick keeps one Next.js application. Vercel hosts the UI and route handlers; 
 | `CRON_SECRET` | Long random secret authorizing scheduled discovery requests. |
 
 No environment variable uses `NEXT_PUBLIC_`. Source uploads exclude `.env` files, local databases, caches and verification artifacts. Existing local account/calendar data is not automatically uploaded by a deployment.
+
+The production-only Turso integration uses `sf-sidekick-production` in Virginia on its free Starter plan. Preview and development environments are not connected to this database. New production users register separately from their local accounts. Google Cloud retains the local callback and also authorizes `https://sf-sidekick-raupro.vercel.app/api/calendar/callback`.
+
+Google OAuth remains in **Testing**, so only configured Google test users can connect their calendars. Publishing the consent screen for a broader audience is a separate Google configuration and verification step.
 
 Vercel supports Node 24 and 22; the current package engine range selects supported Node 24 there. Local development remains compatible with the existing Node installation. [Vercel Node versions](https://vercel.com/docs/functions/runtimes/node-js/node-js-versions)
 
@@ -46,3 +52,13 @@ After connecting the actual database and deploying, verify:
 7. Logs contain no provider tokens, database credentials or private calendar contents.
 
 Calendar writing remains outside the current feature set. Bilaterally approved meetings produce an ICS export; deployment does not add Google write permissions or send invitations.
+
+### Verified release — October 24, 2026
+
+- Local validation: 141 unit/service tests and 27 browser checks passed; nine opt-in paid OpenAI tests were skipped. Typecheck, lint, production build and `VERCEL=1` build passed.
+- Actual Turso: 19 checks covered persistence across server restarts, private defaults, QR connections, agent responses, matching, bilateral manual-availability consent and ICS export.
+- Deployed application: 18 assertions across 32 authenticated requests covered registration, returning login, session revocation, identity checks, QR connections, agent history and visibility revocation. Public registration and unauthenticated access boundaries also passed.
+- Real OpenAI onboarding succeeded with fictional input in 2.78 seconds. Ordinary authenticated requests had a 175 ms median in the recorded run.
+- Cron rejected an unauthenticated request with 401 and accepted the configured bearer secret with 200 (`processed: 0` on the empty queue).
+- Synthetic accounts stayed undiscoverable and were removed by their exact recorded IDs. No local accounts, private calendars or demo community were copied into production.
+- The Google production callback was saved and verified after reopening the client. Live Google authorization and availability remain verified only locally; the deployed app still needs a user-completed Google connection test.
