@@ -12,6 +12,10 @@ The first registration in an existing anonymous browser preserves its stored dra
 
 The onboarding uses a single text input. OpenAI extracts relevant details from the conversation, maintains a structured draft, and asks one focused follow-up question when needed. Users review the draft and select **Confirm profile** before it becomes their saved context.
 
+Questions are direct, such as **“What's your full name?”** Dates can be written naturally: **“from 1 nov to 20 nov”** is interpreted internally, with the inferred year shown in ordinary language. The assistant does not request ISO dates or expose storage formats. It asks about genuine date ambiguity and uses answers already present in the conversation. Structured output extracts the updated draft before composing the next reply, so a newly answered question is not asked again.
+
+Google Calendar supplies availability. The assistant does not ask for availability windows or a list of calendar events, even as an optional step. It may ask once about plans outside Google Calendar; “no commitments so far” answers that question. Volunteered meeting-time preferences remain optional constraints and never establish that the calendar is free. The profile preview shows these preferences only when provided and labels manually reported plans as additional commitments.
+
 The UI, accessible names, metadata, validation errors, and new assistant replies are English-only. Generated profile descriptions are requested in English; proper names and user messages retain their original wording. The app refreshes its own opening greeting for existing sessions without rewriting historical model replies or changing profile revisions.
 
 Repeated slogans, instructions, and helper captions have been removed. The interface retains actionable errors, profile status, the message input's accessible label, and the confirmation boundary.
@@ -91,6 +95,13 @@ Live evidence, using fictional profiles in isolated sessions:
 
 - [Original three-turn verification](docs/verification/onboarding-live-2026-10-24.json): extraction, ambiguous dates, intent correction, explicit confirmation, retries, and reload.
 - [English-only verification](docs/verification/onboarding-english-2026-10-24.json): Spanish input and requests to switch languages, with English replies and profile descriptions. The earlier source record retains its original language for auditability.
+- [Natural-conversation verification](docs/verification/onboarding-natural-2026-10-24.json): full-name questions, natural dates, year boundaries, ambiguity, recovery from earlier formatting requests, and commitments outside Google Calendar. Earlier verification records retain the original responses, including the date-format behavior corrected in this change.
+
+The opt-in conversation regression suite calls OpenAI with fictional profiles and a fixed SF date; it does not read or modify app accounts. Normal `npm test` skips these paid provider calls. To rerun it with the key in `.env.local`:
+
+```bash
+LIVE_ONBOARDING_EVAL=1 npm test -- --run tests/onboarding-live.test.ts
+```
 
 ### Acceptance checks
 
@@ -103,6 +114,7 @@ Live evidence, using fictional profiles in isolated sessions:
 | Session data stays isolated | Store and API tests |
 | Greeting updates preserve message history and revisions | Focused migration test |
 | A non-English reply is repaired once or rejected | SDK-level regression tests and live verification |
+| Natural dates are normalized without asking for technical formats or manual availability | Opt-in live conversation regressions |
 | Calendar connection alone cannot complete onboarding | Service and browser checks |
 | Denied/partial Google permissions preserve the profile without claiming connection | Browser OAuth checks |
 | Missing or failed calendars never become empty/free availability | Provider and browser checks |

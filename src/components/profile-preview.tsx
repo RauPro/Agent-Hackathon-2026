@@ -57,25 +57,23 @@ export function ProfilePreview({ chat }: { chat: ChatState }) {
             )}
           </dd>
         </div>
-        <div>
-          <dt>Preferred meeting times</dt>
-          <dd>
-            {draft.availability.status === "unknown" ? (
-              <span className="unknown">Not set</span>
-            ) : (
-              draft.availability.windows.map((window, i) => (
+        {draft.availability.status === "provided" && (
+          <div>
+            <dt>Preferred meeting times</dt>
+            <dd>
+              {draft.availability.windows.map((window, i) => (
                 <span className="fact-row" key={i}>
                   {dateLabel(window.date)} · {window.start}–{window.end}
                 </span>
-              ))
-            )}
-          </dd>
-        </div>
+              ))}
+            </dd>
+          </div>
+        )}
         <div>
-          <dt>Reported commitments</dt>
+          <dt>Additional commitments</dt>
           <dd>
             {draft.commitments.status === "unknown" ? (
-              <span className="unknown">Not reviewed</span>
+              <span className="unknown">Not mentioned</span>
             ) : draft.commitments.status === "none" ? (
               "None reported"
             ) : (

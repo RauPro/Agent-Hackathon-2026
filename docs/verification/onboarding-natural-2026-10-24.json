@@ -1,0 +1,283 @@
+{
+  "testedAt": "2026-10-24T20:38:21.287Z",
+  "provider": "OpenAI live",
+  "model": "gpt-5.4-mini",
+  "contextDate": "2026-10-24 in America/Los_Angeles",
+  "fixture": "Fictional Alex Rivera profiles; no user account data",
+  "results": [
+    {
+      "scenario": "full name",
+      "message": "I'm looking for a founding engineer role.",
+      "reply": {
+        "draft": {
+          "name": "",
+          "bio": "",
+          "offers": "",
+          "goalType": "seeking_role",
+          "goalText": "Looking for a founding engineer role.",
+          "arrival": "",
+          "departure": "",
+          "availability": {
+            "status": "unknown",
+            "windows": []
+          },
+          "commitments": {
+            "status": "unknown",
+            "items": []
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "reply": "What's your full name?"
+      },
+      "passed": true
+    },
+    {
+      "scenario": "recover from formatting request",
+      "message": "from 1 nov to 20 nov, no commitments so far",
+      "reply": {
+        "draft": {
+          "name": "Alex Rivera",
+          "bio": "Product engineer with experience building agents in production.",
+          "offers": "I can offer experience in TypeScript, product work, and small teams.",
+          "goalType": "seeking_role",
+          "goalText": "Meet teams hiring a founding engineer for agent products.",
+          "arrival": "2026-11-01",
+          "departure": "2026-11-20",
+          "availability": {
+            "status": "unknown",
+            "windows": []
+          },
+          "commitments": {
+            "status": "none",
+            "items": []
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "reply": "November 1–20, 2026. Your profile is ready to review."
+      },
+      "passed": true
+    },
+    {
+      "scenario": "continue after earlier mistake",
+      "message": "Continue.",
+      "reply": {
+        "draft": {
+          "name": "Alex Rivera",
+          "bio": "Product engineer with experience building agents in production.",
+          "offers": "I can offer experience in TypeScript, product work, and small teams.",
+          "goalType": "seeking_role",
+          "goalText": "Meet teams hiring a founding engineer for agent products.",
+          "arrival": "2026-11-01",
+          "departure": "2026-11-20",
+          "availability": {
+            "status": "unknown",
+            "windows": []
+          },
+          "commitments": {
+            "status": "none",
+            "items": []
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "reply": "November 1–20, 2026. Your profile is ready to review."
+      },
+      "passed": true
+    },
+    {
+      "scenario": "year boundary",
+      "message": "I'll arrive December 28 and leave January 3. Nothing planned outside my calendar.",
+      "reply": {
+        "draft": {
+          "name": "Alex Rivera",
+          "bio": "Product engineer with experience building agents in production.",
+          "offers": "I can offer experience in TypeScript, product work, and small teams.",
+          "goalType": "seeking_role",
+          "goalText": "Meet teams hiring a founding engineer for agent products.",
+          "arrival": "2026-12-28",
+          "departure": "2027-01-03",
+          "availability": {
+            "status": "unknown",
+            "windows": []
+          },
+          "commitments": {
+            "status": "none",
+            "items": []
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "reply": "December 28, 2026–January 3, 2027. Your profile is ready to review."
+      },
+      "passed": true
+    },
+    {
+      "scenario": "explicit past year",
+      "message": "My trip was November 1 to November 20, 2025.",
+      "reply": {
+        "draft": {
+          "name": "Alex Rivera",
+          "bio": "Product engineer with experience building agents in production.",
+          "offers": "I can offer experience in TypeScript, product work, and small teams.",
+          "goalType": "seeking_role",
+          "goalText": "Meet teams hiring a founding engineer for agent products.",
+          "arrival": "2025-11-01",
+          "departure": "2025-11-20",
+          "availability": {
+            "status": "unknown",
+            "windows": []
+          },
+          "commitments": {
+            "status": "unknown",
+            "items": []
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "reply": "November 1–20, 2025. Your profile is ready to review."
+      },
+      "passed": true
+    },
+    {
+      "scenario": "ambiguous date order",
+      "message": "I'll be there from 04/05 to 04/10.",
+      "reply": {
+        "draft": {
+          "name": "Alex Rivera",
+          "bio": "Product engineer with experience building agents in production.",
+          "offers": "I can offer experience in TypeScript, product work, and small teams.",
+          "goalType": "seeking_role",
+          "goalText": "Meet teams hiring a founding engineer for agent products.",
+          "arrival": "",
+          "departure": "",
+          "availability": {
+            "status": "unknown",
+            "windows": []
+          },
+          "commitments": {
+            "status": "unknown",
+            "items": []
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "reply": "Does 04/05 mean April 5 or May 4?"
+      },
+      "passed": true
+    },
+    {
+      "scenario": "additional commitments",
+      "message": "Anything else you need about my schedule?",
+      "reply": {
+        "draft": {
+          "name": "Alex Rivera",
+          "bio": "Product engineer with experience building agents in production.",
+          "offers": "I can offer experience in TypeScript, product work, and small teams.",
+          "goalType": "seeking_role",
+          "goalText": "Meet teams hiring a founding engineer for agent products.",
+          "arrival": "2026-11-01",
+          "departure": "2026-11-20",
+          "availability": {
+            "status": "unknown",
+            "windows": []
+          },
+          "commitments": {
+            "status": "unknown",
+            "items": []
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "reply": "No — if there’s anything planned outside your Google Calendar, tell me about it; otherwise your profile is ready to review."
+      },
+      "passed": true
+    },
+    {
+      "scenario": "outside-calendar dinner",
+      "message": "I have dinner November 5 from 6 pm to 8 pm that isn't in my Google Calendar.",
+      "reply": {
+        "draft": {
+          "name": "Alex Rivera",
+          "bio": "Product engineer with experience building agents in production.",
+          "offers": "I can offer experience in TypeScript, product work, and small teams.",
+          "goalType": "seeking_role",
+          "goalText": "Meet teams hiring a founding engineer for agent products.",
+          "arrival": "2026-11-01",
+          "departure": "2026-11-20",
+          "availability": {
+            "status": "unknown",
+            "windows": []
+          },
+          "commitments": {
+            "status": "provided",
+            "items": [
+              {
+                "date": "2026-11-05",
+                "start": "18:00",
+                "end": "20:00",
+                "title": "Dinner"
+              }
+            ]
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "reply": "November 5, 2026, 6:00–8:00 pm. Your profile is ready to review."
+      },
+      "passed": true
+    },
+    {
+      "scenario": "preserve volunteered preferences",
+      "message": "No other commitments outside Google Calendar.",
+      "reply": {
+        "draft": {
+          "name": "Alex Rivera",
+          "bio": "Product engineer with experience building agents in production.",
+          "offers": "I can offer experience in TypeScript, product work, and small teams.",
+          "goalType": "seeking_role",
+          "goalText": "Meet teams hiring a founding engineer for agent products.",
+          "arrival": "2026-11-01",
+          "departure": "2026-11-20",
+          "availability": {
+            "status": "provided",
+            "windows": [
+              {
+                "date": "2026-11-04",
+                "start": "14:00",
+                "end": "16:00"
+              }
+            ]
+          },
+          "commitments": {
+            "status": "none",
+            "items": []
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "reply": "November 1–20, 2026. Your profile is ready to review."
+      },
+      "passed": true
+    }
+  ]
+}

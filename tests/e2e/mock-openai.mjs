@@ -48,8 +48,7 @@ const server = createServer(async (request, response) => {
       "Got it — you're hiring, rather than looking for a role. I've updated your draft for review.";
   } else if (message.includes("No commitments")) {
     draft.commitments = { status: "none", items: [] };
-    reply =
-      "Noted: no fixed commitments. Your availability can stay open for now.";
+    reply = "No additional commitments noted. Your profile is ready to review.";
   } else if (message.includes("I leave before I arrive")) {
     draft.departure = "2026-10-01";
     reply =

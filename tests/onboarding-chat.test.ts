@@ -321,6 +321,26 @@ describe("conversational onboarding", () => {
     expect(store.readChat(token).messages).toHaveLength(1);
   });
 
+  it("repairs a date-only reply into a complete English sentence without changing the extracted dates", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key-not-a-secret");
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(
+        providerResponse({ ...reply, reply: "November 1–20, 2025." }),
+      )
+      .mockResolvedValueOnce(
+        providerResponse({ reply: "Your trip was November 1–20, 2025." }),
+      );
+    vi.stubGlobal("fetch", transport);
+    const result = await completeOnboarding(
+      store.readChat(token),
+      "My trip was November 1 to November 20, 2025.",
+    );
+    expect(result.reply).toBe("Your trip was November 1–20, 2025.");
+    expect(result.draft).toEqual(reply.draft);
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["What dates will you be in SF?", "What is your name?"])(
     "does not repair an already-English short question: %s",
     async (question) => {

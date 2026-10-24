@@ -24,14 +24,27 @@ export const draftSchema = z
       .enum(["seeking_role", "hiring", "customers", "collaborators"])
       .nullable(),
     goalText: z.string().max(1000),
-    arrival: z.string().max(10),
-    departure: z.string().max(10),
+    arrival: z
+      .string()
+      .max(10)
+      .describe(
+        "Interpret natural arrival dates internally as YYYY-MM-DD. Leave empty when missing or ambiguous; never ask the user for this format.",
+      ),
+    departure: z
+      .string()
+      .max(10)
+      .describe(
+        "Interpret natural departure dates internally as YYYY-MM-DD. Leave empty when missing or ambiguous; never ask the user for this format.",
+      ),
     availability: z
       .object({
         status: z.enum(["unknown", "provided"]),
         windows: z.array(slot).max(14),
       })
-      .strict(),
+      .strict()
+      .describe(
+        "Only meeting-time preferences volunteered by the user. Never request availability windows; Google Calendar supplies actual availability separately.",
+      ),
     commitments: z
       .object({
         status: z.enum(["unknown", "none", "provided"]),
@@ -48,7 +61,17 @@ export const draftSchema = z
   .strict();
 
 export const modelReplySchema = z
-  .object({ reply: z.string().min(1).max(1200), draft: draftSchema })
+  // Extract the latest facts before composing the next question.
+  .object({
+    draft: draftSchema,
+    reply: z
+      .string()
+      .min(1)
+      .max(1200)
+      .describe(
+        "A short English reply based on the updated draft. Ask only for missing information: if name is populated, do not ask for the name again. Never request technical date formats or manual availability. If required fields and commitments are answered, invite profile review without another question.",
+      ),
+  })
   .strict();
 export type ProfileDraft = z.infer<typeof draftSchema>;
 export type ModelReply = z.infer<typeof modelReplySchema>;
