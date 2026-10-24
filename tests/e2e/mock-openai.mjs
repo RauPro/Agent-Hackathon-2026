@@ -1,6 +1,7 @@
 // Test-only HTTP fixture, not a runtime fallback or a natural-language parser.
 // It exercises the actual SDK, route, SQLite store and browser without API spend.
 import { createServer } from "node:http";
+import { discoveryDates, fixtureEvent } from "./discovery-fixtures.mjs";
 const server = createServer(async (request, response) => {
   response.setHeader("Content-Type", "application/json");
   if (request.url === "/health") {
@@ -12,9 +13,94 @@ const server = createServer(async (request, response) => {
     response.end("{}");
     return;
   }
+  if (request.headers.authorization !== "Bearer test-key-not-a-secret") {
+    response.writeHead(401);
+    response.end("{}");
+    return;
+  }
   let data = "";
   for await (const chunk of request) data += chunk;
   const body = JSON.parse(data);
+  const format = body.text?.format?.name;
+  if (format?.startsWith("discovery_")) {
+    const input = JSON.parse(body.input[0].content);
+    let output;
+    if (format === "discovery_plan")
+      output = {
+        topics: ["typescript", "ai_agents"],
+        audiences: [
+          input.goal.type === "hiring" ? "builders" : "early_stage_engineers",
+        ],
+        formats: ["meetup", "workshop"],
+        avoid: ["pitch"],
+      };
+    else if (format === "discovery_extract")
+      output = {
+        events: input.candidates.map((c) => {
+          const fixture = fixtureEvent(
+            c.title.includes("Lab") ? "lab" : "demo",
+            c.texts.some((t) => t.includes("Past Event")),
+          );
+          return {
+            ...fixture.event,
+            candidateId: c.candidateId,
+            ...(c.url.includes("partiful")
+              ? {
+                  registrationPlatform: "eventbrite",
+                  registrationLinkQuote: "RSVP on Eventbrite",
+                }
+              : {}),
+          };
+        }),
+      };
+    else if (format === "discovery_rank") {
+      const match = input.candidates.find((c) =>
+        c.title.includes(input.goal.type === "hiring" ? "Lab" : "Demos"),
+      );
+      output = {
+        picks: match
+          ? [
+              {
+                candidateId: match.id,
+                reason:
+                  input.goal.type === "hiring"
+                    ? "The TypeScript workshop could help you meet engineers working in your stack."
+                    : "The early-team demos could help you explore founding engineering work.",
+                evidenceQuote: match.description.split("\n")[0],
+                caveat: null,
+              },
+            ]
+          : [],
+      };
+    } else {
+      response.writeHead(400);
+      response.end("{}");
+      return;
+    }
+    response.end(
+      JSON.stringify({
+        id: "resp_discovery_fixture",
+        object: "response",
+        status: "completed",
+        output: [
+          {
+            id: "msg_discovery_fixture",
+            type: "message",
+            role: "assistant",
+            status: "completed",
+            content: [
+              {
+                type: "output_text",
+                text: JSON.stringify(output),
+                annotations: [],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    return;
+  }
   const message = body.input.at(-1).content;
   const draft = JSON.parse(body.input[0].content).currentDraft;
   let reply;
@@ -39,6 +125,11 @@ const server = createServer(async (request, response) => {
       arrival: "2026-10-24",
       departure: "2026-11-05",
     });
+    if (message.includes("DISCOVERY_PROFILE")) {
+      const dates = discoveryDates();
+      draft.arrival = dates.start;
+      draft.departure = dates.end;
+    }
     reply =
       "I've put together a first profile from what you told me. Review it when you're ready, or tell me what to change.";
   } else if (message.includes("Actually, I'm hiring")) {
@@ -79,4 +170,4 @@ const server = createServer(async (request, response) => {
     }),
   );
 });
-server.listen(3101, "127.0.0.1");
+server.listen(Number(process.env.MOCK_OPENAI_PORT ?? 3101), "127.0.0.1");

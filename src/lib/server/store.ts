@@ -1,3 +1,14 @@
+import { Temporal } from "@js-temporal/polyfill";
+import {
+  DISCOVERY_LIMITS,
+  DiscoveryError,
+  discoveryWindow,
+  type Coverage,
+  type DiscoveryRequest,
+  type DiscoveryResult,
+  type DiscoveryRow,
+  type DiscoveryStatus,
+} from "@/lib/domain/event-discovery";
 import { AsyncDatabase, type RemoteDatabaseOptions } from "./database";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { NetworkStore } from "./network-store";
@@ -461,6 +472,235 @@ export class ContextStore {
     if (!session) throw new SessionMissing();
     return session.token_hash;
   }
+  async discoveryCounts(owner: string, revision: number, now: Date) {
+    // Keep the existing operation ledger when pruning discovery snapshots, so
+    // changing revisions cannot reset the rolling per-owner spend limit.
+    return (await this.db
+      .prepare(
+        `SELECT COUNT(*) AS owner,
+      COALESCE(SUM(CASE WHEN payload_hash = ? THEN 1 ELSE 0 END), 0) AS revision
+      FROM runs WHERE session_id = ? AND operation_key LIKE 'discovery:%' AND created_at > ?`,
+      )
+      .get(
+        String(revision),
+        owner,
+        new Date(now.getTime() - DISCOVERY_LIMITS.dayMs).toISOString(),
+      )) as {
+      owner: number;
+      revision: number;
+    };
+  }
+
+  async discoveryDailyUsage(now: Date) {
+    const configured = process.env.DISCOVERY_DAILY_RUN_LIMIT;
+    const limit =
+      configured &&
+      /^\d+$/.test(configured) &&
+      Number.isSafeInteger(Number(configured))
+        ? Number(configured)
+        : 100;
+    const start = Temporal.Instant.from(now.toISOString())
+      .toZonedDateTimeISO("America/Los_Angeles")
+      .startOfDay()
+      .toInstant()
+      .toString({ fractionalSecondDigits: 3 });
+    const { used } = (await this.db
+      .prepare(
+        "SELECT COUNT(*) AS used FROM runs WHERE operation_key LIKE 'discovery:%' AND created_at >= ?",
+      )
+      .get(start)) as {
+      used: number;
+    };
+    return { used, limit, reached: used >= limit };
+  }
+
+  async readDiscovery(
+    token: string | undefined,
+    now: Date,
+  ): Promise<DiscoveryRow | null> {
+    const session = await this.session(token);
+    if (!session) throw new SessionMissing();
+    await this.db
+      .prepare(
+        `UPDATE event_discoveries SET status = 'failed', error_code = 'interrupted', finished_at = ?, lease_expires_at = NULL
+      WHERE owner_id = ? AND status = 'running' AND lease_expires_at <= ?`,
+      )
+      .run(now.toISOString(), session.token_hash, now.getTime());
+    return (
+      ((await this.db
+        .prepare(
+          "SELECT * FROM event_discoveries WHERE owner_id = ? AND profile_revision = ?",
+        )
+        .get(session.token_hash, session.revision)) as
+        | DiscoveryRow
+        | undefined) ?? null
+    );
+  }
+
+  async discoveryCoverage(
+    owner: string,
+    runId: string,
+  ): Promise<Coverage | null> {
+    const row = (await this.db
+      .prepare(
+        "SELECT result_json FROM runs WHERE id = ? AND session_id = ? AND operation_key LIKE 'discovery:%'",
+      )
+      .get(runId, owner)) as
+      | {
+          result_json: string;
+        }
+      | undefined;
+    return row ? (JSON.parse(row.result_json).coverage ?? null) : null;
+  }
+
+  async claimDiscovery(
+    token: string | undefined,
+    request: DiscoveryRequest,
+    now: Date,
+    capacity: boolean,
+  ) {
+    return await this.db
+      .transaction(async () => {
+        const session = await this.session(token);
+        if (!session) throw new SessionMissing();
+        const state = this.state(session);
+        if (!state.context) throw new DiscoveryError("profile_missing");
+        if (request.revision !== state.revision)
+          throw new DiscoveryError("profile_changed");
+        if (!discoveryWindow(state.context, now))
+          throw new DiscoveryError("trip_past");
+        const owner = session.token_hash;
+        const existing = await this.readDiscovery(token, now);
+        const repeated = await this.db
+          .prepare(
+            "SELECT id FROM runs WHERE session_id = ? AND operation_key = ?",
+          )
+          .get(owner, `discovery:${request.requestId}`);
+        if (
+          existing &&
+          (repeated ||
+            existing.status === "running" ||
+            (request.action === "start" && existing.status !== "failed"))
+        )
+          return {
+            claimed: false as const,
+            row: existing,
+            owner,
+            context: state.context,
+          };
+        if (repeated) throw new DiscoveryError("profile_changed");
+        const counts = await this.discoveryCounts(owner, state.revision, now);
+        if ((await this.discoveryDailyUsage(now)).reached)
+          throw new DiscoveryError("daily_limit");
+        if (
+          counts.owner >= DISCOVERY_LIMITS.perOwner ||
+          counts.revision >= DISCOVERY_LIMITS.perRevision
+        )
+          throw new DiscoveryError("refresh_limit");
+        const running = await this.db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM event_discoveries WHERE status = 'running' AND lease_expires_at > ?",
+          )
+          .get(now.getTime());
+        if (!capacity || Number(running?.count) >= DISCOVERY_LIMITS.concurrent)
+          throw new DiscoveryError("busy");
+        const runId = randomUUID();
+        const row: DiscoveryRow = {
+          owner_id: owner,
+          profile_revision: state.revision,
+          status: "running",
+          run_id: runId,
+          attempts: (existing?.attempts ?? 0) + 1,
+          request_id: request.requestId,
+          lease_expires_at: now.getTime() + DISCOVERY_LIMITS.leaseMs,
+          started_at: now.toISOString(),
+          finished_at: null,
+          error_code: null,
+          result_json: existing?.result_json ?? null,
+        };
+        await this.db
+          .prepare(
+            `INSERT INTO event_discoveries (owner_id, profile_revision, status, run_id, attempts, request_id, lease_expires_at, started_at, finished_at, error_code, result_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(owner_id, profile_revision) DO UPDATE SET status=excluded.status, run_id=excluded.run_id, attempts=excluded.attempts,
+          request_id=excluded.request_id, lease_expires_at=excluded.lease_expires_at, started_at=excluded.started_at, finished_at=NULL, error_code=NULL`,
+          )
+          .run(
+            row.owner_id,
+            row.profile_revision,
+            row.status,
+            row.run_id,
+            row.attempts,
+            row.request_id,
+            row.lease_expires_at,
+            row.started_at,
+            row.finished_at,
+            row.error_code,
+            row.result_json,
+          );
+        await this.db
+          .prepare(
+            "INSERT INTO runs (id, session_id, operation_key, payload_hash, result_json, created_at) VALUES (?, ?, ?, ?, '{}', ?)",
+          )
+          .run(
+            runId,
+            owner,
+            `discovery:${request.requestId}`,
+            String(state.revision),
+            now.toISOString(),
+          );
+        await this.db
+          .prepare(
+            `DELETE FROM event_discoveries WHERE owner_id = ? AND profile_revision != ? AND profile_revision !=
+        COALESCE((SELECT MAX(profile_revision) FROM event_discoveries WHERE owner_id = ? AND profile_revision < ?), -1)`,
+          )
+          .run(owner, state.revision, owner, state.revision);
+        return { claimed: true as const, row, owner, context: state.context };
+      })
+      .immediate();
+  }
+
+  async finishDiscovery(
+    owner: string,
+    revision: number,
+    runId: string,
+    status: Exclude<DiscoveryStatus, "running">,
+    result: DiscoveryResult | null,
+    coverage: Coverage,
+    errorCode: string | null,
+    now: Date,
+  ) {
+    return await this.db
+      .transaction(async () => {
+        const changed = (
+          await this.db
+            .prepare(
+              `UPDATE event_discoveries SET status = ?, finished_at = ?, lease_expires_at = NULL, error_code = ?, result_json = COALESCE(?, result_json)
+        WHERE owner_id = ? AND profile_revision = ? AND run_id = ? AND status = 'running'
+        AND EXISTS (SELECT 1 FROM sessions WHERE token_hash = ? AND revision = ?)`,
+            )
+            .run(
+              status,
+              now.toISOString(),
+              errorCode,
+              result ? JSON.stringify(result) : null,
+              owner,
+              revision,
+              runId,
+              owner,
+              revision,
+            )
+        ).changes;
+        if (changed)
+          await this.db
+            .prepare(
+              "UPDATE runs SET result_json = ? WHERE id = ? AND session_id = ?",
+            )
+            .run(JSON.stringify({ coverage }), runId, owner);
+        return changed > 0;
+      })
+      .immediate();
+  }
   async readCalendar(token: string | undefined): Promise<CalendarRecord> {
     const row = (await this.db
       .prepare(
@@ -590,6 +830,11 @@ export class ContextStore {
           .run(nextOwner, owner);
         await this.db
           .prepare("UPDATE runs SET session_id = ? WHERE session_id = ?")
+          .run(nextOwner, owner);
+        await this.db
+          .prepare(
+            "UPDATE event_discoveries SET owner_id = ? WHERE owner_id = ?",
+          )
           .run(nextOwner, owner);
         await this.db
           .prepare(

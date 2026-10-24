@@ -1,0 +1,110 @@
+{
+  "checkedAt": "2026-10-24T23:17:34.426Z",
+  "network": "All application provider fetches restricted to HTTP loopback by test preload; fake credentials only.",
+  "modes": [
+    {
+      "mode": "dev",
+      "postStatus": 202,
+      "responseMs": 8,
+      "observedImmediately": "running",
+      "completedMs": 1886,
+      "finalStatus": "ready",
+      "persistedAfterRestart": true,
+      "disconnectedClientStatus": 202,
+      "completedAfterDisconnect": true,
+      "gracefulShutdownMs": 124,
+      "gracefulShutdownRowStatus": "running",
+      "hardKill": {
+        "beforeExpiry": "running",
+        "afterExpiry": "failed",
+        "errorCode": "interrupted",
+        "realLeaseMs": 90000,
+        "retryStatus": "ready",
+        "attempts": 5
+      },
+      "globalDailyCap": {
+        "status": 429,
+        "code": "daily_limit"
+      },
+      "verifiedBySource": [
+        {
+          "platform": "luma",
+          "status": "ok",
+          "results": 1,
+          "verified": 1
+        },
+        {
+          "platform": "eventbrite",
+          "status": "ok",
+          "results": 1,
+          "verified": 1
+        },
+        {
+          "platform": "partiful",
+          "status": "ok",
+          "results": 1,
+          "verified": 1
+        },
+        {
+          "platform": "web",
+          "status": "ok",
+          "results": 0,
+          "verified": 0
+        }
+      ],
+      "invalidFixtureKeys": 0
+    },
+    {
+      "mode": "start",
+      "postStatus": 202,
+      "responseMs": 6,
+      "observedImmediately": "running",
+      "completedMs": 1864,
+      "finalStatus": "ready",
+      "persistedAfterRestart": true,
+      "disconnectedClientStatus": 202,
+      "completedAfterDisconnect": true,
+      "gracefulShutdownMs": 1825,
+      "gracefulShutdownRowStatus": "ready",
+      "hardKill": {
+        "beforeExpiry": "running",
+        "afterExpiry": "failed",
+        "errorCode": "interrupted",
+        "realLeaseMs": 90000,
+        "retryStatus": "ready",
+        "attempts": 5
+      },
+      "globalDailyCap": {
+        "status": 429,
+        "code": "daily_limit"
+      },
+      "verifiedBySource": [
+        {
+          "platform": "luma",
+          "status": "ok",
+          "results": 1,
+          "verified": 1
+        },
+        {
+          "platform": "eventbrite",
+          "status": "ok",
+          "results": 1,
+          "verified": 1
+        },
+        {
+          "platform": "partiful",
+          "status": "ok",
+          "results": 1,
+          "verified": 1
+        },
+        {
+          "platform": "web",
+          "status": "ok",
+          "results": 0,
+          "verified": 0
+        }
+      ],
+      "invalidFixtureKeys": 0
+    }
+  ]
+}
