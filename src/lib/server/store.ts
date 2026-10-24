@@ -1,8 +1,19 @@
 import Database from "better-sqlite3";
+import { Temporal } from "@js-temporal/polyfill";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { CalendarConnection, CalendarRecord } from "@/lib/domain/calendar";
+import {
+  DISCOVERY_LIMITS,
+  DiscoveryError,
+  discoveryWindow,
+  type Coverage,
+  type DiscoveryRequest,
+  type DiscoveryResult,
+  type DiscoveryRow,
+  type DiscoveryStatus,
+} from "@/lib/domain/discovery";
 import { emailSchema, LOGIN_MAX_AGE, type Account } from "@/lib/domain/auth";
 import {
   contextSchema,
@@ -93,6 +104,21 @@ export class ContextStore {
         created_at TEXT NOT NULL,
         UNIQUE(session_id, operation_key)
       );
+      CREATE TABLE IF NOT EXISTS event_discoveries (
+        owner_id TEXT NOT NULL REFERENCES sessions(token_hash),
+        profile_revision INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        attempts INTEGER NOT NULL,
+        request_id TEXT,
+        lease_expires_at INTEGER,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        error_code TEXT,
+        result_json TEXT,
+        PRIMARY KEY(owner_id, profile_revision)
+      );
+      CREATE INDEX IF NOT EXISTS runs_created_at ON runs(created_at);
       CREATE TABLE IF NOT EXISTS onboarding_chats (
         session_id TEXT PRIMARY KEY REFERENCES sessions(token_hash),
         state_json TEXT NOT NULL
@@ -480,6 +506,201 @@ export class ContextStore {
     return session.token_hash;
   }
 
+  discoveryCounts(owner: string, revision: number, now: Date) {
+    // Keep the existing operation ledger when pruning discovery snapshots, so
+    // changing revisions cannot reset the rolling per-owner spend limit.
+    return this.db
+      .prepare(
+        `SELECT COUNT(*) AS owner,
+      COALESCE(SUM(CASE WHEN payload_hash = ? THEN 1 ELSE 0 END), 0) AS revision
+      FROM runs WHERE session_id = ? AND operation_key LIKE 'discovery:%' AND created_at > ?`,
+      )
+      .get(
+        String(revision),
+        owner,
+        new Date(now.getTime() - DISCOVERY_LIMITS.dayMs).toISOString(),
+      ) as { owner: number; revision: number };
+  }
+
+  discoveryDailyUsage(now: Date) {
+    const configured = process.env.DISCOVERY_DAILY_RUN_LIMIT;
+    const limit =
+      configured &&
+      /^\d+$/.test(configured) &&
+      Number.isSafeInteger(Number(configured))
+        ? Number(configured)
+        : 100;
+    const start = Temporal.Instant.from(now.toISOString())
+      .toZonedDateTimeISO("America/Los_Angeles")
+      .startOfDay()
+      .toInstant()
+      .toString({ fractionalSecondDigits: 3 });
+    const { used } = this.db
+      .prepare(
+        "SELECT COUNT(*) AS used FROM runs WHERE operation_key LIKE 'discovery:%' AND created_at >= ?",
+      )
+      .get(start) as { used: number };
+    return { used, limit, reached: used >= limit };
+  }
+
+  readDiscovery(token: string | undefined, now: Date): DiscoveryRow | null {
+    const session = this.session(token);
+    if (!session) throw new SessionMissing();
+    this.db
+      .prepare(
+        `UPDATE event_discoveries SET status = 'failed', error_code = 'interrupted', finished_at = ?, lease_expires_at = NULL
+      WHERE owner_id = ? AND status = 'running' AND lease_expires_at <= ?`,
+      )
+      .run(now.toISOString(), session.token_hash, now.getTime());
+    return (
+      (this.db
+        .prepare(
+          "SELECT * FROM event_discoveries WHERE owner_id = ? AND profile_revision = ?",
+        )
+        .get(session.token_hash, session.revision) as
+        | DiscoveryRow
+        | undefined) ?? null
+    );
+  }
+
+  discoveryCoverage(owner: string, runId: string): Coverage | null {
+    const row = this.db
+      .prepare(
+        "SELECT result_json FROM runs WHERE id = ? AND session_id = ? AND operation_key LIKE 'discovery:%'",
+      )
+      .get(runId, owner) as { result_json: string } | undefined;
+    return row ? (JSON.parse(row.result_json).coverage ?? null) : null;
+  }
+
+  claimDiscovery(
+    token: string | undefined,
+    request: DiscoveryRequest,
+    now: Date,
+    capacity: boolean,
+  ) {
+    return this.db
+      .transaction(() => {
+        const session = this.session(token);
+        if (!session) throw new SessionMissing();
+        const state = this.state(session);
+        if (!state.context) throw new DiscoveryError("profile_missing");
+        if (request.revision !== state.revision)
+          throw new DiscoveryError("profile_changed");
+        if (!discoveryWindow(state.context, now))
+          throw new DiscoveryError("trip_past");
+        const owner = session.token_hash;
+        const existing = this.readDiscovery(token, now);
+        const repeated = this.db
+          .prepare(
+            "SELECT id FROM runs WHERE session_id = ? AND operation_key = ?",
+          )
+          .get(owner, `discovery:${request.requestId}`);
+        if (
+          existing &&
+          (repeated ||
+            existing.status === "running" ||
+            (request.action === "start" && existing.status !== "failed"))
+        )
+          return {
+            claimed: false as const,
+            row: existing,
+            owner,
+            context: state.context,
+          };
+        if (repeated) throw new DiscoveryError("profile_changed");
+        const counts = this.discoveryCounts(owner, state.revision, now);
+        if (this.discoveryDailyUsage(now).reached)
+          throw new DiscoveryError("daily_limit");
+        if (
+          counts.owner >= DISCOVERY_LIMITS.perOwner ||
+          counts.revision >= DISCOVERY_LIMITS.perRevision
+        )
+          throw new DiscoveryError("refresh_limit");
+        if (!capacity) throw new DiscoveryError("busy");
+        const runId = randomUUID();
+        const row: DiscoveryRow = {
+          owner_id: owner,
+          profile_revision: state.revision,
+          status: "running",
+          run_id: runId,
+          attempts: (existing?.attempts ?? 0) + 1,
+          request_id: request.requestId,
+          lease_expires_at: now.getTime() + DISCOVERY_LIMITS.leaseMs,
+          started_at: now.toISOString(),
+          finished_at: null,
+          error_code: null,
+          result_json: existing?.result_json ?? null,
+        };
+        this.db
+          .prepare(
+            `INSERT INTO event_discoveries (owner_id, profile_revision, status, run_id, attempts, request_id, lease_expires_at, started_at, finished_at, error_code, result_json)
+        VALUES (@owner_id, @profile_revision, @status, @run_id, @attempts, @request_id, @lease_expires_at, @started_at, @finished_at, @error_code, @result_json)
+        ON CONFLICT(owner_id, profile_revision) DO UPDATE SET status=excluded.status, run_id=excluded.run_id, attempts=excluded.attempts,
+          request_id=excluded.request_id, lease_expires_at=excluded.lease_expires_at, started_at=excluded.started_at, finished_at=NULL, error_code=NULL`,
+          )
+          .run(row);
+        this.db
+          .prepare(
+            "INSERT INTO runs (id, session_id, operation_key, payload_hash, result_json, created_at) VALUES (?, ?, ?, ?, '{}', ?)",
+          )
+          .run(
+            runId,
+            owner,
+            `discovery:${request.requestId}`,
+            String(state.revision),
+            now.toISOString(),
+          );
+        this.db
+          .prepare(
+            `DELETE FROM event_discoveries WHERE owner_id = ? AND profile_revision != ? AND profile_revision !=
+        COALESCE((SELECT MAX(profile_revision) FROM event_discoveries WHERE owner_id = ? AND profile_revision < ?), -1)`,
+          )
+          .run(owner, state.revision, owner, state.revision);
+        return { claimed: true as const, row, owner, context: state.context };
+      })
+      .immediate();
+  }
+
+  finishDiscovery(
+    owner: string,
+    revision: number,
+    runId: string,
+    status: Exclude<DiscoveryStatus, "running">,
+    result: DiscoveryResult | null,
+    coverage: Coverage,
+    errorCode: string | null,
+    now: Date,
+  ) {
+    return this.db
+      .transaction(() => {
+        const changed = this.db
+          .prepare(
+            `UPDATE event_discoveries SET status = ?, finished_at = ?, lease_expires_at = NULL, error_code = ?, result_json = COALESCE(?, result_json)
+        WHERE owner_id = ? AND profile_revision = ? AND run_id = ? AND status = 'running'
+        AND EXISTS (SELECT 1 FROM sessions WHERE token_hash = ? AND revision = ?)`,
+          )
+          .run(
+            status,
+            now.toISOString(),
+            errorCode,
+            result ? JSON.stringify(result) : null,
+            owner,
+            revision,
+            runId,
+            owner,
+            revision,
+          ).changes;
+        if (changed)
+          this.db
+            .prepare(
+              "UPDATE runs SET result_json = ? WHERE id = ? AND session_id = ?",
+            )
+            .run(JSON.stringify({ coverage }), runId, owner);
+        return changed > 0;
+      })
+      .immediate();
+  }
+
   readCalendar(token: string | undefined): CalendarRecord {
     const row = this.db
       .prepare(
@@ -610,6 +831,11 @@ export class ContextStore {
           .run(nextOwner, owner);
         this.db
           .prepare("UPDATE runs SET session_id = ? WHERE session_id = ?")
+          .run(nextOwner, owner);
+        this.db
+          .prepare(
+            "UPDATE event_discoveries SET owner_id = ? WHERE owner_id = ?",
+          )
           .run(nextOwner, owner);
         this.db
           .prepare(
