@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Account } from "@/lib/domain/auth";
+import type { AgentDialogue, DialogueAction } from "@/lib/domain/agent-dialogue";
 import type {
   OpportunityView as Opportunity,
   NetworkEvent,
@@ -43,6 +44,7 @@ type NetworkState = {
   opportunities: Opportunity[];
   events: NetworkEvent[];
   meetings: MeetingView[];
+  dialogues: AgentDialogue[];
 };
 type Action = (
   payload: Record<string, unknown>,
@@ -112,6 +114,7 @@ export function Network({ account }: { account: Account }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const inFlight = useRef(false);
+  const refreshSequence = useRef(0);
   const retry = useRef<{ signature: string; requestId: string } | null>(null);
   const goTo = (view: typeof tab, person: string | null = null) => {
     setTab(view);
@@ -126,26 +129,34 @@ export function Network({ account }: { account: Account }) {
 
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
-      const response = await fetch("/api/network", {
-        cache: "no-store",
-        signal,
-        headers: { "X-Sidekick-Account": account.id },
-      });
-      if (response.status === 401) {
-        window.location.replace("/login?next=%2Fnetwork");
-        return;
+      const sequence = ++refreshSequence.current;
+      try {
+        const response = await fetch("/api/network", {
+          cache: "no-store",
+          signal,
+          headers: { "X-Sidekick-Account": account.id },
+        });
+        if (sequence !== refreshSequence.current || signal?.aborted) return;
+        if (response.status === 401) {
+          window.location.replace("/login?next=%2Fnetwork");
+          return;
+        }
+        const result = await response.json();
+        if (sequence !== refreshSequence.current || signal?.aborted) return;
+        if (!response.ok)
+          throw new Error(
+            result.message || "Could not load your network. Try again.",
+          );
+        if (result.accountId !== account.id) {
+          window.location.reload();
+          return;
+        }
+        setState(result);
+        setLoading(false);
+      } catch (problem) {
+        if (sequence !== refreshSequence.current || signal?.aborted) return;
+        throw problem;
       }
-      const result = await response.json();
-      if (!response.ok)
-        throw new Error(
-          result.message || "Could not load your network. Try again.",
-        );
-      if (result.accountId !== account.id) {
-        window.location.reload();
-        return;
-      }
-      setState(result);
-      setLoading(false);
     },
     [account.id],
   );
@@ -179,7 +190,6 @@ export function Network({ account }: { account: Account }) {
       if (document.visibilityState === "visible" && !inFlight.current)
         void refresh(controller.signal).catch(() => {});
     };
-    const interval = setInterval(update, 15000);
     window.addEventListener("focus", update);
     const restoreView = () => {
       const parameters = new URLSearchParams(window.location.search),
@@ -192,15 +202,31 @@ export function Network({ account }: { account: Account }) {
     window.addEventListener("popstate", restoreView);
     return () => {
       controller.abort();
-      clearInterval(interval);
       window.removeEventListener("focus", update);
       window.removeEventListener("popstate", restoreView);
     };
   }, [refresh]);
 
+  const dialogueActive = state?.dialogues?.some((dialogue) =>
+    dialogue.status === "queued" || dialogue.status === "running",
+  ) ?? false;
+  useEffect(() => {
+    const controller = new AbortController();
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible" && !inFlight.current)
+        void refresh(controller.signal).catch(() => {});
+    }, dialogueActive ? 3000 : 15000);
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
+  }, [dialogueActive, refresh]);
+
   const act: Action = async (payload, endpoint = "/api/network") => {
     if (inFlight.current) return false;
     inFlight.current = true;
+    // A delayed poll must not restore state from before this action.
+    refreshSequence.current += 1;
     setBusy(true);
     setError("");
     const signature = JSON.stringify({ endpoint, payload });
@@ -258,6 +284,7 @@ export function Network({ account }: { account: Account }) {
         state.connections,
         state.messages,
         state.meetings,
+        state.dialogues,
       )
     : [];
   const pending = threads.reduce((sum, thread) => sum + thread.needsYou, 0);
@@ -465,7 +492,7 @@ export function Network({ account }: { account: Account }) {
                     />
                   ))}
                 </div>
-                {threads.some((thread) => thread.messages.length > 0) && (
+                {threads.some((thread) => thread.messages.length > 0 || thread.dialogue) && (
                   <section
                     className="recent-agent-section"
                     aria-label="Recent agent activity"
@@ -480,7 +507,7 @@ export function Network({ account }: { account: Account }) {
                       </button>
                     </div>
                     {threads
-                      .filter((thread) => thread.messages.length > 0)
+                      .filter((thread) => thread.messages.length > 0 || thread.dialogue)
                       .slice(0, 2)
                       .map((thread) => (
                         <button
@@ -574,6 +601,20 @@ export function Network({ account }: { account: Account }) {
                     busy={busy}
                   />
                 )}
+                dialogueAction={(dialogue) => (
+                  <DialogueCard
+                    key={`${dialogue.id}:${dialogue.turns[0]?.id ?? ""}:${dialogue.waitingForUserId ?? ""}:${dialogue.question ?? ""}`}
+                    dialogue={dialogue}
+                    accountId={account.id}
+                    act={act}
+                    busy={busy}
+                    reviewSharing={() => {
+                      setSharing(true);
+                      setTools(false);
+                      requestAnimationFrame(() => document.querySelector<HTMLElement>('[aria-label="Discovery and sharing"] select')?.focus());
+                    }}
+                  />
+                )}
                 compose={(thread) => (
                   <div className="thread-compose">
                     <details>
@@ -606,6 +647,76 @@ export function Network({ account }: { account: Account }) {
         )}
       </main>
     </>
+  );
+}
+
+function DialogueCard({
+  dialogue,
+  accountId,
+  act,
+  busy,
+  reviewSharing,
+}: {
+  dialogue: AgentDialogue;
+  accountId: string;
+  act: Action;
+  busy: boolean;
+  reviewSharing: () => void;
+}) {
+  const [answer, setAnswer] = useState("");
+  const ownsQuestion = dialogue.status === "needs_user" && dialogue.waitingForUserId === accountId;
+  const canPause = ["queued", "running", "needs_user"].includes(dialogue.status);
+  const titles: Record<AgentDialogue["status"], string> = {
+    awaiting_profile: dialogue.ownProfileReady ? "Waiting for their profile" : "Confirm your profile to begin",
+    awaiting_sharing: dialogue.ownSharingReady ? "Waiting for their sharing preferences" : "Choose what your Sidekick can share",
+    queued: "Conversation queued",
+    running: "Your Sidekicks are talking",
+    needs_user: ownsQuestion ? "Your Sidekick has a question" : `Waiting for ${dialogue.name.split(" ")[0]}`,
+    completed: dialogue.suggestion ? "Suggested next step" : "Conversation complete",
+    paused: "Conversation paused",
+    error: "The conversation couldn’t continue",
+    revoked: "Conversation access revoked",
+  };
+  const operate = (operation: DialogueAction["operation"], sharedAnswer?: string) =>
+    act({ action: "dialogue", toUserId: dialogue.userId, revision: dialogue.revision, operation, ...(sharedAnswer ? { answer: sharedAnswer } : {}) });
+  return (
+    <section className={`dialogue-status${ownsQuestion ? " needs-answer" : ""}`} aria-label="Agent conversation status">
+      <div className="dialogue-status-heading">
+        <h3 aria-live="polite">{titles[dialogue.status]}</h3>
+        {canPause && <button className="text-button" disabled={busy} onClick={() => void operate("pause")}>Pause conversation</button>}
+      </div>
+      {dialogue.status === "revoked" ? (
+        <p>Previously shared conversation content is hidden.</p>
+      ) : (
+        <>
+          {["awaiting_sharing", "completed", "paused", "error"].includes(dialogue.status) && dialogue.statusDetail && <p>{dialogue.statusDetail}</p>}
+          {dialogue.status === "completed" && dialogue.suggestion && (
+            <p className="dialogue-suggestion">{dialogue.suggestion}</p>
+          )}
+          {dialogue.status === "completed" && dialogue.suggestion && <p className="network-muted">A suggestion only. Meeting times still need approval from both people.</p>}
+          {dialogue.status === "awaiting_profile" && !dialogue.ownProfileReady && <a className="primary-button" href="/onboarding">Review and confirm profile</a>}
+          {dialogue.status === "awaiting_sharing" && !dialogue.ownSharingReady && <button className="primary-button" onClick={reviewSharing}>Review sharing preferences</button>}
+          {ownsQuestion && dialogue.question && (
+            <form onSubmit={(event) => {
+              event.preventDefault();
+              void operate("answer", answer.trim()).then((saved) => { if (saved) setAnswer(""); });
+            }}>
+              <label>
+                {dialogue.question}
+                <textarea value={answer} maxLength={2000} required onChange={(event) => setAnswer(event.target.value)} />
+              </label>
+              <p className="network-muted">Your answer will be shared with {dialogue.name} and their Sidekick in this conversation.</p>
+              <div className="network-actions">
+                <button className="primary-button" disabled={busy || !answer.trim()}>Share answer and continue</button>
+                <button type="button" className="text-button" disabled={busy} onClick={() => void operate("decline")}>Decline to answer</button>
+              </div>
+            </form>
+          )}
+          {dialogue.status === "paused" && dialogue.pausedByUserId === accountId && <button className="primary-button" disabled={busy} onClick={() => void operate("resume")}>Resume conversation</button>}
+          {dialogue.status === "error" && <button className="primary-button" disabled={busy} onClick={() => void operate("retry")}>Retry conversation</button>}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -971,7 +1082,7 @@ function OpportunityCard({
                 action: "connect",
                 toUserId: opportunity.userId,
                 source: "opportunity",
-                context: opportunity.benefits.them,
+                context: "Sidekick suggested exploring a connection based on your shared profiles.",
               })
             }
           >
@@ -1022,7 +1133,7 @@ function ConnectionCard({
                 : "Request sent"}
         </span>
       </div>
-      {connection.context && <p>{connection.context}</p>}
+      {connection.context && <p>{connection.source === "opportunity" ? "Sidekick suggested exploring a connection based on your shared profiles." : connection.context}</p>}
       <p className="network-muted">
         {connection.source === "qr"
           ? "Met through a QR connection"
@@ -1033,8 +1144,8 @@ function ConnectionCard({
         connection.direction === "incoming" && (
           <>
             <p className="network-muted">
-              Your agents can use the information you allow connections to see
-              to find opportunities.
+              Your agents can talk after you accept and both profiles are
+              confirmed, using only the information you share.
             </p>
             <div className="network-actions">
               <button

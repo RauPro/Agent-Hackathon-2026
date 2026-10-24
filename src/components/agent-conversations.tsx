@@ -3,6 +3,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import type { AgentMessage, ConnectionView } from "@/lib/domain/network";
 import type { MeetingView, MeetingActivityEntry } from "@/lib/domain/meetings";
+import type { AgentDialogue } from "@/lib/domain/agent-dialogue";
 
 export type AgentThread = {
   userId: string;
@@ -10,6 +11,7 @@ export type AgentThread = {
   connection?: ConnectionView;
   messages: AgentMessage[];
   meetings: MeetingView[];
+  dialogue?: AgentDialogue;
   updatedAt: string;
   needsYou: number;
 };
@@ -19,6 +21,7 @@ export function conversationThreads(
   connections: ConnectionView[],
   messages: AgentMessage[],
   meetings: MeetingView[],
+  dialogues: AgentDialogue[] = [],
 ): AgentThread[] {
   const threads = new Map<string, AgentThread>();
   const ensure = (userId: string, name: string) => {
@@ -72,6 +75,16 @@ export function conversationThreads(
       thread.needsYou += 1;
     touch(thread, meeting.activity?.at(-1)?.at ?? meeting.createdAt);
   }
+  for (const dialogue of dialogues) {
+    const thread = ensure(dialogue.userId, dialogue.name);
+    thread.dialogue = dialogue;
+    if (
+      (dialogue.status === "needs_user" && dialogue.waitingForUserId === accountId) ||
+      (dialogue.status === "awaiting_profile" && !dialogue.ownProfileReady) ||
+      (dialogue.status === "awaiting_sharing" && !dialogue.ownSharingReady)
+    ) thread.needsYou += 1;
+    touch(thread, dialogue.updatedAt);
+  }
   return [...threads.values()].sort(
     (a, b) =>
       b.updatedAt.localeCompare(a.updatedAt) || a.name.localeCompare(b.name),
@@ -110,6 +123,13 @@ function stamp(at: string, compact = false) {
 }
 
 function preview(thread: AgentThread, accountId: string) {
+  const dialogue = thread.dialogue;
+  if (dialogue?.status === "awaiting_profile")
+    return dialogue.ownProfileReady ? "Waiting for their profile confirmation" : "Confirm your profile to begin";
+  if (dialogue?.status === "awaiting_sharing")
+    return dialogue.ownSharingReady ? "Waiting for their sharing preferences" : "Review what your agent can share";
+  if (dialogue?.status === "needs_user")
+    return dialogue.waitingForUserId === accountId ? "Your Sidekick has a question" : `Waiting for ${thread.name.split(" ")[0]}`;
   if (thread.needsYou)
     return thread.needsYou === 1
       ? "Your approval is needed"
@@ -120,6 +140,12 @@ function preview(thread: AgentThread, accountId: string) {
       thread.connection?.status !== "accepted")
   )
     return "Connection access revoked";
+  if (dialogue?.status === "revoked") return "Conversation access revoked";
+  if (dialogue?.status === "queued" || dialogue?.status === "running")
+    return "Your Sidekicks are exploring the connection";
+  if (dialogue?.status === "paused") return "Conversation paused";
+  if (dialogue?.status === "error") return "Conversation needs a retry";
+  if (dialogue?.status === "completed") return dialogue.suggestion ?? "Conversation complete";
   const message = [...thread.messages].sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt),
   )[0];
@@ -129,7 +155,7 @@ function preview(thread: AgentThread, accountId: string) {
     return "Meeting agreed";
   if (message?.status === "completed")
     return "Shared context is ready to review";
-  return message?.purpose ?? "Connected · ready to collaborate";
+  return message?.purpose ?? "Waiting for profile and sharing checks";
 }
 
 const meetingLabels: Record<MeetingActivityEntry["kind"], string> = {
@@ -156,6 +182,7 @@ export function AgentConversations({
   response,
   messageAction,
   meetingAction,
+  dialogueAction,
   compose,
 }: {
   accountId: string;
@@ -166,6 +193,7 @@ export function AgentConversations({
   response: (value: AgentMessage["response"]) => ReactNode;
   messageAction: (message: AgentMessage) => ReactNode;
   meetingAction: (meeting: MeetingView) => ReactNode;
+  dialogueAction: (dialogue: AgentDialogue) => ReactNode;
   compose: (thread: AgentThread) => ReactNode;
 }) {
   const selected = threads.find((thread) => thread.userId === selectedId);
@@ -181,8 +209,8 @@ export function AgentConversations({
         </span>
         <h2>No agent conversations yet</h2>
         <p>
-          Connect with someone to let your Sidekicks explore an opportunity
-          together.
+          Discovery proposes connections. Your agents talk after you connect
+          and both profiles are confirmed.
         </p>
         <button className="primary-button" onClick={seePeople}>
           Find your people
@@ -267,6 +295,7 @@ export function AgentConversations({
                 accountId={accountId}
                 response={response}
               />
+              {selected.dialogue && dialogueAction(selected.dialogue)}
               {selected.messages
                 .filter(
                   (message) =>
@@ -316,6 +345,31 @@ function ThreadHistory({
       : id === thread.userId
         ? `${thread.name.split(" ")[0]}’s Sidekick`
         : "Sidekick";
+  if (thread.dialogue?.status !== "revoked") {
+    for (const turn of thread.dialogue?.turns ?? []) {
+      const own = turn.actorUserId === accountId;
+      entries.push({
+        id: turn.id,
+        at: turn.at,
+        item: (
+          <div className={`agent-exchange ${own ? "from-own" : "from-peer"}`}>
+            <div className="exchange-meta">
+              <strong>
+                {turn.kind === "user" ? (own ? "You" : thread.name) : agentName(turn.actorUserId)}
+              </strong>
+              <time dateTime={turn.at} title={`${stamp(turn.at)} SF time`}>
+                {stamp(turn.at)}
+              </time>
+            </div>
+            <div className="exchange-bubble">
+              {turn.kind === "user" && <span className="exchange-kind">Shared answer</span>}
+              <p className="dialogue-turn">{turn.text}</p>
+            </div>
+          </div>
+        ),
+      });
+    }
+  }
   for (const message of thread.messages) {
     for (const entry of message.activity ?? []) {
       const own = entry.actorUserId === accountId;
@@ -433,14 +487,15 @@ function ThreadHistory({
         ),
       });
   }
+  if (!entries.length && thread.dialogue) return null;
   if (!entries.length)
     return (
       <div className="thread-welcome">
         <PersonAvatar name="Sidekick" agent />
-        <h3>Your Sidekicks are connected</h3>
+        <h3>No exchange yet</h3>
         <p>
-          Ask about an opportunity or coordinate a meeting with{" "}
-          {thread.name.split(" ")[0]}.
+          Your Sidekicks can begin once both profiles are confirmed and
+          profile information is shared with connections.
         </p>
       </div>
     );

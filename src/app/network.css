@@ -831,6 +831,49 @@
   max-width: 330px;
   margin: 0 auto;
 }
+.network-layout .dialogue-turn {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dialogue-status {
+  border-top: 1px solid var(--line);
+  margin-top: 22px;
+  padding-top: 18px;
+}
+.dialogue-status-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  flex-wrap: wrap;
+}
+.dialogue-status h3 {
+  font-size: 16px;
+  margin: 0;
+}
+.network-layout .dialogue-status p {
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.dialogue-status form {
+  margin-top: 20px;
+}
+.dialogue-status.needs-answer {
+  padding: 20px;
+  border: 1px solid #e5d8b8;
+  border-radius: 12px;
+  background: #fff9eb;
+}
+.network-layout .dialogue-suggestion {
+  font-size: 16px;
+  color: var(--ink);
+}
+.dialogue-status a.primary-button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
 .thread-compose {
   border: 1px solid var(--line);
   border-radius: 12px;

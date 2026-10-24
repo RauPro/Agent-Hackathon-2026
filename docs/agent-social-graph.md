@@ -2,9 +2,9 @@
 
 ## Architecture decision
 
-Keep one Next.js Node application and the existing SQLite database on durable disk. Reuse `users.id` as person identity and derive `agent:<userId>`; no agent process or agent table per person. Reuse the existing authenticated sessions, confirmed `sessions.context_json`, context revision, encryption and Google free/busy adapter. Keep onboarding unchanged apart from enqueueing discovery after a confirmed change and linking to the network screen.
+Keep one Next.js Node application and the existing async database adapter: SQLite locally, durable Turso/libSQL on Vercel. Reuse `users.id` as person identity and derive `agent:<userId>`; no agent process or agent table per person. Reuse the existing account sessions, confirmed `sessions.context_json`, context revision, encryption and Google free/busy adapter. Keep onboarding unchanged apart from enqueueing work after a confirmed change and linking to the network screen.
 
-The new network store shares the existing SQLite connection. A deterministic matching function and a typed request dispatcher are the agent runtime for this slice. They do not require a model call or another API key. OpenAI remains the onboarding provider.
+The network store shares the existing database adapter. Deterministic discovery ranks proposals without contacting anyone. Accepted connections with confirmed, permitted profiles use one shared OpenAI runtime for alternating conversations. The existing model and API key are reused. Manual typed information queries and human-approved meeting actions remain available.
 
 ## Existing and missing components
 
@@ -16,7 +16,7 @@ The new network store shares the existing SQLite connection. A deterministic mat
 | Relationships | Add one canonical connection per pair, directional blocks, explicit request/accept and meeting context.                                    |
 | Permissions   | Add discovery opt-in and private/friends/network visibility for profile, goal, trip and shared events.                                     |
 | Requests      | Persist typed agent requests and responses, recipient questions, expiry, correlation and idempotency.                                      |
-| Discovery     | Add a coalescing SQLite queue and an in-process periodic drain. No Redis, cron service or external agent framework.                        |
+| Discovery     | Reuse the coalescing database queue, local timer, Next.js after callbacks and authenticated Vercel cron. No Redis or external agent framework. |
 | Inbox         | Derive from opportunities, connection requests, agent requests and meetings. No separate notification table.                               |
 | Events        | No provider exists. Add only explicitly shared user-reported attendance and isolated demo fixtures.                                        |
 | Places        | No provider exists. Accept a proposed public meeting place and map link. Do not claim venue verification, proximity or travel feasibility. |
@@ -27,6 +27,7 @@ The new network store shares the existing SQLite connection. A deterministic mat
 - `network_settings`: one row per user, discovery consent, per-field visibility, optional approximate area, revision and revocable random QR identifier. A QR is a name lookup and request link, never an authentication credential.
 - `connections`: unique sorted pair, requester, state, per-side blocks, context and timestamps. Both directions refer to this same record.
 - `agent_messages`: sender/recipient user IDs, derived agent IDs, type, correlation ID, typed fields and purpose, status, response, creation/expiry and sender request key.
+- `agent_dialogues`: one canonical row per accepted pair, current permission fingerprint, revision, processing status and bounded current-round turns. Reuses database leases, user identity, permission projections and the existing worker; no separate service or queue.
 - `network_events`: owner, title, public URL if supplied, start/end, approximate area, visibility and evidence mode. Attendance is explicitly user-reported, never inferred from calendar contents.
 - `network_opportunities`: unique canonical pair, profile/settings/event signature, score, reciprocal reasons, signals, overlap, state and per-side dismissals. At most three current recommendations are shown.
 - `network_jobs`: coalesced user/version work. Matching executes in short database transactions; a failed attempt retains work for retry.
@@ -42,9 +43,11 @@ Accepted connection and no block are required for agent queries. Discovery uses 
 
 Profile fields are projected by allowlist. Never share account email, private location, raw context, conversation draft, private commitments, calendar names/IDs/contents, raw busy intervals or provider credentials. Availability coordination discloses common candidate slots only after both people permit it for that proposal.
 
+Connected, confirmed people automatically enter a model-backed round when each shares experience or goal with the other. The model receives only authorized projections for both people and the current shared transcript. Its typed output is a message, a continuation/own-user-question/completion decision, and an optional proposed next step. Server-derived identity alternates speakers; the model cannot dispatch requests, grant permission or schedule meetings. Normal rounds have four to six agent turns. A user question pauses processing until the represented person explicitly shares an answer or declines; either participant can pause, and only the pausing person can resume. Shared-context changes discard the prior generated round and its one-time answers. Manual typed queries retain their existing expiry and projection behavior.
+
 ## Triggers and duplicate prevention
 
-Enqueue on confirmed profile/goal/trip changes, discovery or visibility changes, connection acceptance/removal and explicitly shared attendance changes. A single Node timer drains bounded queued work, also after relevant HTTP mutations; startup recovers queued work. This requires the documented always-running single Node deployment and durable disk. It is not push delivery when the application is stopped. The UI refreshes its in-app inbox while open.
+Enqueue on confirmed profile/goal/trip changes, discovery or visibility changes, connection acceptance/removal and explicitly shared attendance changes. Relevant HTTP responses use Next.js `after()`; local Node uses a 30-second timer, and Vercel uses authenticated minutely cron with durable Turso storage. Network reads also reconcile existing accepted connections. Each drain compares at most five pairs and advances up to two dialogue turns. Per-pair leases and revision checks fence model work outside transactions. The UI polls active conversations every three seconds and other inbox states every 15 seconds.
 
 Canonical pairs, source signatures, active opportunity reuse and persistent dismissals prevent repeated recommendations. A context change recomputes or invalidates an existing opportunity rather than inserting another notification. Requests have sender-scoped request IDs with payload comparison, expiry and rate limits; repeated approval is idempotent. Profile/settings changes make stale proposals unusable.
 
