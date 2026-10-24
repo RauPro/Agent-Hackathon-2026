@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { NetworkStore } from "./network-store";
 import type { CalendarConnection, CalendarRecord } from "@/lib/domain/calendar";
 import { emailSchema, LOGIN_MAX_AGE, type Account } from "@/lib/domain/auth";
 import {
@@ -68,6 +69,7 @@ const hash = (value: string) =>
 
 export class ContextStore {
   private db: Database.Database;
+  readonly network: NetworkStore;
 
   constructor(path: string) {
     if (path !== ":memory:")
@@ -137,6 +139,7 @@ export class ContextStore {
       this.db.exec(
         "ALTER TABLE calendar_oauth_states ADD COLUMN browser_token_hash TEXT",
       );
+    this.network = new NetworkStore(this.db);
   }
 
   private session(token: string | undefined): SessionRow | undefined {
@@ -340,6 +343,12 @@ export class ContextStore {
             "UPDATE sessions SET context_json = ?, revision = ?, confirmed_at = ? WHERE token_hash = ?",
           )
           .run(serialized, revision, confirmedAt, current.token_hash);
+        if (!unchanged) {
+          const user = this.db
+            .prepare("SELECT id FROM users WHERE profile_id = ?")
+            .get(current.token_hash) as { id: string } | undefined;
+          if (user) this.network.enqueue(user.id);
+        }
         this.db
           .prepare(
             "INSERT INTO runs (id, session_id, operation_key, payload_hash, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
