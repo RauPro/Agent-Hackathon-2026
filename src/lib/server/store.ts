@@ -26,19 +26,42 @@ type SessionRow = {
   confirmed_at: string | null;
 };
 export class ContextConflict extends Error {
+  readonly kind = "context_conflict";
   constructor(
     public code: "stale_revision" | "request_reused" | "profile_changed",
   ) {
     super(code);
   }
 }
-export class SessionMissing extends Error {}
-export class AccountConflict extends Error {}
-export class AuthRateLimit extends Error {}
+export class SessionMissing extends Error {
+  readonly kind = "session_missing";
+}
+export class AccountConflict extends Error {
+  readonly kind = "account_conflict";
+}
+export class AuthRateLimit extends Error {
+  readonly kind = "auth_rate_limit";
+}
 export class CalendarConflict extends Error {
+  readonly kind = "calendar_conflict";
   constructor(public code: "invalid_state" | "calendar_changed") {
     super(code);
   }
+}
+type StoreErrors = {
+  context_conflict: ContextConflict;
+  session_missing: SessionMissing;
+  account_conflict: AccountConflict;
+  auth_rate_limit: AuthRateLimit;
+  calendar_conflict: CalendarConflict;
+};
+// Next's page and route bundles can hold different class constructors while
+// sharing the same SQLite store. Use stable tags at that boundary.
+export function isStoreError<K extends keyof StoreErrors>(
+  error: unknown,
+  kind: K,
+): error is StoreErrors[K] {
+  return error instanceof Error && "kind" in error && error.kind === kind;
 }
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");

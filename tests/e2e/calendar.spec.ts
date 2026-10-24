@@ -1,5 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 import { join } from "node:path";
+import { register } from "./auth-helper";
+
+test.beforeEach(async ({ page, request }) => {
+  await register(request);
+  await page.context().addCookies((await request.storageState()).cookies);
+});
 
 const origin = "http://127.0.0.1:3100";
 const intro =
@@ -236,6 +242,7 @@ test("calendar endpoints reject foreign origins, forged choices, and OAuth state
   expect(started.headers()["set-cookie"]).toContain("SameSite=lax");
   const state = new URL((await started.json()).url).searchParams.get("state");
   const other = await playwright.request.newContext({ baseURL: origin });
+  await register(other);
   await other.get("/api/onboarding");
   const rejected = await other.get(
     `/api/calendar/callback?state=${state}&code=fake`,

@@ -20,6 +20,10 @@ export async function POST(request: NextRequest) {
       403,
     );
   try {
+    getStore().requireAccount(
+      request.cookies.get(SESSION_COOKIE)?.value,
+      request.headers.get("x-sidekick-account"),
+    );
     const config = googleCalendarConfig();
     if (!config) throw new CalendarError("not_configured");
     if (request.headers.get("origin") !== config.origin)

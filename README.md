@@ -2,7 +2,13 @@
 
 A mobile-first web app that turns a visitor's goal in San Francisco into relevant people, useful conversations, and a daily plan. See the [product and implementation plan](SF-Sidekick-Implementation-Plan.md) for the full scope.
 
-## Current phase: chat onboarding and Google Calendar
+## Current phase: email accounts, chat onboarding, and Google Calendar
+
+New visitors register with email and password before onboarding. Returning users sign in to the same account from any browser. Email is normalized for uniqueness, while a stable user ID owns the saved profile, conversation, and calendar connection. Sign-out revokes that browser's session without deleting the account or its progress. The header shows the signed-in email.
+
+Registration does not prove ownership of an email address: new accounts explicitly remain **Email unverified**. Email verification and password recovery require a separate implementation and are not available yet. Do not use unverified addresses for introductions or participant identity checks. No email provider or extra API key is required for this phase.
+
+The first registration in an existing anonymous browser preserves its stored draft, confirmed profile, and calendar connection. The old anonymous cookie loses access immediately. Signing in to an existing account restores that account's own data and does not merge anonymous content. The database migration adds account/session tables and one OAuth binding column; it does not delete existing profiles.
 
 The onboarding uses a single text input. OpenAI extracts relevant details from the conversation, maintains a structured draft, and asks one focused follow-up question when needed. Users review the draft and select **Confirm profile** before it becomes their saved context.
 
@@ -18,7 +24,7 @@ Conversation drafts and confirmed profiles are stored separately in SQLite. Relo
 
 The calendar card starts a real Google OAuth flow, shows the connected account, and checks busy times. The primary calendar is included by default; users can include other calendars containing their commitments. Each selected calendar must return a successful free/busy result. Checks cover inclusive trip dates in San Francisco time and expire after five minutes. The open page rechecks on date/profile changes, focus, reconnecting to the network, and once a minute when visible. This is a foreground availability check, not background event mirroring.
 
-Event discovery, ranking, cross-device participant login, introductions, registration, and calendar writes are future phases. Profile confirmation and read-only calendar consent do not authorize those actions. Future scheduling must recheck both participants' availability immediately before booking, apply their meeting preferences, and require both participants' consent. A calendar without busy events does not establish willingness to meet.
+Event discovery, ranking, introductions, event registration, and calendar writes are future phases. Profile confirmation and read-only calendar consent do not authorize those actions. Future scheduling must recheck both participants' availability immediately before booking, apply their meeting preferences, and require both participants' consent. A calendar without busy events does not establish willingness to meet.
 
 ## Run locally
 
@@ -28,13 +34,23 @@ npm ci
 npm run dev
 ```
 
-Open http://127.0.0.1:3000. Use Node 22.13 or later; development and checks used Node 26. The server listens only on loopback.
+Open http://127.0.0.1:3000. New visitors land at `/register`, returning users can use `/login`, and authenticated users continue to `/onboarding`. Old `/es` and `/?onboarding=1` links lead through the same account gate. Use Node 22.13 or later; development and checks used Node 26. The server listens only on loopback.
 
 Add `OPENAI_API_KEY` to `.env.local`, then restart the server. `OPENAI_MODEL` defaults to `gpt-5.4-mini`. Keep the key server-side; never use a `NEXT_PUBLIC_` prefix. Without a key, the UI shows that OpenAI is disconnected and does not simulate replies.
 
 The integration uses the official OpenAI SDK, Responses API, structured output, and Zod, with `store: false`. See [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs). Conversations are sent to OpenAI for extraction and response generation.
 
-`DATABASE_PATH` defaults to `./data/sidekick.sqlite`. Run one Node instance with a persistent writable disk. Local SQLite is unsuitable for ephemeral function storage. Browser sessions use HttpOnly cookies and isolated server data. Google connections store a verified Google subject and email for the current browser profile; account recovery, merging profiles across browsers, and deduplicating actors during matching are not implemented yet.
+`DATABASE_PATH` defaults to `./data/sidekick.sqlite`. Run one Node instance with a persistent writable disk. Local SQLite is unsuitable for ephemeral function storage. Google connections store a verified Google subject and Google email under the registered account's persistent profile. The Google email may differ from the registration email; connecting it does not silently merge accounts or verify the registration email. Deduplicating actors during matching remains future work.
+
+### Account storage and access
+
+`users` stores the stable user ID, unique normalized email, salted password hash, verification state, and profile reference. The legacy `sessions` table retains the profile data; `auth_sessions` holds revocable browser logins. Chat, operation history, and encrypted calendar tokens remain attached to the stable profile when a browser signs in, signs out, or completes OAuth. A successful Google connection rotates only the initiating login cookie.
+
+Passwords use Node's asynchronous scrypt with a random 16-byte salt, `N=131072`, `r=8`, and `p=1`. Passwords allow 15–128 characters at registration, preserve whitespace, and support password managers. Random 32-byte login tokens are hashed in SQLite and sent only in HttpOnly, SameSite=Lax cookies (Secure over HTTPS). The server enforces a 30-day expiry; logout invalidates the token immediately. See [Node scrypt](https://nodejs.org/api/crypto.html#cryptoscryptpassword-salt-keylen-options-callback) and [OWASP password storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
+
+All personal API routes require an authenticated account, independently of page redirects. Browser requests include an expected account ID to reject stale-tab writes after switching accounts; ownership always comes from the server session. State-changing requests verify Origin. Login failures use the same message for an unknown email and an incorrect password. SQLite tracks a conservative limit of ten attempts per email and 200 total attempts per 15 minutes, and the process runs at most two password hashes at once. Successful authentication clears that email's counter. A public deployment needs HTTPS and an appropriate trusted-proxy/IP abuse policy in addition to these MVP limits.
+
+`GET /api/auth` returns the current account or null. `POST /api/auth` accepts `register`, `login`, or `logout`; responses never include password hashes or raw login tokens. No email address or user ID supplied by a client grants access to another account.
 
 ### Configure Google Calendar
 
@@ -95,8 +111,15 @@ Live evidence, using fictional profiles in isolated sessions:
 | Session rotation preserves chat/profile and invalidates the old cookie | Service and browser checks |
 | A late sync cannot restore a disconnected calendar | Concurrent service check |
 | Calendar selection and connection survive reload | Browser check |
+| Registration precedes onboarding, including legacy URLs | Page and API browser checks |
+| Duplicate normalized emails cannot replace an account | Service and browser checks |
+| Sign-in restores the same profile/calendar in another browser | Service and browser checks |
+| Sign-out and session expiry revoke access without deleting progress | Service and API checks |
+| Existing anonymous data is preserved only on first registration | Migration and service checks |
+| Stale account requests cannot modify the newly signed-in account | API check |
+| Passwords are salted, sessions are revocable, and guessing is throttled | Service and API checks |
 
-`GET /api/onboarding` returns the conversation and connection status. `POST /api/onboarding` accepts `message`, `confirm`, or `reload_saved`; clients cannot supply another session identity or a model draft. `GET /api/state` and `POST /api/context` expose confirmed context. Personal responses disable shared caching.
+`GET /api/onboarding` returns the account, conversation, and connection status. `POST /api/onboarding` accepts `message`, `confirm`, or `reload_saved`; clients cannot supply another session identity or a model draft. `GET /api/state` and `POST /api/context` expose confirmed context. Personal responses disable shared caching.
 
 `onboarding_chats` stores the draft and transcript. `runs` records accepted operations and their results. The model has no tools to send introductions, book meetings, or confirm a profile.
 

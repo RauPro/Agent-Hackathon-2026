@@ -1,5 +1,7 @@
-import { Onboarding } from "@/components/onboarding";
+import { redirect } from "next/navigation";
+import { currentAccount } from "@/lib/server/current-account";
 
-export default function Page() {
-  return <Onboarding />;
+export const dynamic = "force-dynamic";
+export default async function Page() {
+  redirect((await currentAccount()) ? "/onboarding" : "/register");
 }

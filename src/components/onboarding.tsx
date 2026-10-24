@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 import {
   validateDraft,
   type ChatRequest,
@@ -8,28 +14,12 @@ import {
 } from "@/lib/domain/onboarding-chat";
 import { ProfilePreview } from "./profile-preview";
 import { CalendarConnect } from "./calendar-connect";
+import { Brand, Mark } from "./brand";
+import { AccountMenu } from "./account-menu";
+import type { Account } from "@/lib/domain/auth";
 
-function Mark({ small = false }: { small?: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 32 32"
-      width={small ? 28 : 32}
-      height={small ? 28 : 32}
-      fill="none"
-      aria-hidden="true"
-    >
-      <rect width="32" height="32" rx="10" fill="currentColor" />
-      <path
-        d="M9 21V11m14 10V11M6 15h20M9 12c3 7 11 7 14 0M13 16v5m6-5v5M6 23h20"
-        stroke="#f8fbf5"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-export function Onboarding() {
+export function Onboarding({ account }: { account: Account }) {
+  const inputKey = `onboarding-unsent-${account.id}`;
   const [chat, setChat] = useState<ChatState | null>(null);
   const [configured, setConfigured] = useState(false);
   const [input, setInput] = useState("");
@@ -44,26 +34,38 @@ export function Onboarding() {
   const inFlight = useRef(false);
   const retry = useRef<{ signature: string; requestId: string } | null>(null);
 
-  function acceptState(state: { chat: ChatState; configured: boolean }) {
-    setChat(state.chat);
-    setConfigured(state.configured);
-    setLoading(false);
-    setNotice("");
-    setProblem("");
-  }
+  const acceptState = useCallback(
+    (state: { chat: ChatState; configured: boolean; account: Account }) => {
+      if (state.account.id !== account.id) {
+        window.location.replace("/onboarding");
+        return;
+      }
+      setChat(state.chat);
+      setConfigured(state.configured);
+      setLoading(false);
+      setNotice("");
+      setProblem("");
+    },
+    [account.id],
+  );
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/onboarding", { cache: "no-store", signal: controller.signal })
+    fetch("/api/onboarding", {
+      cache: "no-store",
+      signal: controller.signal,
+      headers: { "X-Sidekick-Account": account.id },
+    })
       .then((response) => {
+        if (response.status === 401) window.location.replace("/login");
         if (!response.ok) throw new Error();
         return response.json();
       })
       .then(acceptState)
       .then(() => {
-        const savedInput = sessionStorage.getItem("onboarding-unsent-message");
+        const savedInput = sessionStorage.getItem(inputKey);
         if (savedInput) {
           setInput(savedInput);
-          sessionStorage.removeItem("onboarding-unsent-message");
+          sessionStorage.removeItem(inputKey);
         }
       })
       .catch((error: unknown) => {
@@ -72,11 +74,15 @@ export function Onboarding() {
         setNotice("Could not open your conversation.");
       });
     return () => controller.abort();
-  }, []);
+  }, [account.id, inputKey, acceptState]);
 
   async function reconnect() {
     try {
-      const response = await fetch("/api/onboarding", { cache: "no-store" });
+      const response = await fetch("/api/onboarding", {
+        cache: "no-store",
+        headers: { "X-Sidekick-Account": account.id },
+      });
+      if (response.status === 401) window.location.replace("/login");
       if (!response.ok) throw new Error();
       acceptState(await response.json());
       retry.current = null;
@@ -122,13 +128,20 @@ export function Onboarding() {
     try {
       const response = await fetch("/api/onboarding", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Sidekick-Account": account.id,
+        },
         body: JSON.stringify({
           ...payload,
           requestId: retry.current.requestId,
         }),
       });
       const result = await response.json();
+      if (response.status === 401) {
+        window.location.replace("/login");
+        return;
+      }
       if (!response.ok) {
         setNotice(result.message || "Could not get a reply. Try again.");
         setProblem(result.code || "unavailable");
@@ -172,16 +185,8 @@ export function Onboarding() {
         Skip to conversation
       </a>
       <header className="site-header">
-        <div className="brand">
-          <Mark />
-          <span>
-            SF <strong>Sidekick</strong>
-          </span>
-        </div>
-        <span className="city-label">
-          <span className="location-dot" />
-          San Francisco
-        </span>
+        <Brand />
+        <AccountMenu account={account} disabled={!!busy} />
       </header>
       <main className="chat-layout">
         <section
@@ -206,11 +211,10 @@ export function Onboarding() {
           ) : (
             <>
               <CalendarConnect
+                accountId={account.id}
                 chatRevision={chat.revision}
                 disabled={!!busy}
-                beforeConnect={() =>
-                  sessionStorage.setItem("onboarding-unsent-message", input)
-                }
+                beforeConnect={() => sessionStorage.setItem(inputKey, input)}
               />
               <div
                 className="chat-messages"

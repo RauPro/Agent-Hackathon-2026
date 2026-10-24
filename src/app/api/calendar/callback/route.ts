@@ -1,3 +1,5 @@
+import { isStoreError, getStore } from "@/lib/server/store";
+
 import { NextRequest, NextResponse } from "next/server";
 import { calendarFailure } from "@/lib/server/calendar-http";
 import { finishCalendarConnection } from "@/lib/server/calendar-service";
@@ -6,7 +8,6 @@ import {
   googleCalendarConfig,
 } from "@/lib/server/google-calendar";
 import { SESSION_COOKIE } from "@/lib/server/http";
-import { CalendarConflict, getStore } from "@/lib/server/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,9 +15,13 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   const config = googleCalendarConfig();
   if (!config) return calendarFailure(new CalendarError("not_configured"));
-  const target = new URL("/?onboarding=1", config.origin);
+  const target = new URL("/onboarding", config.origin);
   let token: string | undefined;
   try {
+    getStore().requireAccount(
+      request.cookies.get(SESSION_COOKIE)?.value,
+      request.headers.get("x-sidekick-account"),
+    );
     token = await finishCalendarConnection(
       getStore(),
       request.cookies.get(SESSION_COOKIE)?.value,
@@ -26,7 +31,7 @@ export async function GET(request: NextRequest) {
     );
   } catch (error) {
     const code =
-      error instanceof CalendarError || error instanceof CalendarConflict
+      error instanceof CalendarError || isStoreError(error, "calendar_conflict")
         ? error.code
         : "sync_failed";
     target.searchParams.set("calendar", code);

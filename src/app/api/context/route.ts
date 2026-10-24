@@ -1,6 +1,8 @@
+import { isStoreError, getStore } from "@/lib/server/store";
+
 import { NextRequest } from "next/server";
 import { fieldErrors, saveContextSchema } from "@/lib/domain/context";
-import { ContextConflict, getStore, SessionMissing } from "@/lib/server/store";
+
 import { json, readJson, sameOrigin, SESSION_COOKIE } from "@/lib/server/http";
 
 export const runtime = "nodejs";
@@ -51,11 +53,15 @@ export async function POST(request: NextRequest) {
       400,
     );
   try {
+    getStore().requireAccount(
+      request.cookies.get(SESSION_COOKIE)?.value,
+      request.headers.get("x-sidekick-account"),
+    );
     return json(
       getStore().save(request.cookies.get(SESSION_COOKIE)?.value, parsed.data),
     );
   } catch (error) {
-    if (error instanceof SessionMissing)
+    if (isStoreError(error, "session_missing"))
       return json(
         {
           code: "session_missing",
@@ -64,7 +70,7 @@ export async function POST(request: NextRequest) {
         },
         401,
       );
-    if (error instanceof ContextConflict)
+    if (isStoreError(error, "context_conflict"))
       return json(
         {
           code: error.code,

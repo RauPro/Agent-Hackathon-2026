@@ -3,8 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { CalendarStatus } from "@/lib/domain/calendar";
 
-async function readStatus(): Promise<CalendarStatus> {
-  const response = await fetch("/api/calendar", { cache: "no-store" });
+async function readStatus(accountId: string): Promise<CalendarStatus> {
+  const response = await fetch("/api/calendar", {
+    cache: "no-store",
+    headers: { "X-Sidekick-Account": accountId },
+  });
+  if (response.status === 401) window.location.replace("/login");
   const result = await response.json();
   if (!response.ok)
     throw new Error(
@@ -12,12 +16,16 @@ async function readStatus(): Promise<CalendarStatus> {
     );
   return result;
 }
-async function post(action: unknown) {
+async function post(action: unknown, accountId: string) {
   const response = await fetch("/api/calendar", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Sidekick-Account": accountId,
+    },
     body: JSON.stringify(action),
   });
+  if (response.status === 401) window.location.replace("/login");
   const result = await response.json();
   if (!response.ok)
     throw new Error(result.message || "Could not check calendar availability.");
@@ -36,10 +44,12 @@ function dates(status: CalendarStatus) {
 }
 
 export function CalendarConnect({
+  accountId,
   chatRevision,
   disabled,
   beforeConnect,
 }: {
+  accountId: string;
   chatRevision: number;
   disabled: boolean;
   beforeConnect: () => void;
@@ -62,7 +72,7 @@ export function CalendarConnect({
       lock.current = true;
       if (active) setBusy(true);
       try {
-        let next = await readStatus();
+        let next = await readStatus(accountId);
         let synced = false;
         if (active) setStatus(next);
         if (
@@ -73,7 +83,7 @@ export function CalendarConnect({
           next.status !== "needs_reconnect"
         ) {
           if (active) setBusy(true);
-          next = await post({ action: "sync" });
+          next = await post({ action: "sync" }, accountId);
           synced = true;
         }
         if (active) {
@@ -111,7 +121,7 @@ export function CalendarConnect({
               : "Could not check calendar availability.",
           );
           try {
-            setStatus(await readStatus());
+            setStatus(await readStatus(accountId));
           } catch {
             setStatus(null);
           }
@@ -138,7 +148,7 @@ export function CalendarConnect({
       window.removeEventListener("focus", visibleRefresh);
       window.removeEventListener("online", visibleRefresh);
     };
-  }, [chatRevision, refreshKey]);
+  }, [chatRevision, refreshKey, accountId]);
 
   async function act(
     action: "sync" | "disconnect" | "select",
@@ -165,6 +175,7 @@ export function CalendarConnect({
               revision: status.revision,
               ...(action === "select" ? { calendarIds } : {}),
             },
+        accountId,
       );
       setStatus(next);
       if (next.revoked === false)
@@ -190,7 +201,11 @@ export function CalendarConnect({
     setBusy(true);
     setNotice("");
     try {
-      const response = await fetch("/api/calendar/connect", { method: "POST" });
+      const response = await fetch("/api/calendar/connect", {
+        method: "POST",
+        headers: { "X-Sidekick-Account": accountId },
+      });
+      if (response.status === 401) window.location.replace("/login");
       const result = await response.json();
       if (!response.ok)
         throw new Error(result.message || "Could not connect Google Calendar.");

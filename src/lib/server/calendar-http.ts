@@ -1,12 +1,12 @@
+import { isStoreError } from "./store";
 import { CalendarError } from "./google-calendar";
-import { CalendarConflict, SessionMissing } from "./store";
 import { json } from "./http";
 
 export function calendarFailure(error: unknown) {
   const code =
-    error instanceof CalendarError || error instanceof CalendarConflict
+    error instanceof CalendarError || isStoreError(error, "calendar_conflict")
       ? error.code
-      : error instanceof SessionMissing
+      : isStoreError(error, "session_missing")
         ? "session_missing"
         : "sync_failed";
   const messages: Record<string, string> = {

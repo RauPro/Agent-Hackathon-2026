@@ -1,8 +1,10 @@
+import { isStoreError, getStore } from "@/lib/server/store";
+
 import { NextRequest } from "next/server";
 import { calendarStatus } from "@/lib/server/calendar-service";
 import { chatRequestSchema } from "@/lib/domain/onboarding-chat";
 import { json, readJson, sameOrigin, SESSION_COOKIE } from "@/lib/server/http";
-import { ContextConflict, getStore, SessionMissing } from "@/lib/server/store";
+
 import {
   AssistantError,
   assistantConfigured,
@@ -19,24 +21,24 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   try {
     const store = getStore();
-    const session = store.ensureSession(
-      request.cookies.get(SESSION_COOKIE)?.value,
+    const token = request.cookies.get(SESSION_COOKIE)?.value;
+    const account = store.requireAccount(
+      token,
+      request.headers.get("x-sidekick-account"),
     );
     const response = json({
-      chat: store.readChat(session.token),
+      chat: store.readChat(token),
       configured: assistantConfigured(),
-      calendar: calendarStatus(store, session.token),
+      calendar: calendarStatus(store, token),
+      account,
     });
-    if (session.created)
-      response.cookies.set(SESSION_COOKIE, session.token, {
-        httpOnly: true,
-        sameSite: "strict",
-        secure: request.nextUrl.protocol === "https:",
-        path: "/",
-        maxAge: 60 * 60 * 24 * 30,
-      });
     return response;
-  } catch {
+  } catch (error) {
+    if (isStoreError(error, "session_missing"))
+      return json(
+        { code: "session_missing", message: "Sign in to continue onboarding." },
+        401,
+      );
     return json(
       {
         code: "unavailable",
@@ -88,6 +90,10 @@ export async function POST(request: NextRequest) {
       400,
     );
   try {
+    getStore().requireAccount(
+      request.cookies.get(SESSION_COOKIE)?.value,
+      request.headers.get("x-sidekick-account"),
+    );
     return json(
       await handleChat(
         getStore(),
@@ -96,7 +102,7 @@ export async function POST(request: NextRequest) {
       ),
     );
   } catch (error) {
-    if (error instanceof SessionMissing)
+    if (isStoreError(error, "session_missing"))
       return json(
         {
           code: "session_missing",
@@ -104,7 +110,7 @@ export async function POST(request: NextRequest) {
         },
         401,
       );
-    if (error instanceof ContextConflict)
+    if (isStoreError(error, "context_conflict"))
       return json(
         {
           code: error.code,

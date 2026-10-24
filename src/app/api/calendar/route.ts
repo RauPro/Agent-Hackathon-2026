@@ -15,6 +15,10 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
+    getStore().requireAccount(
+      request.cookies.get(SESSION_COOKIE)?.value,
+      request.headers.get("x-sidekick-account"),
+    );
     return json(
       calendarStatus(getStore(), request.cookies.get(SESSION_COOKIE)?.value),
     );
@@ -55,6 +59,7 @@ export async function POST(request: NextRequest) {
   const store = getStore(),
     token = request.cookies.get(SESSION_COOKIE)?.value;
   try {
+    store.requireAccount(token, request.headers.get("x-sidekick-account"));
     const input = parsed.data;
     if (input.action === "sync") return json(await syncCalendar(store, token));
     if (input.action === "select")

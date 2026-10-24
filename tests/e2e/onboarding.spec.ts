@@ -1,6 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
 import { join } from "node:path";
 import { validContext } from "../fixtures";
+import { register } from "./auth-helper";
+
+test.beforeEach(async ({ page, request }) => {
+  await register(request);
+  await page.context().addCookies((await request.storageState()).cookies);
+});
 
 const origin = "http://127.0.0.1:3100";
 const intro =
@@ -83,6 +89,7 @@ test("reflows at 320px and desktop; a reload restores messages and an unconfirme
 }) => {
   for (const width of [320, 1280]) {
     await page.context().clearCookies();
+    await register(page.request);
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/");
     await expect(
@@ -240,7 +247,7 @@ test("API rejects origin, forged state, and oversized input; sessions remain iso
 }) => {
   const opened = await request.get("/api/onboarding");
   expect(opened.headers()["cache-control"]).toContain("no-store");
-  expect(opened.headers()["set-cookie"]).toContain("HttpOnly");
+  expect(opened.headers()["set-cookie"]).toBeUndefined();
   const body = {
     action: "message",
     revision: 0,
@@ -277,6 +284,7 @@ test("API rejects origin, forged state, and oversized input; sessions remain iso
     ).status(),
   ).toBe(200);
   const second = await playwright.request.newContext({ baseURL: origin });
+  await register(second);
   expect(
     (await (await second.get("/api/onboarding")).json()).chat.draft.name,
   ).toBe("");
