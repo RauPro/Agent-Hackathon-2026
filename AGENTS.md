@@ -1,3 +1,10 @@
+# Project rules
+
+## ENGLISH ONLY
+
+- All project-authored text must be English: UI copy, assistant replies and prompts, validation and error messages, documentation, code comments, test fixtures, and commit messages.
+- Do not add Spanish text. When editing existing project copy, replace Spanish with English.
+
 <!-- BEGIN:nextjs-agent-rules -->
 
 ## This is NOT the Next.js you know
