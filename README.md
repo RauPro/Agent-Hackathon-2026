@@ -214,6 +214,8 @@ Three focused skills live in `.agents/skills`. Load the skill relevant to the wo
 
 Codex discovers these project-local skills automatically. They can also be invoked explicitly, for example: “Use $sf-sidekick-mobile-first to build the opportunity screen.” See [skill discovery](https://learn.chatgpt.com/docs/customization/overview#skills).
 
+The reusable `harvey-mobile-ui` skill is installed at `~/.codex/skills/harvey-mobile-ui/SKILL.md` and governs this project's visual treatment through `AGENTS.md`. It adapts the neutral workspace, editorial display typography and restrained controls seen in [Harvey's public product reference](https://www.harvey.ai/platform/agents), while preserving Sidekick's identity and mobile-first flows. Shared color, typography and corner tokens live in `src/app/globals.css`; no external font or UI dependency is required.
+
 The Vercel skill is copied unchanged from [`vercel-labs/agent-skills` at `063bee94c3f4df8453406c830b0a7df0f2860278`](https://github.com/vercel-labs/agent-skills/blob/063bee94c3f4df8453406c830b0a7df0f2860278/skills/web-design-guidelines/SKILL.md), retrieved on 2026-10-24. The upstream repository declares [MIT licensing](https://github.com/vercel-labs/agent-skills/blob/063bee94c3f4df8453406c830b0a7df0f2860278/README.md#license). Its review rules are fetched at use time, so those rules are not pinned. In Codex, use the available web-fetch tool for its `WebFetch` step; disclose unavailable rules if the fetch fails.
 
 These skills add instructions only; they introduce no application dependencies or services.

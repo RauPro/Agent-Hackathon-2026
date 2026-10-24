@@ -5,6 +5,11 @@
 - All project-authored text must be English: UI copy, assistant replies and prompts, validation and error messages, documentation, code comments, test fixtures, and commit messages.
 - Do not add Spanish text. When editing existing project copy, replace Spanish with English.
 
+## Visual UI
+
+- Apply the `harvey-mobile-ui` skill for visual changes: restrained neutral surfaces, editorial page headings, and mobile-first controls. Its reusable source is installed at `~/.codex/skills/harvey-mobile-ui/SKILL.md`; the application's shared tokens live in `src/app/globals.css`.
+- Keep the shared Chat/Network header and main-chat agent panel consistent. Preserve profile confirmation, sharing permissions, actual agent activity, draft persistence, and approval states when restyling.
+
 <!-- BEGIN:nextjs-agent-rules -->
 
 ## This is NOT the Next.js you know
