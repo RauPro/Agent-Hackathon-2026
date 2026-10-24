@@ -161,6 +161,145 @@ afterEach(() => {
 });
 
 describe("bilateral meeting agreements", () => {
+  it("persists an ordered factual history and makes consent and approval retries idempotent", async () => {
+    const input = {
+      toUserId: b.account.id,
+      requestId: randomUUID(),
+      purpose: "Discuss technical opportunities",
+      location: "Ferry Building, main entrance",
+    };
+    let value = service.propose(a.account.id, input);
+    const createdAt = value.createdAt;
+    const initial = value.activity;
+    vi.setSystemTime(Date.now() + 1000);
+    expect(service.propose(a.account.id, input).activity).toEqual(initial);
+    const consent = {
+      meetingId: value.id,
+      revision: value.revision,
+      manualSlots: manual,
+    };
+    value = await service.optIn(a.account.id, consent);
+    const firstConsent = value;
+    vi.setSystemTime(Date.now() + 1000);
+    expect(await service.optIn(a.account.id, consent)).toEqual(firstConsent);
+    value = await service.optIn(b.account.id, {
+      ...consent,
+      revision: value.revision,
+    });
+    const ready = value;
+    expect(await service.optIn(a.account.id, consent)).toEqual(ready);
+    vi.setSystemTime(Date.now() + 1000);
+    const approval = {
+      meetingId: value.id,
+      revision: value.revision,
+      optionId: value.options[0].id,
+    };
+    value = await service.approve(a.account.id, approval);
+    expect(await service.approve(a.account.id, approval)).toEqual(value);
+    vi.setSystemTime(Date.now() + 1000);
+    value = await service.approve(b.account.id, {
+      ...approval,
+      revision: value.revision,
+      optionId: value.options[1].id,
+    });
+    vi.setSystemTime(Date.now() + 1000);
+    const finalApproval = {
+      ...approval,
+      revision: value.revision,
+      optionId: value.options[1].id,
+    };
+    value = await service.approve(a.account.id, finalApproval);
+    expect(value.activity.map((entry) => entry.kind)).toEqual([
+      "proposed",
+      "availability_consented",
+      "availability_consented",
+      "options_ready",
+      "option_approved",
+      "option_counterproposed",
+      "option_approved",
+      "confirmed",
+    ]);
+    expect(value.activity.map((entry) => entry.actorUserId)).toEqual([
+      a.account.id,
+      a.account.id,
+      b.account.id,
+      undefined,
+      a.account.id,
+      b.account.id,
+      a.account.id,
+      undefined,
+    ]);
+    expect(value.activity[0].at).toBe(createdAt);
+    const times = value.activity.map((entry) => entry.at);
+    expect(times).toEqual([...times].sort());
+    expect(new Set(value.activity.map((entry) => entry.id)).size).toBe(8);
+    expect(JSON.stringify(value.activity)).not.toMatch(
+      /manualSlots|calendar|T16:00/,
+    );
+    vi.setSystemTime(Date.now() + 1000);
+    expect(await service.approve(a.account.id, finalApproval)).toEqual(value);
+    store.close();
+    store = new ContextStore(dbPath);
+    service = new MeetingService(store);
+    expect(service.list(b.account.id)[0].activity).toEqual(value.activity);
+  });
+
+  it("keeps revoked history as action metadata without exposing the old meeting options", async () => {
+    let value = await options();
+    const optionId = value.options[0].id;
+    value = await service.approve(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      optionId,
+    });
+    store.network.connectionAction(b.account.id, a.account.id, "block");
+    vi.setSystemTime(Date.now() + 1000);
+    value = service.list(a.account.id)[0];
+    expect(value.activity.at(-1)).toMatchObject({ kind: "stale" });
+    expect(
+      value.activity.some((entry) => entry.kind === "option_approved"),
+    ).toBe(true);
+    expect(value.options).toEqual([]);
+    expect(JSON.stringify(value.activity)).not.toContain(optionId);
+    expect(value.activity.every((entry) => !entry.optionId)).toBe(true);
+    vi.setSystemTime(Date.now() + 1000);
+    expect(service.list(a.account.id)[0].activity).toEqual(value.activity);
+    expect(service.list(outsider.account.id)).toEqual([]);
+  });
+
+  it("does not invent response times for older records without activity", async () => {
+    let value = await options();
+    const row = store.network.db
+      .prepare("SELECT state_json FROM meetings WHERE id = ?")
+      .get(value.id) as { state_json: string };
+    const record = JSON.parse(row.state_json);
+    delete record.activity;
+    store.network.db
+      .prepare("UPDATE meetings SET state_json = ? WHERE id = ?")
+      .run(JSON.stringify(record), value.id);
+    vi.setSystemTime(Date.now() + 1000);
+    value = service.list(a.account.id)[0];
+    expect(value.activity).toEqual([
+      {
+        id: `${value.id}:proposed`,
+        at: value.createdAt,
+        kind: "proposed",
+        actorUserId: a.account.id,
+      },
+    ]);
+    const withdrawal = { meetingId: value.id, revision: value.revision };
+    value = service.withdraw(b.account.id, withdrawal);
+    expect(value.activity.map((entry) => entry.kind)).toEqual([
+      "proposed",
+      "withdrawn",
+    ]);
+    expect(value.activity[1].at).toBe(new Date().toISOString());
+    vi.setSystemTime(Date.now() + 1000);
+    expect(service.withdraw(b.account.id, withdrawal).activity).toEqual(
+      value.activity,
+    );
+  });
+
   it("requires both availability consents and both approvals; exports without sending an invitation", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
@@ -359,10 +498,19 @@ describe("bilateral meeting agreements", () => {
     expect(service.list(a.account.id)[0].status).toBe("stale");
     const fresh = propose();
     vi.setSystemTime(Date.now() + 48 * 3600000 + 1);
+    const expired = service
+      .list(a.account.id)
+      .find((meeting) => meeting.id === fresh.id)!;
+    expect(expired.status).toBe("expired");
+    expect(expired.activity.map((entry) => entry.kind)).toEqual([
+      "proposed",
+      "expired",
+    ]);
+    expect(expired.activity.at(-1)?.at).toBe(new Date().toISOString());
     expect(
       service.list(a.account.id).find((meeting) => meeting.id === fresh.id)
-        ?.status,
-    ).toBe("expired");
+        ?.activity,
+    ).toEqual(expired.activity);
   });
 
   it("uses preferences and additional commitments, and never treats missing manual times as free", async () => {
@@ -477,6 +625,14 @@ describe("bilateral meeting agreements", () => {
     expect(other.options).toEqual([]);
     expect(other.status).toBe("awaiting_permission");
     expect(other.error).toContain("No common time");
+    expect(other.activity.at(-1)?.kind).toBe("no_common_time");
+    const history = other.activity;
+    other = await service.optIn(b.account.id, {
+      meetingId: other.id,
+      revision: other.revision,
+      manualSlots: later,
+    });
+    expect(other.activity).toEqual(history);
   });
 
   it("does not confirm overlapping meetings even when both proposals previously offered that time", async () => {
@@ -606,6 +762,21 @@ describe("fresh calendar coordination", () => {
     expect(value.options).toEqual([]);
     expect(value.calendarStatus).toBe("not_ready");
     expect(value.error).toContain("could not be checked");
+    expect(value.activity.map((entry) => entry.kind)).toEqual([
+      "proposed",
+      "availability_consented",
+      "availability_consented",
+      "availability_failed",
+    ]);
+    const history = value.activity;
+    vi.setSystemTime(Date.now() + 1000);
+    await expect(
+      service.optIn(b.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      }),
+    ).rejects.toMatchObject({ code: "calendar_unavailable" });
+    expect(service.list(a.account.id)[0].activity).toEqual(history);
   });
 
   it("rejects a calendar disconnected during an in-flight check", async () => {

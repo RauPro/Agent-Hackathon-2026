@@ -18,6 +18,7 @@ import {
   meetingOptInSchema,
   meetingRevisionSchema,
   proposeMeetingSchema,
+  type MeetingActivityEntry,
   type MeetingOption,
   type MeetingSlot,
   type MeetingStatus,
@@ -55,6 +56,7 @@ type MeetingRecord = {
   availabilitySource: MeetingView["availabilitySource"];
   checkedAt: string | null;
   createdAt: string;
+  activity?: MeetingActivityEntry[];
   expiresAt: string;
   error: string | null;
 };
@@ -190,6 +192,39 @@ export class MeetingService {
     if (result.changes !== 1) throw new MeetingError("meeting_changed");
     return next;
   }
+  private activity(value: MeetingRecord): MeetingActivityEntry[] {
+    // Older records only have a reliable proposal timestamp.
+    return (
+      value.activity ?? [
+        {
+          id: `${value.id}:proposed`,
+          at: value.createdAt,
+          kind: "proposed",
+          actorUserId: value.initiatorId,
+        },
+      ]
+    );
+  }
+  private withActivity(
+    value: MeetingRecord,
+    entry: Omit<MeetingActivityEntry, "id" | "at">,
+  ): MeetingRecord {
+    const activity = this.activity(value);
+    const previous = activity.at(-1);
+    // Repeated failed checks describe the same unresolved state.
+    if (
+      ["availability_failed", "no_common_time"].includes(entry.kind) &&
+      previous?.kind === entry.kind
+    )
+      return { ...value, activity };
+    return {
+      ...value,
+      activity: [
+        ...activity,
+        { ...entry, id: randomUUID(), at: new Date().toISOString() },
+      ],
+    };
+  }
   private current(value: MeetingRecord) {
     this.relationship(...value.participants);
     if (
@@ -255,23 +290,37 @@ export class MeetingService {
             ? "expired"
             : "stale";
         value = this.save(
-          {
-            ...value,
-            status,
-            options: [],
-            approvals: {},
-            selectedOptionId: null,
-            error:
-              status === "expired"
-                ? "This proposal expired. Start a new one."
-                : "The profile or relationship changed. Start a new proposal.",
-          },
+          this.withActivity(
+            {
+              ...value,
+              status,
+              options: [],
+              approvals: {},
+              selectedOptionId: null,
+              error:
+                status === "expired"
+                  ? "This proposal expired. Start a new one."
+                  : "The profile or relationship changed. Start a new proposal.",
+            },
+            { kind: status },
+          ),
           value.revision,
         );
       }
     }
     return {
       id: value.id,
+      createdAt: value.createdAt,
+      activity: this.activity(value).map((entry) => {
+        if (
+          !entry.optionId ||
+          value.options.some((option) => option.id === entry.optionId)
+        )
+          return entry;
+        const metadata = { ...entry };
+        delete metadata.optionId;
+        return metadata;
+      }),
       revision: value.revision,
       initiatorId: value.initiatorId,
       participants: value.participants.map((id) => ({
@@ -346,7 +395,7 @@ export class MeetingService {
         if (count.n >= 10) throw new MeetingError("rate_limit");
         const participants: [string, string] = [actorId, input.toUserId];
         const profiles = participants.map((id) => this.context(id));
-        const value: MeetingRecord = {
+        let value: MeetingRecord = {
           id: randomUUID(),
           revision: 1,
           initiatorId: actorId,
@@ -376,6 +425,7 @@ export class MeetingService {
           expiresAt: new Date(Date.now() + 48 * 3600000).toISOString(),
           error: null,
         };
+        value = { ...value, activity: this.activity(value) };
         this.db
           .prepare(
             "INSERT INTO meetings (id, initiator_id, first_user_id, second_user_id, request_id, payload_hash, revision, state_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -401,7 +451,8 @@ export class MeetingService {
     const input = meetingOptInSchema.parse(raw);
     const value = this.db
       .transaction(() => {
-        const current = this.writable(actorId, input.meetingId, input.revision);
+        const current = this.read(actorId, input.meetingId);
+        this.current(current);
         const calendar = this.calendar(actorId);
         if (calendar.connection && input.manualSlots)
           throw new MeetingError("manual_not_allowed");
@@ -416,6 +467,15 @@ export class MeetingService {
           : (input.manualSlots ??
             current.consents[actorId]?.manualSlots ??
             null);
+        if (
+          current.consents[actorId] &&
+          JSON.stringify(current.consents[actorId].manualSlots) ===
+            JSON.stringify(manual) &&
+          (liveStatuses.includes(current.status) ||
+            current.status === "confirmed")
+        )
+          return current;
+        this.writable(actorId, input.meetingId, input.revision);
         if (manual) {
           const trip = this.context(actorId).context.trip;
           const limits = calendarWindow(trip.start, trip.end)!;
@@ -430,22 +490,30 @@ export class MeetingService {
             throw new MeetingError("invalid_manual_slots");
         }
         return this.save(
-          {
-            ...current,
-            status: "awaiting_permission",
-            consents: {
-              ...current.consents,
-              [actorId]: { at: new Date().toISOString(), manualSlots: manual },
+          this.withActivity(
+            {
+              ...current,
+              status: "awaiting_permission",
+              consents: {
+                ...current.consents,
+                [actorId]: {
+                  at: new Date().toISOString(),
+                  manualSlots: manual,
+                },
+              },
+              options: [],
+              selectedOptionId: null,
+              approvals: {},
+              error: null,
             },
-            options: [],
-            selectedOptionId: null,
-            approvals: {},
-            error: null,
-          },
+            { kind: "availability_consented", actorUserId: actorId },
+          ),
           current.revision,
         );
       })
       .immediate();
+    if (value.status === "options_ready" || value.status === "confirmed")
+      return this.view(actorId, value);
     if (value.participants.every((id) => value.consents[id])) {
       try {
         const available = await this.availability(value);
@@ -455,22 +523,31 @@ export class MeetingService {
             this.validateCoverage(current, available.coverages);
             if (!available.options.length)
               return this.save(
-                {
-                  ...current,
-                  error:
-                    "No common time was found in the next 14 days of your overlapping stays.",
-                },
+                this.withActivity(
+                  {
+                    ...current,
+                    error:
+                      "No common time was found in the next 14 days of your overlapping stays.",
+                  },
+                  { kind: "no_common_time" },
+                ),
                 current.revision,
               );
             return this.save(
-              {
-                ...current,
-                status: "options_ready",
-                options: available.options,
-                availabilitySource: available.source,
-                checkedAt: new Date().toISOString(),
-                error: null,
-              },
+              this.withActivity(
+                {
+                  ...current,
+                  status: "options_ready",
+                  options: available.options,
+                  availabilitySource: available.source,
+                  checkedAt: new Date().toISOString(),
+                  error: null,
+                },
+                {
+                  kind: "options_ready",
+                  optionCount: available.options.length,
+                },
+              ),
               current.revision,
             );
           })
@@ -487,20 +564,23 @@ export class MeetingService {
     const current = this.read(actorId, value.id);
     if (current.revision !== value.revision) return;
     this.save(
-      {
-        ...current,
-        status: "awaiting_permission",
-        options: [],
-        selectedOptionId: null,
-        approvals: {},
-        error:
-          error instanceof MeetingError && error.code === "no_slots"
-            ? "Your upcoming stays do not overlap. Update your trip dates before proposing another meeting."
-            : error instanceof MeetingError &&
-                error.code === "availability_changed"
-              ? "Availability changed. Check for another time."
-              : "Availability could not be checked. Reconnect your calendar or try again.",
-      },
+      this.withActivity(
+        {
+          ...current,
+          status: "awaiting_permission",
+          options: [],
+          selectedOptionId: null,
+          approvals: {},
+          error:
+            error instanceof MeetingError && error.code === "no_slots"
+              ? "Your upcoming stays do not overlap. Update your trip dates before proposing another meeting."
+              : error instanceof MeetingError &&
+                  error.code === "availability_changed"
+                ? "Availability changed. Check for another time."
+                : "Availability could not be checked. Reconnect your calendar or try again.",
+        },
+        { kind: "availability_failed" },
+      ),
       current.revision,
     );
   }
@@ -721,11 +801,22 @@ export class MeetingService {
               ? {}
               : current.approvals;
           return this.save(
-            {
-              ...current,
-              selectedOptionId: input.optionId,
-              approvals: { ...approvals, [actorId]: input.optionId },
-            },
+            this.withActivity(
+              {
+                ...current,
+                selectedOptionId: input.optionId,
+                approvals: { ...approvals, [actorId]: input.optionId },
+              },
+              {
+                kind:
+                  current.selectedOptionId &&
+                  current.selectedOptionId !== input.optionId
+                    ? "option_counterproposed"
+                    : "option_approved",
+                actorUserId: actorId,
+                optionId: input.optionId,
+              },
+            ),
             current.revision,
           );
         })
@@ -755,13 +846,16 @@ export class MeetingService {
           )
             throw new MeetingError("availability_changed");
           return this.save(
-            {
-              ...current,
-              status: "confirmed",
-              checkedAt: new Date().toISOString(),
-              availabilitySource: available.source,
-              error: null,
-            },
+            this.withActivity(
+              {
+                ...current,
+                status: "confirmed",
+                checkedAt: new Date().toISOString(),
+                availabilitySource: available.source,
+                error: null,
+              },
+              { kind: "confirmed", optionId: input.optionId },
+            ),
             current.revision,
           );
         })
@@ -784,15 +878,18 @@ export class MeetingService {
         if (value.revision !== input.revision)
           throw new MeetingError("meeting_changed");
         return this.save(
-          {
-            ...value,
-            status: "withdrawn",
-            consents: {},
-            approvals: {},
-            options: [],
-            selectedOptionId: null,
-            error: null,
-          },
+          this.withActivity(
+            {
+              ...value,
+              status: "withdrawn",
+              consents: {},
+              approvals: {},
+              options: [],
+              selectedOptionId: null,
+              error: null,
+            },
+            { kind: "withdrawn", actorUserId: actorId },
+          ),
           value.revision,
         );
       })

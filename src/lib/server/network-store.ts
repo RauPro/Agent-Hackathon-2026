@@ -6,6 +6,7 @@ import {
   informationAnswerSchema,
   informationRequestSchema,
   networkSettingsSchema,
+  type AgentActivityEntry,
   type AgentMessage,
   type ConnectionAction,
   type ConnectionRequest,
@@ -493,18 +494,76 @@ export class NetworkStore {
       .get(id) as MessageRow | undefined;
   }
 
+  private savedActivity(message: AgentMessage): AgentActivityEntry[] {
+    // Older records have no response timestamp. Preserve only their known request.
+    return (
+      message.activity ?? [
+        {
+          id: `${message.id}:request`,
+          at: message.createdAt,
+          actorUserId: message.fromUserId,
+          kind: "request",
+          fields: message.fields,
+        },
+      ]
+    );
+  }
+
+  private visibleActivity(
+    message: AgentMessage,
+    accessible: boolean,
+  ): AgentActivityEntry[] {
+    const revision = accessible
+      ? this.settings(message.toUserId).revision
+      : null;
+    const visibleEventIds =
+      accessible && this.canSee(message.fromUserId, message.toUserId, "events")
+        ? new Set(
+            (
+              this.sharedEvents?.(message.toUserId, message.fromUserId) ?? []
+            ).map((event) => event.id),
+          )
+        : new Set<string>();
+    return this.savedActivity(message).map((entry) => {
+      if (!entry.response) return { ...entry };
+      const response: AgentMessage["response"] = {};
+      for (const field of message.fields) {
+        const snapshot = entry.response[field];
+        if (!snapshot) continue;
+        const allowed =
+          accessible &&
+          (snapshot.source === "user_answer"
+            ? entry.shareRevision === revision
+            : this.canSee(message.fromUserId, message.toUserId, field));
+        if (allowed && field === "events" && Array.isArray(snapshot.value)) {
+          const events = snapshot.value.filter((event) =>
+            visibleEventIds.has(event.id),
+          );
+          response[field] = events.length
+            ? { ...snapshot, value: events }
+            : { status: "not_shared" };
+        } else response[field] = allowed ? snapshot : { status: "not_shared" };
+      }
+      return { ...entry, response };
+    });
+  }
+
   private renderMessage(viewerId: string, row: MessageRow): AgentMessage {
     if (![row.from_user_id, row.to_user_id].includes(viewerId))
       throw new NetworkError("not_found", 404);
     const saved = JSON.parse(row.message_json) as AgentMessage;
-    const result = { ...saved, response: {} as AgentMessage["response"] };
-    if (
+    const revoked =
       saved.status === "revoked" ||
-      !this.isConnected(row.from_user_id, row.to_user_id)
-    )
-      return { ...result, status: "revoked" };
-    if (Date.parse(saved.expiresAt) <= Date.now())
-      return { ...result, status: "expired" };
+      !this.isConnected(row.from_user_id, row.to_user_id);
+    const expired = Date.parse(saved.expiresAt) <= Date.now();
+    const result: AgentMessage = {
+      ...saved,
+      trigger: saved.trigger ?? "user",
+      activity: this.visibleActivity(saved, !revoked && !expired),
+      response: {},
+    };
+    if (revoked) return { ...result, status: "revoked" };
+    if (expired) return { ...result, status: "expired" };
     const projected = this.project(row.from_user_id, row.to_user_id);
     const settings = this.settings(row.to_user_id);
     const answers =
@@ -553,7 +612,11 @@ export class NetworkStore {
     return rows.map((row) => this.renderMessage(userId, row));
   }
 
-  requestInformation(userId: string, input: InformationRequest): AgentMessage {
+  requestInformation(
+    userId: string,
+    input: InformationRequest,
+    options: { trigger: AgentMessage["trigger"] } = { trigger: "user" },
+  ): AgentMessage {
     const parsed = informationRequestSchema.parse(input);
     this.requireUser(userId);
     const payloadHash = digest(
@@ -603,10 +666,20 @@ export class NetworkStore {
           senderName: this.name(userId),
           recipientName: this.name(parsed.toUserId),
           type: "PROFILE_QUERY",
+          trigger: options.trigger,
           fields: parsed.fields,
           purpose: parsed.purpose,
           status: "needs_user",
           response: {},
+          activity: [
+            {
+              id: randomUUID(),
+              at: new Date(now).toISOString(),
+              actorUserId: userId,
+              kind: "request",
+              fields: parsed.fields,
+            },
+          ],
           createdAt: new Date(now).toISOString(),
           expiresAt: new Date(now + 7 * 86400000).toISOString(),
         };
@@ -625,6 +698,31 @@ export class NetworkStore {
             message.createdAt,
           );
         const result = this.renderMessage(userId, this.messageRow(id)!);
+        const sharedFields = parsed.fields.filter(
+          (field) => result.response[field]?.status === "shared",
+        );
+        if (sharedFields.length)
+          result.activity.push({
+            id: randomUUID(),
+            at: timestamp(),
+            actorUserId: parsed.toUserId,
+            kind: "response",
+            fields: sharedFields,
+            response: Object.fromEntries(
+              sharedFields.map((field) => [field, result.response[field]]),
+            ),
+          });
+        const pendingFields = parsed.fields.filter(
+          (field) => result.response[field]?.status !== "shared",
+        );
+        if (pendingFields.length)
+          result.activity.push({
+            id: randomUUID(),
+            at: timestamp(),
+            actorUserId: parsed.toUserId,
+            kind: "permission_needed",
+            fields: pendingFields,
+          });
         this.db
           .prepare("UPDATE agent_messages SET message_json = ? WHERE id = ?")
           .run(JSON.stringify(result), id);
@@ -660,19 +758,45 @@ export class NetworkStore {
         if (current.status === "declined" && parsed.decline) return current;
         if (current.status === "declined")
           throw new NetworkError("request_closed", 409);
-        if (current.status === "completed") {
-          if (
-            !parsed.decline &&
-            Object.entries(parsed.answers).every(
-              ([field, answer]) => prior[field as NetworkField] === answer,
-            )
+        if (
+          !parsed.decline &&
+          Object.entries(parsed.answers).every(
+            ([field, answer]) => prior[field as NetworkField] === answer,
           )
-            return current;
+        )
+          return current;
+        if (current.status === "completed") {
           throw new NetworkError("request_closed", 409);
         }
         const saved = JSON.parse(row.message_json) as AgentMessage;
         const answers = { ...prior, ...parsed.answers };
         saved.status = parsed.decline ? "declined" : "needs_user";
+        const fields = Object.keys(parsed.answers) as NetworkField[];
+        saved.activity = [
+          ...this.savedActivity(saved),
+          {
+            id: randomUUID(),
+            at: timestamp(),
+            actorUserId: userId,
+            kind: parsed.decline ? "declined" : "user_answer",
+            ...(parsed.decline
+              ? {}
+              : {
+                  fields,
+                  shareRevision: revision,
+                  response: Object.fromEntries(
+                    fields.map((field) => [
+                      field,
+                      {
+                        status: "shared" as const,
+                        source: "user_answer" as const,
+                        value: parsed.answers[field],
+                      },
+                    ]),
+                  ),
+                }),
+          },
+        ];
         this.db
           .prepare(
             "UPDATE agent_messages SET message_json = ?, answers_json = ?, answer_revision = ? WHERE id = ?",
@@ -684,9 +808,17 @@ export class NetworkStore {
             row.id,
           );
         const result = this.renderMessage(userId, this.messageRow(row.id)!);
+        // Store the immutable history, not its permission-filtered projection.
         this.db
           .prepare("UPDATE agent_messages SET message_json = ? WHERE id = ?")
-          .run(JSON.stringify(result), row.id);
+          .run(
+            JSON.stringify({
+              ...saved,
+              status: result.status,
+              response: result.response,
+            }),
+            row.id,
+          );
         return result;
       })
       .immediate();

@@ -48,8 +48,29 @@ export type MeetingStatus =
   | "withdrawn"
   | "expired"
   | "stale";
+export type MeetingActivityEntry = {
+  id: string;
+  at: string;
+  kind:
+    | "proposed"
+    | "availability_consented"
+    | "options_ready"
+    | "no_common_time"
+    | "option_approved"
+    | "option_counterproposed"
+    | "confirmed"
+    | "withdrawn"
+    | "stale"
+    | "expired"
+    | "availability_failed";
+  actorUserId?: string;
+  optionId?: string;
+  optionCount?: number;
+};
 export type MeetingView = {
   id: string;
+  createdAt: string;
+  activity: MeetingActivityEntry[];
   revision: number;
   initiatorId: string;
   participants: { userId: string; name: string }[];

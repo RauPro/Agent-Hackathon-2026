@@ -113,6 +113,20 @@ export type InformationResult = {
     | string;
   source?: "confirmed_profile" | "user_answer";
 };
+export type AgentActivityEntry = {
+  id: string;
+  at: string;
+  actorUserId: string;
+  kind:
+    | "request"
+    | "response"
+    | "permission_needed"
+    | "user_answer"
+    | "declined";
+  fields?: NetworkField[];
+  response?: Partial<Record<NetworkField, InformationResult>>;
+  shareRevision?: number;
+};
 export type AgentMessage = {
   id: string;
   correlationId: string;
@@ -124,10 +138,12 @@ export type AgentMessage = {
   senderName: string;
   recipientName: string;
   type: "PROFILE_QUERY";
+  trigger: "user" | "discovery";
   fields: NetworkField[];
   purpose: string;
   status: "needs_user" | "completed" | "declined" | "expired" | "revoked";
   response: Partial<Record<NetworkField, InformationResult>>;
+  activity: AgentActivityEntry[];
   createdAt: string;
   expiresAt: string;
 };

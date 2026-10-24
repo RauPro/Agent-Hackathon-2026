@@ -203,13 +203,17 @@ export class DiscoveryService {
               const digest = hash([a, b, signature]);
               const requestId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
               try {
-                this.network.requestInformation(sender, {
-                  toUserId: recipient,
-                  requestId,
-                  fields: ["profile", "goal"],
-                  purpose:
-                    "Sidekick found a relevant opportunity between your connected profiles. Check the shared professional context.",
-                });
+                this.network.requestInformation(
+                  sender,
+                  {
+                    toUserId: recipient,
+                    requestId,
+                    fields: ["profile", "goal"],
+                    purpose:
+                      "Sidekick found a relevant opportunity between your connected profiles. Check the shared professional context.",
+                  },
+                  { trigger: "discovery" },
+                );
               } catch (error) {
                 if (
                   !(error instanceof NetworkError) ||
@@ -245,6 +249,7 @@ export class DiscoveryService {
             id: row.id,
             userId: otherId,
             name: match.personB.name,
+            goal: match.personB.goal,
             createdAt: row.created_at,
             source: networkDemoEnabled()
               ? ("demo" as const)

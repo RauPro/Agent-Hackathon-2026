@@ -43,6 +43,7 @@ export type OpportunityView = {
   createdAt: string;
   source: "user_report" | "demo";
   connected: boolean;
+  goal?: SharedProfile["goal"];
 };
 export type MatchEvidence = Omit<
   OpportunityView,

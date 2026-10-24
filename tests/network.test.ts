@@ -272,6 +272,181 @@ describe("authorized social graph and agent messages", () => {
     expect(network.project(a, b).goal).toBeUndefined();
   });
 
+  it("records the actual request, agent response and owner answer times without rewriting shared snapshots", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-24T17:00:00Z"));
+    connect();
+    settings(b, {
+      visibility: {
+        profile: "friends",
+        goal: "private",
+        trip: "private",
+        events: "private",
+      },
+    });
+    const message = network.requestInformation(a, query(["profile", "goal"]));
+    expect(message.trigger).toBe("user");
+    expect(message.activity.map((entry) => entry.kind)).toEqual([
+      "request",
+      "response",
+      "permission_needed",
+    ]);
+    expect(message.activity[0]).toMatchObject({
+      at: "2026-10-24T17:00:00.000Z",
+      actorUserId: a,
+      fields: ["profile", "goal"],
+    });
+    expect(message.activity[1]).toMatchObject({
+      at: "2026-10-24T17:00:00.000Z",
+      actorUserId: b,
+      fields: ["profile"],
+      response: { profile: { value: { name: "Blair Example" } } },
+    });
+    expect(message.activity[2].fields).toEqual(["goal"]);
+
+    vi.setSystemTime(new Date("2026-10-24T17:45:00Z"));
+    const answer = network.answerInformation(b, {
+      messageId: message.id,
+      answers: { goal: "I am open to a founding engineer role." },
+      decline: false,
+    });
+    expect(answer.activity.slice(0, 3)).toEqual(message.activity);
+    expect(answer.activity[3]).toMatchObject({
+      kind: "user_answer",
+      at: "2026-10-24T17:45:00.000Z",
+      actorUserId: b,
+      shareRevision: network.settings(b).revision,
+      response: {
+        goal: {
+          status: "shared",
+          source: "user_answer",
+          value: "I am open to a founding engineer role.",
+        },
+      },
+    });
+    expect(new Set(answer.activity.map((entry) => entry.id)).size).toBe(4);
+
+    const changed = network.profile(b).context!;
+    changed.profile.name = "Blair Updated";
+    db.prepare(
+      "UPDATE sessions SET context_json = ? WHERE token_hash = (SELECT profile_id FROM users WHERE id = ?)",
+    ).run(JSON.stringify(changed), b);
+    const later = network.messages(a)[0];
+    expect(later.response.profile?.value).toMatchObject({
+      name: "Blair Updated",
+    });
+    expect(later.activity).toEqual(answer.activity);
+  });
+
+  it("does not append activity on partial answer retries and records decline only once", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-24T17:00:00Z"));
+    connect();
+    const message = network.requestInformation(a, query(["profile", "goal"]));
+    expect(message.activity.map((entry) => entry.kind)).toEqual([
+      "request",
+      "permission_needed",
+    ]);
+    const input = {
+      messageId: message.id,
+      answers: { profile: "I work on infrastructure." },
+      decline: false,
+    };
+    vi.setSystemTime(new Date("2026-10-24T18:00:00Z"));
+    const partial = network.answerInformation(b, input);
+    expect(partial.status).toBe("needs_user");
+    vi.setSystemTime(new Date("2026-10-24T18:30:00Z"));
+    expect(network.answerInformation(b, input).activity).toEqual(
+      partial.activity,
+    );
+    const decline = { messageId: message.id, answers: {}, decline: true };
+    const declined = network.answerInformation(b, decline);
+    expect(declined.activity).toHaveLength(4);
+    expect(declined.activity[3]).toMatchObject({
+      kind: "declined",
+      at: "2026-10-24T18:30:00.000Z",
+      actorUserId: b,
+    });
+    vi.setSystemTime(new Date("2026-10-24T19:00:00Z"));
+    expect(network.answerInformation(b, decline).activity).toEqual(
+      declined.activity,
+    );
+  });
+
+  it("accepts discovery provenance only from the internal caller and preserves it on retries", () => {
+    connect();
+    const input = query();
+    expect(
+      informationRequestSchema.safeParse({ ...input, trigger: "discovery" })
+        .success,
+    ).toBe(false);
+    const discovered = network.requestInformation(a, input, {
+      trigger: "discovery",
+    });
+    expect(discovered.trigger).toBe("discovery");
+    expect(network.requestInformation(a, input)).toEqual(discovered);
+  });
+
+  it("keeps legacy requests readable without inventing response history or timestamps", () => {
+    connect();
+    settings(b, {
+      visibility: {
+        profile: "friends",
+        goal: "private",
+        trip: "private",
+        events: "private",
+      },
+    });
+    const message = network.requestInformation(a, query());
+    const legacy = { ...message } as Partial<typeof message>;
+    delete legacy.activity;
+    delete legacy.trigger;
+    db.prepare("UPDATE agent_messages SET message_json = ? WHERE id = ?").run(
+      JSON.stringify(legacy),
+      message.id,
+    );
+    const loaded = network.messages(a)[0];
+    expect(loaded.response.profile?.status).toBe("shared");
+    expect(loaded.activity).toEqual([
+      {
+        id: `${message.id}:request`,
+        kind: "request",
+        at: message.createdAt,
+        actorUserId: a,
+        fields: ["profile"],
+      },
+    ]);
+    expect(network.messages(a)[0].activity).toEqual(loaded.activity);
+  });
+
+  it("hides historical event details when their individual sharing permission is removed", () => {
+    connect();
+    settings(b, {
+      visibility: {
+        profile: "private",
+        goal: "private",
+        trip: "private",
+        events: "friends",
+      },
+    });
+    const event = {
+      id: "shared-event",
+      title: "Infrastructure meetup",
+      start: "2026-10-25T17:00:00Z",
+      end: "2026-10-25T18:00:00Z",
+      sourceMode: "user_report" as const,
+    };
+    network.sharedEvents = () => [event];
+    const message = network.requestInformation(a, query(["events"]));
+    expect(message.activity[1].response?.events?.value).toEqual([event]);
+    network.sharedEvents = () => [];
+    const result = network.messages(a)[0];
+    expect(result.activity[1].response?.events).toEqual({
+      status: "not_shared",
+    });
+    expect(JSON.stringify(result)).not.toContain("Infrastructure meetup");
+  });
+
   it("deduplicates exact requests and owner answer retries, rejects reused keys and extra fields", () => {
     connect();
     const input = query();
@@ -334,6 +509,47 @@ describe("authorized social graph and agent messages", () => {
     expect(result.response.profile).toEqual({ status: "not_shared" });
     expect(result.response.goal).toEqual({ status: "not_shared" });
     expect(JSON.stringify(result)).not.toContain("Private answer");
+    expect(JSON.stringify(result.activity)).not.toContain('"name"');
+    expect(
+      result.activity.find((entry) => entry.kind === "response")?.response
+        ?.profile,
+    ).toEqual({ status: "not_shared" });
+    expect(
+      result.activity.find((entry) => entry.kind === "user_answer")?.response
+        ?.goal,
+    ).toEqual({ status: "not_shared" });
+    expect(JSON.stringify(network.messages(b)[0].activity)).not.toContain(
+      "Private answer",
+    );
+
+    // Later answers must not persist a redacted replacement for older history.
+    const rawBefore = JSON.parse(
+      (
+        db
+          .prepare("SELECT message_json FROM agent_messages WHERE id = ?")
+          .get(message.id) as { message_json: string }
+      ).message_json,
+    );
+    network.answerInformation(b, {
+      messageId: message.id,
+      answers: { goal: "A newly authorized answer." },
+      decline: false,
+    });
+    const rawAfter = JSON.parse(
+      (
+        db
+          .prepare("SELECT message_json FROM agent_messages WHERE id = ?")
+          .get(message.id) as { message_json: string }
+      ).message_json,
+    );
+    expect(rawAfter.activity.slice(0, rawBefore.activity.length)).toEqual(
+      rawBefore.activity,
+    );
+    const visible = network.messages(a)[0];
+    expect(JSON.stringify(visible.activity)).not.toContain("Private answer");
+    expect(JSON.stringify(visible.activity)).toContain(
+      "A newly authorized answer.",
+    );
   });
 
   it("removes access immediately and never resurrects messages after reconnection", () => {
@@ -352,6 +568,10 @@ describe("authorized social graph and agent messages", () => {
       status: "revoked",
       response: {},
     });
+    expect(
+      network.messages(a)[0].activity.find((entry) => entry.kind === "response")
+        ?.response?.profile,
+    ).toEqual({ status: "not_shared" });
     expect(() => network.requestInformation(a, query())).toThrow();
     connect();
     expect(network.messages(a)[0]).toMatchObject({
@@ -397,6 +617,14 @@ describe("authorized social graph and agent messages", () => {
 
   it("expires requests and prevents later answers", () => {
     connect();
+    settings(b, {
+      visibility: {
+        profile: "friends",
+        goal: "private",
+        trip: "private",
+        events: "private",
+      },
+    });
     const message = network.requestInformation(a, query());
     db.prepare("UPDATE agent_messages SET message_json = ? WHERE id = ?").run(
       JSON.stringify({ ...message, expiresAt: "2000-01-01T00:00:00.000Z" }),
@@ -406,6 +634,10 @@ describe("authorized social graph and agent messages", () => {
       status: "expired",
       response: {},
     });
+    expect(
+      network.messages(a)[0].activity.find((entry) => entry.kind === "response")
+        ?.response?.profile,
+    ).toEqual({ status: "not_shared" });
     expect(() =>
       network.answerInformation(b, {
         messageId: message.id,
@@ -444,5 +676,10 @@ describe("authorized social graph and agent messages", () => {
       "An authorized persisted answer.",
     );
     expect(network.messages(b)[0].id).toBe(message.id);
+    expect(network.messages(a)[0].activity.map((entry) => entry.kind)).toEqual([
+      "request",
+      "permission_needed",
+      "user_answer",
+    ]);
   });
 });
