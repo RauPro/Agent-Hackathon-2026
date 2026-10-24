@@ -216,6 +216,7 @@ h1 {
   padding: 24px 0 calc(22px + env(safe-area-inset-bottom));
 }
 .composer-wrap.reviewing,
+.conversation-column:has(.calendar-options[open]) .composer-wrap,
 .mobile-profile[open] + .composer-wrap {
   position: static;
 }
@@ -488,6 +489,94 @@ h1 {
 }
 .mobile-profile {
   display: none;
+}
+.calendar-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px;
+  margin-bottom: 12px;
+  background: #fdfefa;
+  overflow-wrap: anywhere;
+}
+.calendar-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.calendar-heading h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.calendar-card p {
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 12px 0;
+}
+.calendar-card .calendar-detail {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 8px 0;
+}
+.calendar-account {
+  font-weight: 500;
+}
+.calendar-pending {
+  color: #706249;
+}
+.calendar-options {
+  margin-top: 8px;
+}
+.calendar-options summary {
+  min-height: 44px;
+  padding: 12px 0;
+  font-size: 13px;
+  cursor: pointer;
+}
+.calendar-options fieldset {
+  padding: 0;
+  margin: 4px 0 0;
+  border: 0;
+}
+.calendar-options legend {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
+.calendar-options label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.calendar-options input {
+  accent-color: var(--green);
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.calendar-options input:focus-visible {
+  outline: 3px solid #4d8164;
+  outline-offset: 4px;
+}
+.calendar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+}
+.calendar-card .calendar-complete {
+  color: var(--green);
+  font-weight: 600;
+  margin-bottom: 0;
+}
+.calendar-card .notice {
+  margin-bottom: 0;
 }
 @media (max-width: 900px) {
   .chat-layout {

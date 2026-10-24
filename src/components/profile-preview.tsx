@@ -58,7 +58,7 @@ export function ProfilePreview({ chat }: { chat: ChatState }) {
           </dd>
         </div>
         <div>
-          <dt>Availability</dt>
+          <dt>Preferred meeting times</dt>
           <dd>
             {draft.availability.status === "unknown" ? (
               <span className="unknown">Not set</span>
@@ -72,7 +72,7 @@ export function ProfilePreview({ chat }: { chat: ChatState }) {
           </dd>
         </div>
         <div>
-          <dt>Fixed commitments</dt>
+          <dt>Reported commitments</dt>
           <dd>
             {draft.commitments.status === "unknown" ? (
               <span className="unknown">Not reviewed</span>

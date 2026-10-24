@@ -18,6 +18,11 @@ export default defineConfig({
       reuseExistingServer: false,
     },
     {
+      command: "node tests/e2e/mock-google.mjs",
+      url: "http://127.0.0.1:3102/health",
+      reuseExistingServer: false,
+    },
+    {
       command: "npm run dev -- --port 3100",
       url: "http://127.0.0.1:3100",
       reuseExistingServer: false,
@@ -26,6 +31,11 @@ export default defineConfig({
         DATABASE_PATH: join(tmpdir(), `sf-sidekick-e2e-${process.pid}.sqlite`),
         OPENAI_API_KEY: "test-key-not-a-secret",
         OPENAI_BASE_URL: "http://127.0.0.1:3101/v1",
+        GOOGLE_CLIENT_ID: "test-google-client",
+        GOOGLE_CLIENT_SECRET: "test-google-secret",
+        GOOGLE_REDIRECT_URI: "http://127.0.0.1:3100/api/calendar/callback",
+        TOKEN_ENCRYPTION_KEY: "b".repeat(64),
+        GOOGLE_TEST_BASE_URL: "http://127.0.0.1:3102",
       },
     },
   ],

@@ -7,6 +7,7 @@ import {
   type ChatState,
 } from "@/lib/domain/onboarding-chat";
 import { ProfilePreview } from "./profile-preview";
+import { CalendarConnect } from "./calendar-connect";
 
 function Mark({ small = false }: { small?: boolean }) {
   return (
@@ -58,6 +59,13 @@ export function Onboarding() {
         return response.json();
       })
       .then(acceptState)
+      .then(() => {
+        const savedInput = sessionStorage.getItem("onboarding-unsent-message");
+        if (savedInput) {
+          setInput(savedInput);
+          sessionStorage.removeItem("onboarding-unsent-message");
+        }
+      })
       .catch((error: unknown) => {
         if (error instanceof Error && error.name === "AbortError") return;
         setLoading(false);
@@ -197,6 +205,13 @@ export function Onboarding() {
             </div>
           ) : (
             <>
+              <CalendarConnect
+                chatRevision={chat.revision}
+                disabled={!!busy}
+                beforeConnect={() =>
+                  sessionStorage.setItem("onboarding-unsent-message", input)
+                }
+              />
               <div
                 className="chat-messages"
                 role="log"
