@@ -1,6 +1,7 @@
 # SF Sidekick — Plan de producto e implementación
 
-**Versión:** 1.0  
+**Versión:** 1.1 · Criterios de aceptación y auditoría
+
 **Fecha:** 24 de octubre de 2026 · San Francisco  
 **Estado:** especificación para construir; las funciones descritas todavía no están implementadas.  
 **Equipo previsto:** dos personas.  
@@ -72,16 +73,61 @@ Las recomendaciones, clics y registros son métricas intermedias. Ninguna demues
 
 ## 2. Qué hará el sistema
 
+Esta sección es el contrato de aceptación del producto: describe lo que debe poder ver el usuario, lo que debe validar el servidor y cómo comprobar el resultado. Sigue siendo una especificación; no demuestra que estas funciones ya estén construidas.
+
 | Momento | Trabajo del sistema | Resultado visible |
 | --- | --- | --- |
-| Onboarding | Extrae un perfil breve de texto proporcionado y pregunta por el objetivo actual | Perfil editable y objetivo confirmado |
-| Descubrimiento | Consulta una fuente disponible y normaliza candidatos | Eventos con fecha, lugar conocido, URL y procedencia |
-| Selección | Evalúa encaje, personas relacionadas y restricciones | Hasta tres recomendaciones con razones específicas |
-| Preparación | Relaciona una persona con el objetivo y la aportación del usuario | Ficha con contexto, fuente, pregunta y siguiente paso |
-| Registro | Prepara información y abre el formulario oficial | Paquete de registro y estado real conocido |
-| Organización | Incorpora lo elegido a una agenda interna | Bloques tentativos o planificados, con compromisos fijos |
-| Adaptación | Evalúa una oportunidad nueva y sus conflictos | Propuesta de cambios antes/después |
-| Después | Conserva notas y prepara seguimiento | Borrador editable y próximo paso asociado a la conversación |
+| Onboarding | Interpreta y confirma contexto | Resumen editable de qué busca, qué ofrece, cuándo está en SF y qué límites tiene |
+| Descubrimiento | Consulta una fuente y normaliza candidatos | Catálogo fechado, cobertura declarada y datos ausentes visibles |
+| Selección | Evalúa encaje y restricciones | Hasta tres oportunidades, cada una con una razón concreta, evidencia e incertidumbres |
+| Preparación | Conecta la experiencia de una persona con el objetivo | Ficha con hecho relevante, aportación, pregunta y siguiente paso |
+| Registro | Prepara información y abre el formulario oficial | Respuestas copiables y estado de inscripción separado del plan |
+| Organización | Guarda elecciones | Agenda recuperable, con horario, bloqueos y conflictos explícitos |
+| Adaptación | Evalúa una oportunidad nueva | Comparación antes/después y aplicación verificable de la elección |
+| Después | Conserva notas y prepara seguimiento | Nota original, borrador editable y próximo paso con responsable |
+
+### 2.1. Reglas comunes de validación
+
+- **Obligatorio** significa que la operación no puede completarse sin ese dato; **condicional**, que se exige al activar la función correspondiente; **opcional**, que su ausencia no bloquea.
+- Validar en servidor con Zod, incluso si la UI ya validó. Un campo vacío no se completa con una suposición del modelo.
+- Todo hecho externo lleva `sourceId`, referencia y `checkedAt`; lo declarado por el usuario lleva `evidenceKind: user_report` y fecha de confirmación. Una inferencia se etiqueta y no sustituye evidencia.
+- Resolver identidad y propiedad desde la sesión autenticada. Los IDs devueltos por el modelo deben existir y ser accesibles para esa persona.
+- Fechas normalizadas con zona IANA; `start < end`. Un dato desconocido puede permitir recomendar, pero debe bloquear una reserva si afecta su viabilidad.
+- Cada resultado indica `live`, `saved` o `demo`, la revisión del contexto y la hora de cálculo. Un fallo de proveedor no se presenta como cero resultados ni como una búsqueda reciente correcta.
+
+### 2.2. Resultado visible y campos por paso
+
+| Paso | Resultado visible esperado | Campos y validaciones necesarias |
+| --- | --- | --- |
+| **A1. Onboarding** | Tarjeta «Busco / Puedo aportar / Estoy en SF / Disponible». El usuario corrige y confirma antes de obtener resultados personalizados; ve qué falta. | Obligatorios: `profile.bio`, `profile.offers`, `goal.text`, `goal.type`, `trip.city`, `trip.start`, `trip.end`, `trip.timezone`. Confirmar experiencia extraída. `availability[]` y `lockedCommitments[]` son necesarios para planificar; distinguir «sin compromisos» de «no informado». Presupuesto y preferencias son opcionales; si son restricciones obligatorias, validarlas como tales. |
+| **A2. Descubrimiento** | «Se consultaron X candidatos en [fuente], para [fechas], a las [hora]». Cada tarjeta muestra título, fecha, ubicación/coste conocidos, enlace y dato pendiente. Cero resultados incluye el alcance de la búsqueda. | `event.id`, `canonicalUrl`, `title`, `sourceId`, `checkedAt`, `sourceMode`; validar fecha y zona para incluirlo entre próximos eventos. `end`, dirección y coste pueden ser desconocidos. Deduplicar por ID/URL estable, excluir cancelados o fuera del viaje y no confundir fecha de publicación con fecha del evento. |
+| **A3. Selección** | Hasta tres recomendaciones: «Por qué te sirve», «Con quién podrías hablar», «Qué sabemos» y «Qué falta». Un cambio de objetivo muestra una nueva evaluación. | `eventId`, `personIds[]`, `contextRevision`, `reason`, `evidenceIds[]`, `uncertainties[]`. Referencias existentes; filtros obligatorios aprobados o estado «requiere revisión». Ninguna razón puede afirmar contratación, asistencia o interés sin fuente. Si no hay candidatos válidos, devolver cero. |
+| **A4. Preparación** | Ficha con nombre, rol/organización conocidos, vínculo con el evento, hecho concreto, pregunta sugerida, aportación del usuario y próximo paso. | `person.id`, identidad respaldada por URL/organización consistente, `relationship`, `fact`, `sourceId`, `question`, `userContribution`, `nextStep`. Solo exigir relación con el evento para presentarla como vinculada a él. La pregunta debe derivar de un hecho y el aporte de experiencia confirmada. No inferir disponibilidad para conversar. |
+| **A5. Registro** | Enlace oficial y respuestas sugeridas por campo; datos pendientes resaltados. «Preparado» y «Abrí el formulario» se distinguen de «Solicitud enviada/aprobada». | `eventId`, `registrationUrl`, campos solicitados cuando se conocen, valores confirmados del perfil, `registrationStatus`, `evidenceKind`, `observedAt`. Validar URL y no inventar preguntas del formulario. Cambiar el estado externo solo con evidencia o reporte explícito del usuario. |
+| **A6. Organización** | Bloque con inicio/fin, zona, lugar, estado, marca de fijo y estado de inscripción separado. Tras recargar aparece una sola vez. | `itemId`, `kind`, `eventId` si procede, `start`, `end`, `timezone`, `locked`, `status`, `baseRevision`, clave de operación. Duración necesaria; comprobar solapes y margen. Si falta ubicación, requerir un supuesto de traslado aceptado antes de dar el horario por viable. Persistencia e incremento de revisión atómicos. |
+| **A7. Adaptación** | «Añadiría este café / Retiraría este evento / Conservaría esta cena». Mostrar motivos y datos pendientes; botones «Aceptar cambio» y «Mantener plan». | `proposalId`, `baseRevision`, `operations[]`, IDs afectados, `reason`, `unresolved[]`. La propuesta no modifica el plan activo. Al aceptar, volver a comprobar revisión, conflictos, propiedad y bloqueos; un reintento devuelve el resultado existente. |
+| **A8. Después** | Nota original, resumen corregible, borrador para copiar y próximo paso con responsable y fecha si fue acordada. | `personId`, `interactionId`, `userNote`, `occurredAt`, `nextStep`, `owner`, `dueAt` opcional. Distinguir compromiso reportado de sugerencia. No crear una fecha, promesa o conversación previa que el usuario no haya mencionado. Enviar queda fuera de este paso. |
+
+Los nombres de campo son contratos de la aplicación y se concretarán en los esquemas compartidos. Una URL válida y una salida que pasa Zod no prueban que una afirmación sea cierta: la auditoría de evidencia debe abrir la fuente.
+
+### 2.3. Cómo auditar el recorrido de eventos
+
+Preparar una sesión de prueba, dos objetivos distintos, 8–15 eventos fechados y documentados, dos personas verificables y un compromiso fijo. Añadir deliberadamente un evento pasado, uno duplicado, uno sin ubicación y una persona sin relación demostrada. El reloj de prueba debe ser explícito si el escenario deja de ser futuro.
+
+| Prueba | Acción del auditor | Qué debe comprobar | Evidencia mínima |
+| --- | --- | --- | --- |
+| **A1** | Pegar una bio, corregir experiencia y confirmar; repetir con fechas invertidas | Solo se guarda contexto válido y confirmado; aparece el error junto al campo inválido | Contexto guardado y revisión; rechazo de la entrada inválida |
+| **A2** | Buscar, abrir fuentes y simular un fallo del proveedor | Fechas, lugar y procedencia coinciden; pasado/duplicado excluidos; fallo diferenciado de vacío | Lista de IDs aceptados/descartados y motivo; hora y modo de la fuente |
+| **A3** | Usar el mismo catálogo con objetivo de empleo y luego de pilotos | Las prioridades cambian si los datos lo justifican; razones referencian el objetivo vigente. Probar además un catálogo incompatible | Dos resultados con revisiones distintas; cero recomendaciones en el caso incompatible |
+| **A4** | Abrir la ficha y la evidencia de la persona | Identidad y relación demostrables; pregunta específica; persona no vinculada nunca aparece como asistente | Hecho, referencia y explicación visibles |
+| **A5** | Preparar respuestas y abrir el formulario sin enviarlo | Registro sigue sin enviar; no cambia a aprobado. Importar después una lista de espera | Estado anterior/posterior y tipo de evidencia |
+| **A6** | Añadir, repetir el clic y recargar; reiniciar el servidor | Un solo bloque persistente; bloque conflictivo rechazado o pendiente de revisión | Estado recuperado, revisión y resultado de la clave de operación |
+| **A7** | Proponer café en conflicto con un bloque opcional y una cena fija; aceptar | Solo se ejecuta la propuesta aceptada; cena intacta. Repetir con propuesta desactualizada y rechazarla | Antes/después, `proposalId`, resultado y conflicto de revisión |
+| **A8** | Escribir «hablamos de agentes, sin acordar seguimiento» | Puede sugerir un próximo paso, pero no afirmar que hubo un acuerdo | Nota original junto al borrador; próxima acción marcada como sugerencia |
+
+**Registro mínimo de auditoría:** reutilizar `runs` y el resultado de `proposals`; cada paso conserva `runId`, actor autorizado, entidad, revisión de entrada, hora, resultado (`passed / blocked / failed`), códigos de validación, referencias y efecto persistido. Guardar las decisiones y salidas estructuradas; no pedir ni almacenar razonamiento interno del modelo. No duplicar tokens, correos privados completos o calendarios completos en logs.
+
+Durante el desarrollo basta una vista «Ver comprobaciones» o una consulta local por `runId`. Automatizar reglas de fechas, referencias, revisiones, propiedad e idempotencia; comprobar manualmente fuentes, claridad de la UI y el recorrido real. **Un paso pasa cuando coincide lo que muestra la interfaz, lo persistido y, si existe una acción externa, el resultado leído del proveedor.**
 
 ### Alcance de empresas y outreach
 
