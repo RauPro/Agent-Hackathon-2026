@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { CalendarConnection, CalendarRecord } from "@/lib/domain/calendar";
+import { emailSchema, LOGIN_MAX_AGE, type Account } from "@/lib/domain/auth";
 import {
   contextSchema,
   type ContextState,
@@ -32,6 +33,8 @@ export class ContextConflict extends Error {
   }
 }
 export class SessionMissing extends Error {}
+export class AccountConflict extends Error {}
+export class AuthRateLimit extends Error {}
 export class CalendarConflict extends Error {
   constructor(public code: "invalid_state" | "calendar_changed") {
     super(code);
@@ -81,16 +84,163 @@ export class ContextStore {
         session_id TEXT NOT NULL REFERENCES sessions(token_hash),
         encrypted_verifier TEXT NOT NULL,
         expires_at INTEGER NOT NULL,
-        base_revision INTEGER NOT NULL
+        base_revision INTEGER NOT NULL,
+        browser_token_hash TEXT
+      );
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        email_verified_at TEXT,
+        profile_id TEXT UNIQUE NOT NULL REFERENCES sessions(token_hash),
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS auth_sessions (
+        token_hash TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        expires_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS auth_sessions_user ON auth_sessions(user_id);
+      CREATE TABLE IF NOT EXISTS auth_limits (
+        key TEXT PRIMARY KEY,
+        attempts INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
       );
     `);
+    const oauthColumns = this.db
+      .prepare("PRAGMA table_info(calendar_oauth_states)")
+      .all() as { name: string }[];
+    if (!oauthColumns.some((column) => column.name === "browser_token_hash"))
+      this.db.exec(
+        "ALTER TABLE calendar_oauth_states ADD COLUMN browser_token_hash TEXT",
+      );
   }
 
   private session(token: string | undefined): SessionRow | undefined {
     if (!token || !/^[a-f0-9]{64}$/.test(token)) return undefined;
+    // The legacy sessions table holds profile data; auth_sessions hold browser logins.
+    // Once a profile is claimed, its old anonymous token can never read it again.
     return this.db
-      .prepare("SELECT * FROM sessions WHERE token_hash = ?")
-      .get(hash(token)) as SessionRow | undefined;
+      .prepare(
+        `SELECT s.* FROM sessions s
+      WHERE s.token_hash = (SELECT u.profile_id FROM users u JOIN auth_sessions a ON a.user_id = u.id WHERE a.token_hash = ? AND a.expires_at > ?)
+      OR (s.token_hash = ? AND NOT EXISTS (SELECT 1 FROM users u WHERE u.profile_id = s.token_hash))`,
+      )
+      .get(hash(token), Date.now(), hash(token)) as SessionRow | undefined;
+  }
+
+  account(token: string | undefined, now = Date.now()): Account | null {
+    if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
+    const row = this.db
+      .prepare(
+        "SELECT u.id, u.email, u.email_verified_at FROM users u JOIN auth_sessions a ON a.user_id = u.id WHERE a.token_hash = ? AND a.expires_at > ?",
+      )
+      .get(hash(token), now) as
+      | { id: string; email: string; email_verified_at: string | null }
+      | undefined;
+    return row
+      ? { id: row.id, email: row.email, emailVerified: !!row.email_verified_at }
+      : null;
+  }
+
+  requireAccount(
+    token: string | undefined,
+    expectedId?: string | null,
+  ): Account {
+    const account = this.account(token);
+    if (!account || (expectedId && expectedId !== account.id))
+      throw new SessionMissing();
+    return account;
+  }
+
+  credentials(email: string) {
+    return this.db
+      .prepare("SELECT id, password_hash FROM users WHERE email = ?")
+      .get(emailSchema.parse(email)) as
+      | { id: string; password_hash: string }
+      | undefined;
+  }
+
+  createLogin(userId: string, now = Date.now()) {
+    const token = randomBytes(32).toString("hex");
+    this.db.prepare("DELETE FROM auth_sessions WHERE expires_at <= ?").run(now);
+    this.db
+      .prepare(
+        "INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
+      )
+      .run(hash(token), userId, now + LOGIN_MAX_AGE * 1000);
+    return token;
+  }
+
+  registerAccount(email: string, passwordHash: string, previousToken?: string) {
+    email = emailSchema.parse(email);
+    return this.db
+      .transaction(() => {
+        if (this.credentials(email) || this.account(previousToken))
+          throw new AccountConflict();
+        const profile = this.ensureSession(previousToken);
+        const profileId = this.session(profile.token)!.token_hash;
+        const id = randomUUID();
+        this.db
+          .prepare(
+            "INSERT INTO users (id, email, password_hash, profile_id, created_at) VALUES (?, ?, ?, ?, ?)",
+          )
+          .run(id, email, passwordHash, profileId, new Date().toISOString());
+        this.db
+          .prepare("DELETE FROM calendar_oauth_states WHERE session_id = ?")
+          .run(profileId);
+        const token = this.createLogin(id);
+        return { token, account: this.requireAccount(token) };
+      })
+      .immediate();
+  }
+
+  logout(token: string | undefined) {
+    if (!token) return;
+    this.db
+      .transaction(() => {
+        this.db
+          .prepare(
+            "DELETE FROM calendar_oauth_states WHERE browser_token_hash = ?",
+          )
+          .run(hash(token));
+        this.db
+          .prepare("DELETE FROM auth_sessions WHERE token_hash = ?")
+          .run(hash(token));
+      })
+      .immediate();
+  }
+
+  reserveAuthAttempt(email: string, now = Date.now()) {
+    this.db
+      .transaction(() => {
+        this.db
+          .prepare("DELETE FROM auth_limits WHERE expires_at <= ?")
+          .run(now);
+        const limits = [
+          { key: `email:${hash(emailSchema.parse(email))}`, max: 10 },
+          { key: "global", max: 200 },
+        ];
+        for (const limit of limits) {
+          const row = this.db
+            .prepare("SELECT attempts FROM auth_limits WHERE key = ?")
+            .get(limit.key) as { attempts: number } | undefined;
+          if ((row?.attempts ?? 0) >= limit.max) throw new AuthRateLimit();
+        }
+        for (const limit of limits)
+          this.db
+            .prepare(
+              "INSERT INTO auth_limits (key, attempts, expires_at) VALUES (?, 1, ?) ON CONFLICT(key) DO UPDATE SET attempts = attempts + 1",
+            )
+            .run(limit.key, now + 15 * 60 * 1000);
+      })
+      .immediate();
+  }
+
+  clearAuthAttempts(email: string) {
+    this.db
+      .prepare("DELETE FROM auth_limits WHERE key = ?")
+      .run(`email:${hash(emailSchema.parse(email))}`);
   }
 
   private state(row: SessionRow): ContextState {
@@ -364,7 +514,7 @@ export class ContextStore {
           .run(owner, now);
         this.db
           .prepare(
-            "INSERT INTO calendar_oauth_states (state_hash, session_id, encrypted_verifier, expires_at, base_revision) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO calendar_oauth_states (state_hash, session_id, encrypted_verifier, expires_at, base_revision, browser_token_hash) VALUES (?, ?, ?, ?, ?, ?)",
           )
           .run(
             hash(state),
@@ -372,6 +522,7 @@ export class ContextStore {
             encryptedVerifier,
             now + 10 * 60 * 1000,
             this.readCalendar(token).revision,
+            hash(token),
           );
       })
       .immediate();
@@ -387,9 +538,9 @@ export class ContextStore {
         const owner = this.calendarOwner(token);
         const row = this.db
           .prepare(
-            "SELECT encrypted_verifier, expires_at, base_revision FROM calendar_oauth_states WHERE state_hash = ? AND session_id = ?",
+            "SELECT encrypted_verifier, expires_at, base_revision FROM calendar_oauth_states WHERE state_hash = ? AND session_id = ? AND browser_token_hash = ?",
           )
-          .get(hash(state), owner) as
+          .get(hash(state), owner, hash(token!)) as
           | {
               encrypted_verifier: string;
               expires_at: number;
@@ -419,6 +570,13 @@ export class ContextStore {
         const owner = this.calendarOwner(token);
         if (this.readCalendar(token).revision !== revision)
           throw new CalendarConflict("calendar_changed");
+        const account = this.account(token);
+        if (account) {
+          this.writeCalendar(token, revision, connectionForOwner(owner));
+          const nextToken = this.createLogin(account.id);
+          this.logout(token);
+          return nextToken;
+        }
         const nextToken = randomBytes(32).toString("hex"),
           nextOwner = hash(nextToken);
         const connection = connectionForOwner(nextOwner);

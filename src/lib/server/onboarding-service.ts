@@ -22,13 +22,14 @@ export async function handleChat(
   const current = store.checkChat(token, request);
   if (request.action !== "message") return store.commitChat(token, request);
   if (current.messages.length >= 81) throw new ChatLimit();
-  if (active.has(token!)) throw new ChatBusy();
-  active.add(token!);
+  const owner = store.calendarOwner(token);
+  if (active.has(owner)) throw new ChatBusy();
+  active.add(owner);
   try {
     const reply = await complete(current, request.message);
     // Re-check both revisions after the external request, before any mutation.
     return store.commitChat(token, request, reply);
   } finally {
-    active.delete(token!);
+    active.delete(owner);
   }
 }
