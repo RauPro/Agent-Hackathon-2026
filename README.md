@@ -2,6 +2,33 @@
 
 A mobile-first web app that turns a visitor's goal in San Francisco into relevant people, useful conversations, and a daily plan. See the [product and implementation plan](SF-Sidekick-Implementation-Plan.md) for scope and acceptance criteria.
 
+## Desarrollo local
+
+```bash
+npm ci
+npm run dev
+```
+
+Abre http://127.0.0.1:3000. Node 22.13 o posterior; desarrollado y comprobado con Node 26. El servidor escucha solo en loopback.
+
+La base usa Next.js, TypeScript, Zod y SQLite. `DATABASE_PATH` permite cambiar el archivo, por defecto `./data/sidekick.sqlite`; consulta `.env.example`. Ejecutar una sola instancia Node con disco persistente. El archivo local no es compatible con funciones de disco efímero.
+
+El onboarding no necesita API keys. La sesión anónima usa una cookie HttpOnly y datos aislados en servidor; no es un login ni una identidad verificada para realizar introducciones. Mantener esta fase en local. El login y OAuth de Google forman parte de entregas posteriores, antes de activar matching entre personas reales.
+
+## Verificación
+
+```bash
+npm test
+npm run typecheck
+npm run lint
+npm run build
+npm start
+```
+
+Las pruebas de dominio cubren fechas de SF (incluidos cambios horarios), restricciones, confirmación, aislamiento, revisiones, reintentos y recuperación del archivo SQLite. `GET /api/state` abre o recupera la sesión; `POST /api/context` valida y guarda contexto confirmado con control de revisión. Las respuestas personales no usan caché compartida.
+
+El plan describe el producto completo; sus funciones futuras no se consideran implementadas por aparecer en el documento.
+
 ## Project skills
 
 Three focused skills live in `.agents/skills`. Load the skill relevant to the work; supporting product details stay in the implementation plan.
