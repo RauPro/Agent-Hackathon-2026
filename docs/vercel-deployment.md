@@ -66,3 +66,9 @@ Calendar writing remains outside the current feature set. Bilaterally approved m
 - Cron rejected an unauthenticated request with 401 and accepted the configured bearer secret with 200 (`processed: 0` on the empty queue).
 - Synthetic accounts stayed undiscoverable and were removed by their exact recorded IDs. No local accounts, private calendars or demo community were copied into production.
 - The Google production callback was saved and verified after reopening the client. Live Google authorization and availability remain verified only locally; the deployed app still needs a user-completed Google connection test.
+
+### Connected dialogue verification
+
+The iterative conversation release (`dac6d88`) passed 182 unit/service checks, 30 browser checks, lint and the production build. Ten paid-provider tests are opt-in; the new dialogue live evaluation was run separately and passed with four actual OpenAI turns between fictional peers with the same goal and non-overlapping trips.
+
+The [deployed verification](verification/deployed-agent-dialogue-2026-10-24.json) used the two existing fictional connected accounts. Their conversation automatically started, completed four alternating turns, and returned identical persisted text and message IDs in both sessions after reload. All 12 HTTP checks succeeded, discovery remained off, and the temporary test logins were signed out. No meeting, calendar or profile mutation was made by that verification. The real connected-user UI also displayed the new alternating conversation; its private transcript is not stored in this repository.
