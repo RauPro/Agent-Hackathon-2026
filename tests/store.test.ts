@@ -8,6 +8,7 @@ import {
   SessionMissing,
 } from "../src/lib/server/store";
 import { validContext } from "./fixtures";
+import { draftFromContext } from "../src/lib/domain/onboarding-chat";
 
 describe("context persistence and ownership", () => {
   let folder: string;
@@ -43,6 +44,24 @@ describe("context persistence and ownership", () => {
     store = new ContextStore(join(folder, "context.sqlite"));
     expect(store.read(session.token)).toEqual(saved);
     expect(saved.evidenceKind).toBe("user_report");
+  });
+
+  it("restores a conversation draft after a server restart without confirming it", () => {
+    const session = store.ensureSession();
+    const chat = store.commitChat(
+      session.token,
+      {
+        action: "message",
+        message: "I'm Alex",
+        revision: 0,
+        requestId: crypto.randomUUID(),
+      },
+      { reply: "Let's review this.", draft: draftFromContext(validContext()) },
+    );
+    store.close();
+    store = new ContextStore(join(folder, "context.sqlite"));
+    expect(store.readChat(session.token)).toEqual(chat);
+    expect(store.read(session.token)?.context).toBeNull();
   });
 
   it("retries a save once and rejects key reuse with different data", () => {

@@ -3,7 +3,7 @@
 **Versión:** 1.2 · Auditoría e introducciones con agenda bilateral
 
 **Fecha:** 24 de octubre de 2026 · San Francisco  
-**Estado:** fase 1 de onboarding implementada; el resto sigue siendo especificación. Véase el [README](README.md) para alcance y verificación actuales.
+**Estado:** onboarding por chat e integración OpenAI implementados; llamada real pendiente de credencial. El resto sigue siendo especificación. Véase el [README](README.md) para alcance y verificación actuales.
 
 **Equipo previsto:** dos personas.  
 **Horizonte:** MVP para el hackathon, seguido de mejoras verificables.  
@@ -76,7 +76,7 @@ Las recomendaciones, clics y registros son métricas intermedias. Ninguna demues
 
 ## 2. Qué hará el sistema
 
-Esta sección es el contrato de aceptación del producto: describe lo que debe poder ver el usuario, lo que debe validar el servidor y cómo comprobar el resultado. El onboarding guiado de A1 está implementado con revisión y persistencia; la extracción automática con modelo y los recorridos posteriores siguen pendientes. El README registra las comprobaciones realizadas.
+Esta sección es el contrato de aceptación del producto: describe lo que debe poder ver el usuario, lo que debe validar el servidor y cómo comprobar el resultado. A1 usa conversación libre y extracción estructurada con OpenAI, resumen corregible y confirmación explícita. El flujo está probado con un proveedor simulado; la calidad de la extracción real requiere la key. El README registra las comprobaciones realizadas.
 
 | Momento | Trabajo del sistema | Resultado visible |
 | --- | --- | --- |
@@ -288,15 +288,11 @@ En P1, la oportunidad para replanificar por texto es un compromiso personal, com
 
 ### Pantalla 1 — Qué quieres conseguir
 
-Una entrada de texto para perfil o bio y tres preguntas cortas:
+Una conversación libre, con una sola caja de texto y sin categorías que seleccionar. Abrir con «¿Qué te gustaría conseguir durante tu estancia en San Francisco?». El usuario puede aportar varios datos juntos; el asistente recoge los explícitos, conserva los anteriores y hace como máximo una pregunta de seguimiento por turno sobre lo que falta o es ambiguo.
 
-1. ¿Qué resultado buscas durante esta visita?
-2. ¿Qué días y franjas tienes disponibles?
-3. ¿Qué compromisos o límites debemos respetar?
+Mostrar el perfil que se va formando al lado del chat, o en un desplegable en móvil. Las correcciones se hacen conversando. Cuando el contexto obligatorio es válido, permitir revisarlo y pulsar «Confirmar perfil»; la respuesta del modelo nunca confirma ni guarda el contexto activo por sí sola. El borrador y la conversación sí se conservan para poder continuar tras una recarga.
 
-Después, mostrar el perfil interpretado para corregirlo. La importación desde una URL es opcional; si no puede leerse, permitir pegar la información.
-
-Campos necesarios: objetivo, fechas, disponibilidad, compromisos fijos y presupuesto si importa. Ciudad por defecto: SF. Zona horaria de visualización: `America/Los_Angeles`.
+Necesarios para confirmar: nombre, experiencia, aportación, objetivo y fechas de estancia. Disponibilidad, compromisos y preferencias pueden seguir desconocidos, pero se exigen antes de las acciones que dependan de ellos. Ciudad: SF; zona: `America/Los_Angeles`. Fechas ambiguas requieren aclaración, no una suposición silenciosa. La importación desde URL sigue siendo opcional y todavía no está implementada.
 
 Preferencias como idioma, tamaño de evento o energía disponible son opcionales. Lo declarado por el usuario tiene prioridad sobre una inferencia del perfil.
 
@@ -445,7 +441,7 @@ Para la demo bilateral, probar también lectura de disponibilidad y creación/le
 
 **Una aplicación TypeScript con Next.js, backend en el mismo repositorio, SQLite y un único proveedor de modelo.**
 
-Usar Route Handlers para los endpoints. AI SDK es una opción para llamadas al modelo y herramientas tipadas; fijar versiones mediante el lockfile y seguir la documentación de la versión instalada. [S9] [S10]
+Usar Route Handlers para los endpoints. El onboarding implementado usa el SDK oficial de OpenAI, Responses API y Zod para la salida estructurada; una llamada por turno, sin herramientas de acción. Fijar versiones mediante el lockfile. [S9] [S20]
 
 Si el equipo ya tiene una base funcional en Python/PydanticAI, reutilizarla puede ser más rápido. Resolver esa elección en los primeros 15 minutos; evitar construir dos backends.
 
@@ -517,7 +513,7 @@ Mantener estos conceptos aunque algunos se guarden juntos como JSON:
 | Match | Dos participantes, versiones, encaje/evidencia, decisiones de intro y reserva, reunión y efectos por calendario |
 | Conexión de calendario | Propietario, proveedor, scopes, tokens cifrados, calendarios consultados y destino autorizado |
 
-### Persistencia: seis tablas base y tres para la función bilateral
+### Persistencia: tablas de dominio y conversación
 
 1. **sessions:** perfil, viaje, objetivo, agenda, registros y notas en JSON validado; columna `revision`.
 2. **events:** registros normalizados y referencias a personas/fuentes.
@@ -528,6 +524,7 @@ Mantener estos conceptos aunque algunos se guarden juntos como JSON:
 7. **users:** identidad autenticada estable; asociar las sesiones a su propietario y reutilizar el proveedor de login elegido.
 8. **matches:** pareja canónica de usuarios, revisión, estado y JSON validado para contexto compartido, consentimientos, condiciones de agenda y resultados por participante. Una propuesta activa por pareja/contexto; registrar `bookingKey` e IDs antes de la llamada externa. No exponer el JSON privado completo a ambos.
 9. **calendar_connections:** conexión y tokens cifrados por usuario, scopes y calendarios autorizados. Nunca incluirlos en el estado de UI o del modelo.
+10. **onboarding_chats:** conversación y borrador por sesión, con revisión propia y referencia a la revisión del perfil confirmado. Implementada junto con `sessions` y `runs`; las demás tablas se incorporan al construir sus funciones.
 
 Los datos públicos pueden compartirse como catálogo. Notas, confirmaciones, eventos privados y contexto pertenecen a su usuario/sesión. El match solo comparte los campos aprobados con sus dos participantes; las decisiones se escriben desde la cuenta de su autor. Toda lectura y escritura respeta esa pertenencia.
 
@@ -831,22 +828,15 @@ La página del evento anuncia cierre de construcción a las 18:30 de SF. Trabaja
 
 ### Arranque orientativo
 
-Si no existe un starter útil:
+El repositorio ya contiene la base funcional. Para el entorno actual:
 
 ```bash
-npx create-next-app@latest sf-sidekick --typescript --tailwind --eslint --app --src-dir --use-npm
-cd sf-sidekick
-npm install ai zod better-sqlite3
-npm install -D @types/better-sqlite3 vitest
+npm ci
+# Si aún no existe .env.local, copiar .env.example y añadir la key.
+npm run dev
 ```
 
-Para el ejemplo de proveedor directo Anthropic:
-
-```bash
-npm install @ai-sdk/anthropic
-```
-
-El CLI y el adaptador están documentados oficialmente. Usar el proveedor que ya tenga acceso probado; no cambiar de modelo solo por este ejemplo. [S14] [S15]
+El proveedor elegido es OpenAI. La app muestra un estado de conexión pendiente cuando falta la key; no sustituye el modelo por respuestas simuladas. [S20]
 
 Guardar el lockfile y usar versiones coherentes con la versión de Node instalada. Si la dependencia SQLite no se instala en el entorno elegido, resolverlo en esta fase, antes de construir las acciones sobre ella.
 
@@ -856,10 +846,10 @@ Variables propuestas:
 APP_TIMEZONE=America/Los_Angeles
 EVENT_SOURCE_MODE=saved
 DATABASE_PATH=./data/sidekick.sqlite
-AGENT_MODEL=<modelo-validado-en-la-cuenta>
+OPENAI_MODEL=gpt-5.4-mini
 AGENT_MAX_STEPS=6
 AGENT_TIMEOUT_MS=45000
-ANTHROPIC_API_KEY=<solo-si-se-usa-este-proveedor>
+OPENAI_API_KEY=<clave-del-proyecto>
 TAVILY_API_KEY=<solo-si-se-usa-este-proveedor>
 GOOGLE_CLIENT_ID=<cliente-oauth-web>
 GOOGLE_CLIENT_SECRET=<secreto-del-cliente-oauth>
@@ -1304,6 +1294,7 @@ Consultadas el 24 de octubre de 2026. Las capacidades de proveedores pueden camb
 - [S17 — Google Calendar: creación de eventos e IDs](https://developers.google.com/workspace/calendar/api/v3/reference/events/insert).
 - [S18 — Google Calendar: lectura de un evento por ID](https://developers.google.com/workspace/calendar/api/v3/reference/events/get).
 - [S19 — Google OAuth para aplicaciones web](https://developers.google.com/identity/protocols/oauth2/web-server).
+- [S20 — OpenAI: Responses y salidas estructuradas](https://developers.openai.com/api/docs/guides/structured-outputs).
 
 [S1]: https://help.luma.com/p/mcp
 [S2]: https://docs.luma.com/reference/getting-started-with-your-api
@@ -1324,6 +1315,7 @@ Consultadas el 24 de octubre de 2026. Las capacidades de proveedores pueden camb
 [S17]: https://developers.google.com/workspace/calendar/api/v3/reference/events/insert
 [S18]: https://developers.google.com/workspace/calendar/api/v3/reference/events/get
 [S19]: https://developers.google.com/identity/protocols/oauth2/web-server
+[S20]: https://developers.openai.com/api/docs/guides/structured-outputs
 
 
 

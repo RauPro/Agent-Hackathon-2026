@@ -11,13 +11,22 @@ export default defineConfig({
     viewport: { width: 390, height: 844 },
     trace: "retain-on-failure",
   },
-  webServer: {
-    command: "npm run dev -- --port 3100",
-    url: "http://127.0.0.1:3100",
-    reuseExistingServer: false,
-    timeout: 60000,
-    env: {
-      DATABASE_PATH: join(tmpdir(), `sf-sidekick-e2e-${process.pid}.sqlite`),
+  webServer: [
+    {
+      command: "node tests/e2e/mock-openai.mjs",
+      url: "http://127.0.0.1:3101/health",
+      reuseExistingServer: false,
     },
-  },
+    {
+      command: "npm run dev -- --port 3100",
+      url: "http://127.0.0.1:3100",
+      reuseExistingServer: false,
+      timeout: 60000,
+      env: {
+        DATABASE_PATH: join(tmpdir(), `sf-sidekick-e2e-${process.pid}.sqlite`),
+        OPENAI_API_KEY: "test-key-not-a-secret",
+        OPENAI_BASE_URL: "http://127.0.0.1:3101/v1",
+      },
+    },
+  ],
 });

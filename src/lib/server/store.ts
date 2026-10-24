@@ -7,7 +7,14 @@ import {
   type ContextState,
   type UserContext,
 } from "@/lib/domain/context";
-import { initialChat, modelReplySchema, validateDraft, type ChatRequest, type ChatState, type ModelReply } from "@/lib/domain/onboarding-chat";
+import {
+  initialChat,
+  modelReplySchema,
+  validateDraft,
+  type ChatRequest,
+  type ChatState,
+  type ModelReply,
+} from "@/lib/domain/onboarding-chat";
 
 type SessionRow = {
   token_hash: string;
@@ -16,7 +23,9 @@ type SessionRow = {
   confirmed_at: string | null;
 };
 export class ContextConflict extends Error {
-  constructor(public code: "stale_revision" | "request_reused" | "profile_changed") {
+  constructor(
+    public code: "stale_revision" | "request_reused" | "profile_changed",
+  ) {
     super(code);
   }
 }
@@ -159,58 +168,117 @@ export class ContextStore {
   readChat(token: string | undefined): ChatState {
     const session = this.session(token);
     if (!session) throw new SessionMissing();
-    const existing = this.db.prepare("SELECT state_json FROM onboarding_chats WHERE session_id = ?").get(session.token_hash) as { state_json: string } | undefined;
+    const existing = this.db
+      .prepare("SELECT state_json FROM onboarding_chats WHERE session_id = ?")
+      .get(session.token_hash) as { state_json: string } | undefined;
     if (existing) return JSON.parse(existing.state_json) as ChatState;
     const chat = initialChat(this.state(session));
-    this.db.prepare("INSERT INTO onboarding_chats (session_id, state_json) VALUES (?, ?)").run(session.token_hash, JSON.stringify(chat));
+    this.db
+      .prepare(
+        "INSERT INTO onboarding_chats (session_id, state_json) VALUES (?, ?)",
+      )
+      .run(session.token_hash, JSON.stringify(chat));
     return chat;
   }
 
-  cachedChat(token: string | undefined, request: ChatRequest): ChatState | null {
+  cachedChat(
+    token: string | undefined,
+    request: ChatRequest,
+  ): ChatState | null {
     const session = this.session(token);
     if (!session) throw new SessionMissing();
-    const prior = this.db.prepare("SELECT payload_hash, result_json FROM runs WHERE session_id = ? AND operation_key = ?")
-      .get(session.token_hash, `chat:${request.requestId}`) as { payload_hash: string; result_json: string } | undefined;
+    const prior = this.db
+      .prepare(
+        "SELECT payload_hash, result_json FROM runs WHERE session_id = ? AND operation_key = ?",
+      )
+      .get(session.token_hash, `chat:${request.requestId}`) as
+      | { payload_hash: string; result_json: string }
+      | undefined;
     if (!prior) return null;
-    if (prior.payload_hash !== hash(JSON.stringify(request))) throw new ContextConflict("request_reused");
+    if (prior.payload_hash !== hash(JSON.stringify(request)))
+      throw new ContextConflict("request_reused");
     return JSON.parse(prior.result_json) as ChatState;
   }
 
   checkChat(token: string | undefined, request: ChatRequest): ChatState {
     const chat = this.readChat(token);
-    if (chat.revision !== request.revision) throw new ContextConflict("stale_revision");
-    if (request.action !== "reload_saved" && this.read(token)!.revision !== chat.baseRevision) throw new ContextConflict("profile_changed");
+    if (chat.revision !== request.revision)
+      throw new ContextConflict("stale_revision");
+    if (
+      request.action !== "reload_saved" &&
+      this.read(token)!.revision !== chat.baseRevision
+    )
+      throw new ContextConflict("profile_changed");
     return chat;
   }
 
-  commitChat(token: string | undefined, request: ChatRequest, reply?: ModelReply): ChatState {
-    return this.db.transaction(() => {
-      const cached = this.cachedChat(token, request);
-      if (cached) return cached;
-      const current = this.checkChat(token, request);
-      let next: ChatState;
-      if (request.action === "message") {
-        const parsed = modelReplySchema.parse(reply);
-        next = {
-          ...current, revision: current.revision + 1, confirmed: false, draft: parsed.draft,
-          messages: [...current.messages,
-            { id: request.requestId, role: "user", content: request.message },
-            { id: randomUUID(), role: "assistant", content: parsed.reply }],
-        };
-      } else if (request.action === "confirm") {
-        const profile = validateDraft(current.draft);
-        if (!profile.success) throw new Error("draft_incomplete");
-        const saved = this.save(token, { context: profile.data, baseRevision: current.baseRevision, requestId: `chat-confirm:${request.requestId}` });
-        next = { ...current, revision: current.revision + 1, baseRevision: saved.revision, confirmed: true };
-      } else {
-        next = { ...initialChat(this.read(token)!), revision: current.revision + 1 };
-      }
-      const sessionId = this.session(token)!.token_hash;
-      this.db.prepare("UPDATE onboarding_chats SET state_json = ? WHERE session_id = ?").run(JSON.stringify(next), sessionId);
-      this.db.prepare("INSERT INTO runs (id, session_id, operation_key, payload_hash, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(randomUUID(), sessionId, `chat:${request.requestId}`, hash(JSON.stringify(request)), JSON.stringify(next), new Date().toISOString());
-      return next;
-    }).immediate();
+  commitChat(
+    token: string | undefined,
+    request: ChatRequest,
+    reply?: ModelReply,
+  ): ChatState {
+    return this.db
+      .transaction(() => {
+        const cached = this.cachedChat(token, request);
+        if (cached) return cached;
+        const current = this.checkChat(token, request);
+        let next: ChatState;
+        if (request.action === "message") {
+          const parsed = modelReplySchema.parse(reply);
+          next = {
+            ...current,
+            revision: current.revision + 1,
+            confirmed:
+              current.confirmed &&
+              JSON.stringify(parsed.draft) === JSON.stringify(current.draft),
+            draft: parsed.draft,
+            messages: [
+              ...current.messages,
+              { id: request.requestId, role: "user", content: request.message },
+              { id: randomUUID(), role: "assistant", content: parsed.reply },
+            ],
+          };
+        } else if (request.action === "confirm") {
+          const profile = validateDraft(current.draft);
+          if (!profile.success) throw new Error("draft_incomplete");
+          const saved = this.save(token, {
+            context: profile.data,
+            baseRevision: current.baseRevision,
+            requestId: `chat-confirm:${request.requestId}`,
+          });
+          next = {
+            ...current,
+            revision: current.revision + 1,
+            baseRevision: saved.revision,
+            confirmed: true,
+          };
+        } else {
+          next = {
+            ...initialChat(this.read(token)!),
+            revision: current.revision + 1,
+          };
+        }
+        const sessionId = this.session(token)!.token_hash;
+        this.db
+          .prepare(
+            "UPDATE onboarding_chats SET state_json = ? WHERE session_id = ?",
+          )
+          .run(JSON.stringify(next), sessionId);
+        this.db
+          .prepare(
+            "INSERT INTO runs (id, session_id, operation_key, payload_hash, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          )
+          .run(
+            randomUUID(),
+            sessionId,
+            `chat:${request.requestId}`,
+            hash(JSON.stringify(request)),
+            JSON.stringify(next),
+            new Date().toISOString(),
+          );
+        return next;
+      })
+      .immediate();
   }
 
   close() {

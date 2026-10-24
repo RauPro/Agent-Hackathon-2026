@@ -3,9 +3,19 @@ import { join } from "node:path";
 import { validContext } from "../fixtures";
 
 const origin = "http://127.0.0.1:3100";
-const context = validContext();
-const next = (page: Page) =>
-  page.getByRole("button", { name: "Continuar" }).click();
+const intro =
+  "I'm Alex Rivera, a product engineer building TypeScript agents in production. I'm in SF from October 24 to November 5, 2026, looking for a founding engineer role on a small team. I can share my experience building agents and working in product teams.";
+async function send(page: Page, message: string) {
+  await page.getByLabel("Tu mensaje", { exact: true }).fill(message);
+  await page.getByRole("button", { name: "Enviar mensaje" }).click();
+}
+async function shot(page: Page, name: string) {
+  if (process.env.PREVIEW_DIR)
+    await page.screenshot({
+      path: join(process.env.PREVIEW_DIR, `${name}.png`),
+      fullPage: true,
+    });
+}
 async function noOverflow(page: Page) {
   expect(
     await page.evaluate(
@@ -13,259 +23,242 @@ async function noOverflow(page: Page) {
     ),
   ).toBe(true);
 }
-async function screenshot(page: Page, name: string) {
-  if (process.env.PREVIEW_DIR)
-    await page.screenshot({
-      path: join(process.env.PREVIEW_DIR, `${name}.png`),
-      fullPage: true,
-    });
-}
-async function fillToSchedule(page: Page, name = context.profile.name) {
-  await page
-    .getByLabel("¿Cómo sería una buena semana para ti?")
-    .fill(context.goal.text);
-  await next(page);
-  await page.getByLabel("¿Cómo te llamas?").fill(name);
-  await page
-    .getByLabel("Cuéntanos sobre tu experiencia")
-    .fill(context.profile.bio);
-  await page
-    .getByLabel("¿Qué puedes aportar a una conversación?")
-    .fill(context.profile.offers);
-  await noOverflow(page);
-  await next(page);
-  await page.getByLabel("Llegada").fill(context.trip.start);
-  await page.getByLabel("Salida", { exact: true }).fill(context.trip.end);
-}
-async function review(page: Page) {
-  await next(page);
-  await expect(
-    page.getByRole("heading", { name: "Tu punto de partida." }),
-  ).toBeVisible();
-  await noOverflow(page);
-}
-async function confirm(page: Page) {
-  await page
-    .getByLabel("Este resumen refleja lo que busco y lo que puedo aportar.")
-    .check();
-  await page.getByRole("button", { name: "Confirmar y guardar" }).click();
-}
 
-test("mobile onboarding validates, saves, reloads, and updates the goal", async ({
+test("a paragraph builds a reviewable profile; corrections remain drafts until confirmed", async ({
   page,
 }) => {
   await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "¿Qué quieres conseguir en SF?" }),
-  ).toBeVisible();
-  await screenshot(page, "onboarding-mobile");
+  await expect(page.getByLabel("Tu mensaje", { exact: true })).toBeVisible();
+  await expect(page.getByRole("radio")).toHaveCount(0);
+  await expect(page.locator("select")).toHaveCount(0);
+  await shot(page, "chat-mobile-connected-test-fixture");
   await page.keyboard.press("Tab");
   await expect(
-    page.getByRole("link", { name: "Ir al contenido" }),
+    page.getByRole("link", { name: "Ir a la conversación" }),
   ).toBeFocused();
-  await next(page);
+  await send(page, intro);
   await expect(
-    page.getByLabel("¿Cómo sería una buena semana para ti?"),
-  ).toBeFocused();
-  await expect(
-    page.getByRole("alert").filter({ hasText: "Hay información por revisar" }),
+    page.getByRole("button", { name: "Revisar mi perfil" }),
   ).toBeVisible();
-  await fillToSchedule(page);
-  await page.getByLabel("Salida", { exact: true }).fill("2026-10-23");
-  await next(page);
-  await expect(
-    page.getByText("La salida debe ser el mismo día o después de la llegada."),
-  ).toBeVisible();
-  await page.getByLabel("Salida", { exact: true }).fill(context.trip.end);
-  await page
-    .getByRole("radio", { name: "Añadir franjas", exact: true })
-    .check();
-  await page.getByRole("radio", { name: "Añadir", exact: true }).check();
-  await page.getByLabel("Nombre del compromiso").fill("Cena con el equipo");
+  expect(
+    (await (await page.request.get("/api/state")).json()).context,
+  ).toBeNull();
+  await page.getByRole("button", { name: "Revisar mi perfil" }).click();
+  await expect(page.locator(".inline-review")).toContainText("Alex Rivera");
+  await expect(page.locator(".inline-review")).toContainText(
+    "Por definir; puede esperar.",
+  );
   await noOverflow(page);
-  await screenshot(page, "onboarding-schedule-mobile");
-  await review(page);
-  await page.getByRole("button", { name: "Confirmar y guardar" }).click();
-  await expect(
-    page.getByText("Confirma el resumen para guardar."),
-  ).toBeVisible();
-  await confirm(page);
-  await expect(page.getByText("Perfil guardado")).toBeVisible();
-  await expect(page.getByText("Confirmado por ti · versión 1")).toBeVisible();
-  await screenshot(page, "onboarding-saved-mobile");
-  await page.reload();
-  await expect(
-    page.getByText("Cena con el equipo", { exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Editar mi perfil" }).click();
-  await page.getByRole("radio", { name: /Encontrar talento/ }).check();
   await page
-    .getByLabel("¿Cómo sería una buena semana para ti?")
-    .fill(
-      "Encontrar un founding engineer para construir nuestro producto de agentes.",
-    );
-  await next(page);
-  await next(page);
-  await review(page);
-  await confirm(page);
-  await expect(page.getByText("Confirmado por ti · versión 2")).toBeVisible();
+    .getByRole("button", { name: "Confirmar perfil", exact: true })
+    .click();
+  await expect(
+    page.getByText("Perfil confirmado", { exact: true }),
+  ).toBeVisible();
+  await send(
+    page,
+    "Actually, I'm hiring a founding engineer for my agent startup.",
+  );
+  await expect(
+    page.getByRole("button", { name: "Revisar mi perfil" }),
+  ).toBeVisible();
   expect(
     (await (await page.request.get("/api/state")).json()).context.goal.type,
-  ).toBe("hiring");
+  ).toBe("seeking_role");
+  await page.getByRole("button", { name: "Revisar mi perfil" }).click();
+  await expect(page.locator(".inline-review")).toContainText(
+    "Encontrar talento",
+  );
+  await page
+    .getByRole("button", { name: "Confirmar perfil", exact: true })
+    .click();
+  await expect(
+    page.getByText("Perfil confirmado", { exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByText("Perfil confirmado", { exact: true }),
+  ).toBeVisible();
+  expect((await (await page.request.get("/api/state")).json()).revision).toBe(
+    2,
+  );
+  await shot(page, "chat-confirmed-mobile-test-fixture");
 });
 
-test("320px and desktop reflow with long names and unknown availability", async ({
+test("reflows at 320px and desktop; a reload restores messages and an unconfirmed draft", async ({
   page,
 }) => {
   for (const width of [320, 1280]) {
     await page.context().clearCookies();
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/");
-    await expect(
-      page.getByRole("heading", { name: "¿Qué quieres conseguir en SF?" }),
-    ).toBeVisible();
+    await expect(page.getByLabel("Tu mensaje", { exact: true })).toBeVisible();
     await noOverflow(page);
-    await screenshot(page, `onboarding-${width}`);
-    await fillToSchedule(
-      page,
-      "Alexandra María de los Ángeles Rivera Fernández del Río",
+    await shot(page, `chat-empty-${width}-test-fixture`);
+    await send(page, intro);
+    await expect(
+      page.getByRole("button", { name: "Revisar mi perfil" }),
+    ).toBeVisible();
+    await page.reload();
+    await expect(page.getByText(intro, { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Revisar mi perfil" }).click();
+    await expect(page.locator(".inline-review")).toContainText("Alex Rivera");
+    await noOverflow(page);
+    await shot(page, `chat-draft-${width}-test-fixture`);
+    expect((await (await page.request.get("/api/state")).json()).revision).toBe(
+      0,
     );
-    await page
-      .getByRole("radio", { name: "Añadir franjas", exact: true })
-      .check();
-    await noOverflow(page);
-    await screenshot(page, `onboarding-schedule-${width}`);
-    await page
-      .getByRole("radio", { name: "Aún no lo sé", exact: true })
-      .check();
-    await page.getByRole("radio", { name: "No tengo compromisos" }).check();
-    await noOverflow(page);
-    await review(page);
-    await expect(page.getByText("Franjas por definir.")).toBeVisible();
-    await expect(
-      page.getByText("Has indicado que no tienes compromisos fijos."),
-    ).toBeVisible();
-    await confirm(page);
-    await expect(page.getByText("Perfil guardado")).toBeVisible();
-    await noOverflow(page);
-    await screenshot(page, `onboarding-saved-${width}`);
   }
 });
 
-test("a lost save response preserves input and retries the same operation", async ({
+test("a lost turn response keeps the input and retries without duplicate messages", async ({
   page,
 }) => {
   await page.goto("/");
-  await fillToSchedule(page);
-  await review(page);
-  let loseResponse = true;
+  let lose = true;
   const keys: string[] = [];
-  await page.route("**/api/context", async (route) => {
+  await page.route("**/api/onboarding", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
     keys.push(route.request().postDataJSON().requestId);
-    if (loseResponse) {
-      loseResponse = false;
+    if (lose) {
+      lose = false;
       const response = await route.fetch();
       expect(response.status()).toBe(200);
       await route.abort("failed");
     } else await route.continue();
   });
-  await confirm(page);
+  await send(page, intro);
   await expect(
     page
       .getByRole("alert")
-      .filter({ hasText: "No pudimos confirmar el guardado" }),
+      .filter({ hasText: "No pudimos confirmar la respuesta" }),
   ).toBeVisible();
+  await expect(page.getByLabel("Tu mensaje", { exact: true })).toHaveValue(
+    intro,
+  );
+  await page.getByRole("button", { name: "Enviar mensaje" }).click();
   await expect(
-    page.getByText(context.profile.offers, { exact: true }),
+    page.getByRole("button", { name: "Revisar mi perfil" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Confirmar y guardar" }).click();
-  await expect(page.getByText("Perfil guardado")).toBeVisible();
   expect(keys).toHaveLength(2);
   expect(keys[0]).toBe(keys[1]);
-  expect((await (await page.request.get("/api/state")).json()).revision).toBe(
-    1,
-  );
+  expect(
+    (await (await page.request.get("/api/onboarding")).json()).chat.messages,
+  ).toHaveLength(3);
 });
 
-test("a stale tab shows the saved version instead of overwriting it", async ({
+test("provider errors preserve input and ambiguous or invalid dates cannot be confirmed", async ({
   page,
 }) => {
   await page.goto("/");
-  await fillToSchedule(page);
-  await review(page);
-  const newer = validContext();
-  newer.goal = {
-    type: "customers",
-    text: "Explorar pilotos con dos empresas del sector de la construcción.",
-  };
-  const response = await page.request.post("/api/context", {
+  await send(page, "FAIL_PROVIDER");
+  await expect(
+    page.getByRole("alert").filter({ hasText: "No pude responder ahora" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Tu mensaje", { exact: true })).toHaveValue(
+    "FAIL_PROVIDER",
+  );
+  expect(
+    (await (await page.request.get("/api/onboarding")).json()).chat.messages,
+  ).toHaveLength(1);
+  await send(page, intro);
+  await expect(
+    page.getByRole("button", { name: "Revisar mi perfil" }),
+  ).toBeVisible();
+  await send(page, "I leave before I arrive");
+  await expect(
+    page.getByText(
+      "That departure is before your arrival. What is your departure date?",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Revisar mi perfil" }),
+  ).toHaveCount(0);
+  const state = (await (await page.request.get("/api/onboarding")).json()).chat;
+  const response = await page.request.post("/api/onboarding", {
     headers: { origin },
     data: {
-      context: newer,
-      baseRevision: 0,
+      action: "confirm",
+      revision: state.revision,
       requestId: crypto.randomUUID(),
-      confirmed: true,
     },
   });
-  expect(response.status()).toBe(200);
-  await confirm(page);
-  await expect(
-    page
-      .getByRole("alert")
-      .filter({ hasText: "Tu perfil cambió en otra pestaña" }),
-  ).toBeVisible();
-  await expect(
-    page.getByText(context.goal.text, { exact: true }),
-  ).toBeVisible();
-  await page.getByText("Ver la versión guardada", { exact: true }).click();
-  await expect(page.getByText(newer.goal.text, { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Cargar versión guardada" }).click();
-  await expect(
-    page.getByLabel("¿Cómo sería una buena semana para ti?"),
-  ).toHaveValue(newer.goal.text);
-  expect((await (await page.request.get("/api/state")).json()).revision).toBe(
-    1,
-  );
+  expect(response.status()).toBe(400);
 });
 
-test("initial read failure offers a working retry", async ({ page }) => {
-  let fail = true;
-  await page.route("**/api/state", (route) =>
-    fail
-      ? route.fulfill({
-          status: 503,
-          body: "{}",
-          contentType: "application/json",
-        })
-      : route.continue(),
+test("a stale tab recovers newer messages and keeps its unsent text", async ({
+  page,
+  context,
+}) => {
+  await page.goto("/");
+  await expect(page.getByLabel("Tu mensaje", { exact: true })).toBeVisible();
+  const other = await context.newPage();
+  await other.goto("/");
+  await expect(other.getByLabel("Tu mensaje", { exact: true })).toBeVisible();
+  await send(page, intro);
+  await expect(
+    page.getByRole("button", { name: "Revisar mi perfil" }),
+  ).toBeVisible();
+  await send(other, "No commitments");
+  await expect(
+    other.getByRole("alert").filter({ hasText: "La conversación cambió" }),
+  ).toBeVisible();
+  await other.getByRole("button", { name: "Recuperar conversación" }).click();
+  await expect(other.getByText(intro, { exact: true })).toBeVisible();
+  await expect(other.getByLabel("Tu mensaje", { exact: true })).toHaveValue(
+    "No commitments",
   );
+  await other.getByRole("button", { name: "Enviar mensaje" }).click();
+  await expect(
+    other.getByText(
+      "Noted: no fixed commitments. Your availability can stay open for now.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+});
+
+test("missing connection is explicit, and the composer supports keyboard newlines", async ({
+  page,
+}) => {
+  await page.route("**/api/onboarding", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({ response, json: { ...body, configured: false } });
+  });
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: "No pudimos abrir tu espacio." }),
+    page.getByText("Vista previa · OpenAI por conectar"),
   ).toBeVisible();
-  fail = false;
-  await page.getByRole("button", { name: "Volver a intentar" }).click();
+  await page
+    .getByLabel("Tu mensaje", { exact: true })
+    .fill("A message before connecting");
+  await page.getByLabel("Tu mensaje", { exact: true }).press("Shift+Enter");
+  await expect(page.getByLabel("Tu mensaje", { exact: true })).toHaveValue(
+    "A message before connecting\n",
+  );
   await expect(
-    page.getByRole("heading", { name: "¿Qué quieres conseguir en SF?" }),
-  ).toBeVisible();
+    page.getByRole("button", { name: "Enviar mensaje" }),
+  ).toBeDisabled();
+  await shot(page, "chat-preview-disconnected");
 });
 
-test("API enforces origin, confirmation, identity, payload limits, and session isolation", async ({
+test("API rejects origin, forged state, and oversized input; sessions remain isolated", async ({
   request,
   playwright,
 }) => {
-  const opened = await request.get("/api/state");
+  const opened = await request.get("/api/onboarding");
   expect(opened.headers()["cache-control"]).toContain("no-store");
   expect(opened.headers()["set-cookie"]).toContain("HttpOnly");
   const body = {
-    context,
-    baseRevision: 0,
+    action: "message",
+    revision: 0,
     requestId: crypto.randomUUID(),
-    confirmed: true,
+    message: intro,
   };
   expect(
     (
-      await request.post("/api/context", {
+      await request.post("/api/onboarding", {
         data: body,
         headers: { origin: "https://untrusted.example" },
       })
@@ -273,23 +266,15 @@ test("API enforces origin, confirmation, identity, payload limits, and session i
   ).toBe(403);
   expect(
     (
-      await request.post("/api/context", {
-        data: { ...body, confirmed: false },
+      await request.post("/api/onboarding", {
+        data: { ...body, draft: {} },
         headers: { origin },
       })
     ).status(),
   ).toBe(400);
   expect(
     (
-      await request.post("/api/context", {
-        data: { ...body, sessionId: "someone-else" },
-        headers: { origin },
-      })
-    ).status(),
-  ).toBe(400);
-  expect(
-    (
-      await request.post("/api/context", {
+      await request.post("/api/onboarding", {
         data: "x".repeat(40000),
         headers: { origin, "Content-Type": "application/json" },
       })
@@ -297,10 +282,34 @@ test("API enforces origin, confirmation, identity, payload limits, and session i
   ).toBe(413);
   expect(
     (
-      await request.post("/api/context", { data: body, headers: { origin } })
+      await request.post("/api/onboarding", { data: body, headers: { origin } })
     ).status(),
   ).toBe(200);
   const second = await playwright.request.newContext({ baseURL: origin });
-  expect((await (await second.get("/api/state")).json()).context).toBeNull();
+  expect(
+    (await (await second.get("/api/onboarding")).json()).chat.draft.name,
+  ).toBe("");
   await second.dispose();
+});
+
+test("existing confirmed profiles survive the switch from forms to chat", async ({
+  request,
+}) => {
+  await request.get("/api/state");
+  expect(
+    (
+      await request.post("/api/context", {
+        headers: { origin },
+        data: {
+          context: validContext(),
+          baseRevision: 0,
+          requestId: crypto.randomUUID(),
+          confirmed: true,
+        },
+      })
+    ).status(),
+  ).toBe(200);
+  const state = (await (await request.get("/api/onboarding")).json()).chat;
+  expect(state.confirmed).toBe(true);
+  expect(state.draft.name).toBe("Alex Rivera");
 });

@@ -3,8 +3,13 @@ import { NextResponse } from "next/server";
 export function sameOrigin(request: Request) {
   try {
     const origin = new URL(request.headers.get("origin") || "");
-    return origin.host === request.headers.get("host") && origin.protocol === new URL(request.url).protocol;
-  } catch { return false; }
+    return (
+      origin.host === request.headers.get("host") &&
+      origin.protocol === new URL(request.url).protocol
+    );
+  } catch {
+    return false;
+  }
 }
 
 export const SESSION_COOKIE = "sf_sidekick_session";
