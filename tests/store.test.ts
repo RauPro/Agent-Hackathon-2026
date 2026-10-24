@@ -2,15 +2,29 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ContextConflict, ContextStore, SessionMissing } from "../src/lib/server/store";
+import {
+  ContextConflict,
+  ContextStore,
+  SessionMissing,
+} from "../src/lib/server/store";
 import { validContext } from "./fixtures";
 
 describe("context persistence and ownership", () => {
   let folder: string;
   let store: ContextStore;
-  beforeEach(() => { folder = mkdtempSync(join(tmpdir(), "sidekick-test-")); store = new ContextStore(join(folder, "context.sqlite")); });
-  afterEach(() => { store.close(); rmSync(folder, { recursive: true, force: true }); });
-  const input = (baseRevision = 0) => ({ context: validContext(), baseRevision, requestId: crypto.randomUUID() });
+  beforeEach(() => {
+    folder = mkdtempSync(join(tmpdir(), "sidekick-test-"));
+    store = new ContextStore(join(folder, "context.sqlite"));
+  });
+  afterEach(() => {
+    store.close();
+    rmSync(folder, { recursive: true, force: true });
+  });
+  const input = (baseRevision = 0) => ({
+    context: validContext(),
+    baseRevision,
+    requestId: crypto.randomUUID(),
+  });
 
   it("isolates browsers and replaces forged session cookies", () => {
     const a = store.ensureSession();
@@ -45,7 +59,10 @@ describe("context persistence and ownership", () => {
     const session = store.ensureSession();
     store.save(session.token, input());
     const newer = input(1);
-    newer.context.goal = { type: "hiring", text: "Encontrar un founding engineer para mi equipo de agentes." };
+    newer.context.goal = {
+      type: "hiring",
+      text: "Encontrar un founding engineer para mi equipo de agentes.",
+    };
     expect(store.save(session.token, newer).revision).toBe(2);
     expect(() => store.save(session.token, input(1))).toThrow(ContextConflict);
     expect(store.read(session.token)?.context?.goal.type).toBe("hiring");
@@ -59,7 +76,9 @@ describe("context persistence and ownership", () => {
     second.context.profile.name = "Alex corregido";
     store.save(session.token, second);
     expect(store.save(session.token, first).revision).toBe(1);
-    expect(store.read(session.token)?.context?.profile.name).toBe("Alex corregido");
+    expect(store.read(session.token)?.context?.profile.name).toBe(
+      "Alex corregido",
+    );
   });
 
   it("does not add a revision for an unchanged confirmation", () => {

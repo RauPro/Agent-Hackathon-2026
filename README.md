@@ -2,6 +2,14 @@
 
 A mobile-first web app that turns a visitor's goal in San Francisco into relevant people, useful conversations, and a daily plan. See the [product and implementation plan](SF-Sidekick-Implementation-Plan.md) for scope and acceptance criteria.
 
+## Estado: fase 1 — onboarding
+
+Implementado: objetivo principal (buscar rol, contratar, clientes o colaboradores), nombre, experiencia, aportación, estancia en SF, franjas disponibles, compromisos fijos y preferencias opcionales. Cuatro pasos, revisión editable y confirmación antes de guardar. Disponibilidad desconocida y ausencia de compromisos son estados distintos.
+
+El formulario es guiado: admite una bio pegada, pero no realiza extracción con IA ni afirma haber investigado al usuario. Conserva texto ante errores de guardado, recupera el perfil tras recargar y comprueba conflictos entre pestañas. Los datos confirmados se etiquetan como aportados por el usuario.
+
+Las siguientes fases son descubrimiento/ranking con evidencia y autenticación/matching bilateral. Aún no hay recomendaciones, presentaciones, registro en eventos ni escrituras de calendario. El onboarding tampoco otorga esos permisos.
+
 ## Desarrollo local
 
 ```bash
@@ -26,6 +34,28 @@ npm start
 ```
 
 Las pruebas de dominio cubren fechas de SF (incluidos cambios horarios), restricciones, confirmación, aislamiento, revisiones, reintentos y recuperación del archivo SQLite. `GET /api/state` abre o recupera la sesión; `POST /api/context` valida y guarda contexto confirmado con control de revisión. Las respuestas personales no usan caché compartida.
+
+Para las pruebas de navegador:
+
+```bash
+npx playwright install chromium
+npm run test:e2e
+```
+
+Playwright levanta un servidor en `127.0.0.1:3100` con una base SQLite temporal distinta de la aplicación. Detén antes cualquier `next dev` de este repositorio: ambos usan el directorio de desarrollo de Next. `PREVIEW_DIR=/ruta/absoluta` guarda capturas de verificación. Se ha recorrido el flujo en Chromium a 320, 390 y 1280 px, incluyendo campos vacíos, fechas inválidas, nombres largos, teclado, respuesta perdida al guardar y revisión desactualizada. Las pruebas no sustituyen la comprobación del teclado y safe areas en un teléfono físico.
+
+### Auditoría A1 de esta entrega
+
+| Comprobación | Evidencia |
+| --- | --- |
+| Revisar y corregir perfil antes de guardar | Recorrido completo en `tests/e2e/onboarding.spec.ts` |
+| Rechazar fechas/horarios inválidos y confirmación ausente | Pruebas de dominio y API |
+| Conservar estado y cambiar objetivo con nueva revisión | Recarga y edición en navegador; reapertura de SQLite en `tests/store.test.ts` |
+| No duplicar al perder una respuesta | Reintento del mismo `requestId` contra el servidor real |
+| No sobrescribir una edición más reciente | Conflicto de revisión y elección explícita de versión |
+| No mezclar datos de navegadores | Dos sesiones diferentes en pruebas de almacén y API |
+
+SQLite guarda un registro en `runs` por confirmación aceptada, ligado a sesión, operación y revisión resultante. No se necesita una plataforma externa de observabilidad para esta fase.
 
 El plan describe el producto completo; sus funciones futuras no se consideran implementadas por aparecer en el documento.
 

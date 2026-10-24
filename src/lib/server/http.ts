@@ -4,7 +4,11 @@ export const SESSION_COOKIE = "sf_sidekick_session";
 export function json(body: unknown, status = 200) {
   return NextResponse.json(body, {
     status,
-    headers: { "Cache-Control": "private, no-store", "Vary": "Cookie", "X-Content-Type-Options": "nosniff" },
+    headers: {
+      "Cache-Control": "private, no-store",
+      Vary: "Cookie",
+      "X-Content-Type-Options": "nosniff",
+    },
   });
 }
 
@@ -23,6 +27,9 @@ export async function readJson(request: Request): Promise<unknown> {
     }
     chunks.push(value);
   }
-  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); }
-  catch { throw new Error("invalid_json"); }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("invalid_json");
+  }
 }

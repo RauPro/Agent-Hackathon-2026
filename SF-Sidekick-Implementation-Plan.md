@@ -3,7 +3,8 @@
 **Versión:** 1.2 · Auditoría e introducciones con agenda bilateral
 
 **Fecha:** 24 de octubre de 2026 · San Francisco  
-**Estado:** especificación para construir; las funciones descritas todavía no están implementadas.  
+**Estado:** fase 1 de onboarding implementada; el resto sigue siendo especificación. Véase el [README](README.md) para alcance y verificación actuales.
+
 **Equipo previsto:** dos personas.  
 **Horizonte:** MVP para el hackathon, seguido de mejoras verificables.  
 **Nombre:** provisional; cambiar el nombre no afecta la arquitectura.
@@ -75,7 +76,7 @@ Las recomendaciones, clics y registros son métricas intermedias. Ninguna demues
 
 ## 2. Qué hará el sistema
 
-Esta sección es el contrato de aceptación del producto: describe lo que debe poder ver el usuario, lo que debe validar el servidor y cómo comprobar el resultado. Sigue siendo una especificación; no demuestra que estas funciones ya estén construidas.
+Esta sección es el contrato de aceptación del producto: describe lo que debe poder ver el usuario, lo que debe validar el servidor y cómo comprobar el resultado. El onboarding guiado de A1 está implementado con revisión y persistencia; la extracción automática con modelo y los recorridos posteriores siguen pendientes. El README registra las comprobaciones realizadas.
 
 | Momento | Trabajo del sistema | Resultado visible |
 | --- | --- | --- |

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { contextSchema, saveContextSchema, windowInstants } from "../src/lib/domain/context";
+import {
+  contextSchema,
+  saveContextSchema,
+  windowInstants,
+} from "../src/lib/domain/context";
 import { validContext } from "./fixtures";
 
 describe("confirmed onboarding context", () => {
@@ -25,12 +29,26 @@ describe("confirmed onboarding context", () => {
     const context = validContext();
     context.availability = { status: "provided", windows: [] };
     expect(contextSchema.safeParse(context).success).toBe(false);
-    context.availability.windows = [{ date: "2026-10-23", start: "15:00", end: "16:00" }];
+    context.availability.windows = [
+      { date: "2026-10-23", start: "15:00", end: "16:00" },
+    ];
     expect(contextSchema.safeParse(context).success).toBe(false);
-    context.availability.windows[0] = { date: "2026-10-26", start: "16:00", end: "15:00" };
+    context.availability.windows[0] = {
+      date: "2026-10-26",
+      start: "16:00",
+      end: "15:00",
+    };
     expect(contextSchema.safeParse(context).success).toBe(false);
-    context.availability.windows[0] = { date: "2026-10-26", start: "15:00", end: "16:00" };
-    context.availability.windows.push({ date: "2026-10-26", start: "15:30", end: "17:00" });
+    context.availability.windows[0] = {
+      date: "2026-10-26",
+      start: "15:00",
+      end: "16:00",
+    };
+    context.availability.windows.push({
+      date: "2026-10-26",
+      start: "15:30",
+      end: "17:00",
+    });
     expect(contextSchema.safeParse(context).success).toBe(false);
     context.availability.windows[1].start = "16:00";
     expect(contextSchema.safeParse(context).success).toBe(true);
@@ -38,7 +56,12 @@ describe("confirmed onboarding context", () => {
 
   it("rejects hidden schedules in unknown/none states and empty commitments", () => {
     const context = validContext();
-    context.commitments = { status: "none", items: [{ title: "Cena", date: "2026-10-26", start: "18:00", end: "19:00" }] };
+    context.commitments = {
+      status: "none",
+      items: [
+        { title: "Cena", date: "2026-10-26", start: "18:00", end: "19:00" },
+      ],
+    };
     expect(contextSchema.safeParse(context).success).toBe(false);
     context.commitments = { status: "provided", items: [] };
     expect(contextSchema.safeParse(context).success).toBe(false);
@@ -46,24 +69,61 @@ describe("confirmed onboarding context", () => {
 
   it("rejects an ambiguous SF fall-back hour and normalizes both offsets correctly", () => {
     const context = validContext();
-    context.availability = { status: "provided", windows: [{ date: "2026-11-01", start: "01:30", end: "02:30" }] };
+    context.availability = {
+      status: "provided",
+      windows: [{ date: "2026-11-01", start: "01:30", end: "02:30" }],
+    };
     expect(contextSchema.safeParse(context).success).toBe(false);
-    expect(new Date(windowInstants({ date: "2026-10-26", start: "15:30", end: "16:00" }).start).toISOString()).toBe("2026-10-26T22:30:00.000Z");
-    expect(new Date(windowInstants({ date: "2026-11-02", start: "15:30", end: "16:00" }).start).toISOString()).toBe("2026-11-02T23:30:00.000Z");
+    expect(
+      new Date(
+        windowInstants({
+          date: "2026-10-26",
+          start: "15:30",
+          end: "16:00",
+        }).start,
+      ).toISOString(),
+    ).toBe("2026-10-26T22:30:00.000Z");
+    expect(
+      new Date(
+        windowInstants({
+          date: "2026-11-02",
+          start: "15:30",
+          end: "16:00",
+        }).start,
+      ).toISOString(),
+    ).toBe("2026-11-02T23:30:00.000Z");
   });
 
   it("rejects spring-forward times and unsupported timezones", () => {
     const context = validContext();
     context.trip = { ...context.trip, start: "2027-03-13", end: "2027-03-15" };
-    context.availability = { status: "provided", windows: [{ date: "2027-03-14", start: "02:15", end: "03:30" }] };
+    context.availability = {
+      status: "provided",
+      windows: [{ date: "2027-03-14", start: "02:15", end: "03:30" }],
+    };
     expect(contextSchema.safeParse(context).success).toBe(false);
-    expect(contextSchema.safeParse({ ...validContext(), trip: { ...validContext().trip, timezone: "Europe/Madrid" } }).success).toBe(false);
+    expect(
+      contextSchema.safeParse({
+        ...validContext(),
+        trip: { ...validContext().trip, timezone: "Europe/Madrid" },
+      }).success,
+    ).toBe(false);
   });
 
   it("requires explicit confirmation and rejects client-supplied identity", () => {
-    const request = { context: validContext(), baseRevision: 0, requestId: crypto.randomUUID(), confirmed: true };
+    const request = {
+      context: validContext(),
+      baseRevision: 0,
+      requestId: crypto.randomUUID(),
+      confirmed: true,
+    };
     expect(saveContextSchema.safeParse(request).success).toBe(true);
-    expect(saveContextSchema.safeParse({ ...request, confirmed: false }).success).toBe(false);
-    expect(saveContextSchema.safeParse({ ...request, sessionId: "someone-else" }).success).toBe(false);
+    expect(
+      saveContextSchema.safeParse({ ...request, confirmed: false }).success,
+    ).toBe(false);
+    expect(
+      saveContextSchema.safeParse({ ...request, sessionId: "someone-else" })
+        .success,
+    ).toBe(false);
   });
 });
