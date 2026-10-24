@@ -1,23 +1,12 @@
 import { NextRequest } from "next/server";
 import { fieldErrors, saveContextSchema } from "@/lib/domain/context";
 import { ContextConflict, getStore, SessionMissing } from "@/lib/server/store";
-import { json, readJson, SESSION_COOKIE } from "@/lib/server/http";
+import { json, readJson, sameOrigin, SESSION_COOKIE } from "@/lib/server/http";
 
 export const runtime = "nodejs";
 
 export async function POST(request: NextRequest) {
-  // NextURL normalizes loopback IPs to localhost. Compare against the actual Host
-  // received by the server, which browsers cannot override in a cross-origin fetch.
-  let sameOrigin = false;
-  try {
-    const origin = new URL(request.headers.get("origin") || "");
-    sameOrigin =
-      origin.host === request.headers.get("host") &&
-      origin.protocol === request.nextUrl.protocol;
-  } catch {
-    /* Missing or malformed Origin is rejected. */
-  }
-  if (!sameOrigin) {
+  if (!sameOrigin(request)) {
     return json(
       {
         code: "invalid_origin",
