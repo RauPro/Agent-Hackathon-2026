@@ -2,7 +2,7 @@ import { isStoreError, getStore } from "@/lib/server/store";
 
 import { NextRequest } from "next/server";
 import { authRequestSchema, LOGIN_MAX_AGE } from "@/lib/domain/auth";
-import { authenticate, InvalidCredentials } from "@/lib/server/auth-service";
+import { authenticate } from "@/lib/server/auth-service";
 
 import { json, readJson, sameOrigin, SESSION_COOKIE } from "@/lib/server/http";
 
@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
   if (!parsed.success)
     return json(
       {
-        message: "Check your email and password.",
+        message: "Check your email address.",
         errors: Object.fromEntries(
           parsed.error.issues.map((issue) => [
             issue.path.join("."),
@@ -75,13 +75,11 @@ export async function POST(request: NextRequest) {
     });
     return response;
   } catch (error) {
-    if (error instanceof InvalidCredentials)
-      return json({ message: "Email or password is incorrect." }, 401);
     if (isStoreError(error, "account_conflict"))
       return json(
         {
           message:
-            "Could not create this account. Try signing in or use another email.",
+            "Sign out before continuing with another email.",
         },
         409,
       );

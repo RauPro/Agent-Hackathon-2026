@@ -15,7 +15,6 @@ if (!mode.enabled)
   throw new Error(
     "Start Sidekick with SIDEKICK_DEMO=1 and a DATABASE_PATH ending in .demo.sqlite before seeding.",
   );
-const password = "Sidekick local demo passphrase only!";
 const today = Temporal.Now.plainDateISO("America/Los_Angeles");
 let day = today.add({ days: 2 });
 while (day.dayOfWeek > 5) day = day.add({ days: 1 });
@@ -75,15 +74,7 @@ for (const person of people) {
       throw new Error(`${path}: ${body.message || response.status}`);
     return body;
   };
-  try {
-    await call("/api/auth", {
-      action: "register",
-      email: person.email,
-      password,
-    });
-  } catch {
-    await call("/api/auth", { action: "login", email: person.email, password });
-  }
+  await call("/api/auth", { action: "continue", email: person.email });
   const state = await call("/api/state");
   await call("/api/context", {
     confirmed: true,
@@ -170,7 +161,7 @@ if (process.env.DEMO_CONVERSATION === "1") {
   );
 }
 console.log(
-  `\nDemo password: ${password}\nOpen ${new URL("/login?next=%2Fnetwork", origin)} in separate browser profiles.`,
+  `\nOpen ${new URL("/login?next=%2Fnetwork", origin)} in separate browser profiles and continue with a demo email above.`,
 );
 console.log(
   `SF demo dates: ${start} through ${end}. For manual meeting availability use ${start}, 16:00–18:00.`,

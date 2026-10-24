@@ -613,35 +613,6 @@ h1 {
   outline-offset: 1px;
   border-color: #4d8164;
 }
-.password-field {
-  display: flex;
-  align-items: center;
-  border: 1px solid #bdcbb9;
-  border-radius: 9px;
-  background: white;
-}
-.password-field:focus-within {
-  outline: 3px solid #dae6d9;
-  outline-offset: 1px;
-  border-color: #4d8164;
-}
-.password-field input {
-  border: 0;
-  background: transparent;
-}
-.password-field input:focus-visible {
-  outline: 0;
-}
-.password-field button {
-  padding: 10px 12px;
-  flex-shrink: 0;
-  min-width: 58px;
-}
-.auth-hint {
-  font-size: 12px;
-  color: var(--muted);
-  margin: 8px 0 0;
-}
 .field-error {
   font-size: 13px;
   color: #8c392b;
@@ -654,23 +625,6 @@ h1 {
 }
 .auth-form .notice {
   margin: 0;
-}
-.auth-switch {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 0 8px;
-  font-size: 14px;
-  color: var(--muted);
-  margin: 18px 0 0;
-}
-.auth-switch a {
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  color: var(--green);
-  text-underline-offset: 3px;
 }
 .site-header:has(.account-menu) {
   gap: 16px;

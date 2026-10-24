@@ -1,7 +1,7 @@
 import { test, expect, type Browser, type Page } from "@playwright/test";
 import { join } from "node:path";
 import { validContext } from "../fixtures";
-import { register, testPassword } from "./auth-helper";
+import { register } from "./auth-helper";
 
 const origin = "http://127.0.0.1:3100";
 
@@ -416,8 +416,7 @@ test("sign-in returns to the scanned connection and foreign links are rejected",
     await page
       .getByRole("textbox", { name: "Email", exact: true })
       .fill(alex.email);
-    await page.getByLabel("Password", { exact: true }).fill(testPassword);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
     await expect(page).toHaveURL(`${origin}${path}`);
     await expect(
       page.getByRole("heading", { name: "Connect with Pedro Chen" }),

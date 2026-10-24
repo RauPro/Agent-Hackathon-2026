@@ -3,17 +3,8 @@
 import { useRef, useState, type FormEvent } from "react";
 import { Brand } from "./brand";
 
-export function AuthForm({
-  mode,
-  next = "/onboarding",
-}: {
-  mode: "register" | "login";
-  next?: string;
-}) {
-  const registering = mode === "register";
+export function AuthForm({ next = "/onboarding" }: { next?: string }) {
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -30,7 +21,7 @@ export function AuthForm({
       const response = await fetch("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: mode, email, password }),
+        body: JSON.stringify({ action: "continue", email }),
       });
       const result = await response.json();
       if (!response.ok) {
@@ -53,11 +44,12 @@ export function AuthForm({
         <Brand />
       </header>
       <main className="auth-layout">
-        <h1>{registering ? "Create your account" : "Welcome back"}</h1>
+        <h1>Welcome to Sidekick</h1>
         <form
           onSubmit={submit}
           className="auth-form"
-          aria-label={registering ? "Registration" : "Sign in"}
+          aria-label="Continue with email"
+          aria-busy={busy}
         >
           <div className="auth-field">
             <label htmlFor="email">Email</label>
@@ -65,7 +57,7 @@ export function AuthForm({
               id="email"
               name="email"
               type="email"
-              autoComplete="username"
+              autoComplete="email"
               inputMode="email"
               autoCapitalize="none"
               spellCheck={false}
@@ -83,68 +75,15 @@ export function AuthForm({
               </p>
             )}
           </div>
-          <div className="auth-field">
-            <label htmlFor="password">Password</label>
-            <div className="password-field">
-              <input
-                id="password"
-                name="password"
-                type={showPassword ? "text" : "password"}
-                autoComplete={registering ? "new-password" : "current-password"}
-                required
-                minLength={registering ? 15 : 1}
-                maxLength={128}
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                disabled={busy}
-                aria-invalid={!!errors.password}
-                aria-describedby={
-                  errors.password
-                    ? "password-error"
-                    : registering
-                      ? "password-hint"
-                      : undefined
-                }
-              />
-              <button
-                type="button"
-                className="text-button"
-                aria-label={showPassword ? "Hide password" : "Show password"}
-                aria-pressed={showPassword}
-                onClick={() => setShowPassword(!showPassword)}
-              >
-                {showPassword ? "Hide" : "Show"}
-              </button>
-            </div>
-            {errors.password ? (
-              <p className="field-error" id="password-error">
-                {errors.password}
-              </p>
-            ) : (
-              registering && (
-                <p className="auth-hint" id="password-hint">
-                  Use at least 15 characters.
-                </p>
-              )
-            )}
-          </div>
           {notice && (
             <div className="notice" role="alert">
               <p>{notice}</p>
             </div>
           )}
           <button className="primary-button" disabled={busy} type="submit">
-            {busy ? "Please wait…" : registering ? "Create account" : "Sign in"}
+            {busy ? "Please wait…" : "Continue"}
           </button>
         </form>
-        <p className="auth-switch">
-          {registering ? "Already have an account?" : "New to SF Sidekick?"}{" "}
-          <a
-            href={`${registering ? "/login" : "/register"}${next !== "/onboarding" ? `?next=${encodeURIComponent(next)}` : ""}`}
-          >
-            {registering ? "Sign in" : "Create account"}
-          </a>
-        </p>
       </main>
     </>
   );

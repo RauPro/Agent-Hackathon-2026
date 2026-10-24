@@ -4,13 +4,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
+import { NextRequest } from "next/server";
 import { authRequestSchema, LOGIN_MAX_AGE } from "../src/lib/domain/auth";
-import {
-  authenticate,
-  hashPassword,
-  InvalidCredentials,
-  verifyPassword,
-} from "../src/lib/server/auth-service";
+import { authenticate } from "../src/lib/server/auth-service";
+import * as storeModule from "../src/lib/server/store";
+import { POST } from "../src/app/api/auth/route";
+import { SESSION_COOKIE } from "../src/lib/server/http";
 import {
   AccountConflict,
   AuthRateLimit,
@@ -22,7 +21,6 @@ import {
   openCalendarData,
   sealCalendarData,
 } from "../src/lib/server/calendar-crypto";
-const password = "A long test passphrase 2026!";
 let folder: string, path: string, store: ContextStore;
 beforeEach(() => {
   folder = mkdtempSync(join(tmpdir(), "sidekick-auth-"));
@@ -34,47 +32,35 @@ afterEach(() => {
   store.close();
   rmSync(folder, { recursive: true, force: true });
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 describe("email accounts", () => {
-  it("validates email/password, normalizes case, and rejects client-supplied ownership", () => {
+  it("validates email, normalizes case, and rejects passwords or client-supplied ownership", () => {
     expect(
       authRequestSchema.parse({
-        action: "register",
+        action: "continue",
         email: " Alex@Example.Test ",
-        password,
       }),
     ).toMatchObject({ email: "alex@example.test" });
     expect(
       authRequestSchema.safeParse({
-        action: "register",
+        action: "continue",
         email: "invalid",
-        password,
       }).success,
     ).toBe(false);
-    expect(
-      authRequestSchema.safeParse({
-        action: "register",
-        email: "alex@example.test",
-        password: "short",
-      }).success,
-    ).toBe(false);
-    expect(
-      authRequestSchema.safeParse({
-        action: "register",
-        email: "alex@example.test",
-        password,
-        userId: "someone-else",
-      }).success,
-    ).toBe(false);
-  });
-  it("uses salted password hashes, constant-time comparison, and preserves spaces", async () => {
-    const a = await hashPassword(password),
-      b = await hashPassword(password);
-    expect(a).not.toBe(b);
-    expect(a).not.toContain(password);
-    expect(await verifyPassword(password, a)).toBe(true);
-    expect(await verifyPassword(password + " ", a)).toBe(false);
-    expect(await verifyPassword(password, "corrupt")).toBe(false);
+    for (const extra of [
+      { password: "unused" },
+      { userId: "someone-else" },
+      { profileId: "someone-else" },
+      { emailVerified: true },
+    ])
+      expect(
+        authRequestSchema.safeParse({
+          action: "continue",
+          email: "alex@example.test",
+          ...extra,
+        }).success,
+      ).toBe(false);
   });
   it("claims the current draft and calendar for a new account and invalidates the anonymous cookie", async () => {
     const previous = (await store.ensureSession()).token;
@@ -105,7 +91,7 @@ describe("email accounts", () => {
     });
     const result = (await authenticate(
       store,
-      { action: "register", email: "Alex@Example.Test", password },
+      { action: "continue", email: "Alex@Example.Test" },
       previous,
     ))!;
     expect(result.account).toMatchObject({
@@ -131,9 +117,8 @@ describe("email accounts", () => {
     store = new ContextStore(path);
     expect((await store.account(result.token))?.id).toBe(result.account.id);
     const login = (await authenticate(store, {
-      action: "login",
+      action: "continue",
       email: "alex@example.test",
-      password,
     }))!;
     expect(await store.readChat(login.token)).toEqual(
       await store.readChat(result.token),
@@ -144,36 +129,30 @@ describe("email accounts", () => {
   });
   it("deduplicates case-insensitive email and never overwrites an existing account", async () => {
     const a = (await authenticate(store, {
-      action: "register",
+      action: "continue",
       email: "alex@example.test",
-      password,
     }))!;
     await store.save(a.token, {
       context: validContext(),
       baseRevision: 0,
       requestId: randomUUID(),
     });
-    await expect(
-      authenticate(store, {
-        action: "register",
-        email: " ALEX@example.test ",
-        password: password + "other",
-      }),
-    ).rejects.toBeInstanceOf(AccountConflict);
     const login = (await authenticate(store, {
-      action: "login",
-      email: "alex@example.test",
-      password,
+      action: "continue",
+      email: " ALEX@example.test ",
     }))!;
     expect(login.account.id).toBe(a.account.id);
     expect((await store.read(login.token))?.context?.profile.name).toBe(
       "Alex Rivera",
     );
+    expect(await store.db.prepare("SELECT COUNT(*) AS count FROM users").get())
+      .toEqual({ count: 1 });
   });
   it("keeps different users isolated and does not merge an anonymous draft on sign-in", async () => {
+    const legacyHash = `scrypt-v1$${"a".repeat(32)}$${"b".repeat(128)}`;
     const a = await store.registerAccount(
       "a@example.test",
-      await hashPassword(password),
+      legacyHash,
     );
     const b = await store.registerAccount("b@example.test", "unused-test-hash");
     await store.save(a.token, {
@@ -191,7 +170,7 @@ describe("email accounts", () => {
     });
     const login = (await authenticate(
       store,
-      { action: "login", email: "a@example.test", password },
+      { action: "continue", email: "a@example.test" },
       anonymous,
     ))!;
     expect((await store.read(login.token))?.context?.profile.name).toBe(
@@ -199,27 +178,45 @@ describe("email accounts", () => {
     );
     expect((await store.read(b.token))?.context).toBeNull();
     expect((await store.account(b.token))?.id).not.toBe(a.account.id);
+    expect(login.account.id).toBe(a.account.id);
+    expect((await store.read(anonymous))?.context?.profile.name).toBe("Do not merge");
+    expect(await store.db.prepare("SELECT password_hash FROM users WHERE id = ?").get(a.account.id))
+      .toEqual({ password_hash: legacyHash });
   });
-  it("rejects wrong and unknown credentials with the same error", async () => {
-    await authenticate(store, {
-      action: "register",
-      email: "alex@example.test",
-      password,
+  it("atomically restores one account across concurrent requests and independent clients", async () => {
+    const otherStore = new ContextStore(path);
+    try {
+      const results = await Promise.all(
+        Array.from({ length: 6 }, (_, index) => authenticate(
+          index % 2 ? otherStore : store,
+          { action: "continue", email: index % 2 ? "Alex@Example.Test" : "alex@example.test" },
+        )),
+      );
+      expect(new Set(results.map((result) => result!.account.id)).size).toBe(1);
+      expect(new Set(results.map((result) => result!.token)).size).toBe(6);
+      expect(await store.db.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 1 });
+      expect(await store.db.prepare("SELECT COUNT(*) AS count FROM sessions").get()).toEqual({ count: 1 });
+    } finally {
+      otherStore.close();
+    }
+  });
+  it("requires signing out before switching accounts and never claims another account's profile", async () => {
+    const a = (await authenticate(store, { action: "continue", email: "a@example.test" }))!;
+    await store.save(a.token, {
+      context: validContext(),
+      baseRevision: 0,
+      requestId: randomUUID(),
     });
-    await expect(
-      authenticate(store, {
-        action: "login",
-        email: "alex@example.test",
-        password: "wrong",
-      }),
-    ).rejects.toBeInstanceOf(InvalidCredentials);
-    await expect(
-      authenticate(store, {
-        action: "login",
-        email: "unknown@example.test",
-        password: "wrong",
-      }),
-    ).rejects.toBeInstanceOf(InvalidCredentials);
+    await expect(authenticate(store, { action: "continue", email: "b@example.test" }, a.token))
+      .rejects.toBeInstanceOf(AccountConflict);
+    expect((await store.account(a.token))?.id).toBe(a.account.id);
+    expect(await store.db.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 1 });
+    await authenticate(store, { action: "logout" }, a.token);
+    const b = (await authenticate(store, { action: "continue", email: "b@example.test" }, a.token))!;
+    expect(b.account.id).not.toBe(a.account.id);
+    expect((await store.read(b.token))?.context).toBeNull();
+    const restored = (await authenticate(store, { action: "continue", email: "a@example.test" }))!;
+    expect((await store.read(restored.token))?.context?.profile.name).toBe("Alex Rivera");
   });
   it("revokes only the signing-out browser and enforces server-side expiry", async () => {
     const user = await store.registerAccount(
@@ -288,6 +285,69 @@ describe("email accounts", () => {
     await expect(
       store.reserveAuthAttempt("alex@example.test", now + 900001),
     ).resolves.toBeUndefined();
+  });
+  it("counts successful email access against the persistent per-email and global limits", async () => {
+    for (let n = 0; n < 10; n++)
+      await authenticate(store, { action: "continue", email: "alex@example.test" });
+    store.close();
+    store = new ContextStore(path);
+    await expect(authenticate(store, { action: "continue", email: " ALEX@example.test " }))
+      .rejects.toBeInstanceOf(AuthRateLimit);
+    expect(await store.db.prepare("SELECT COUNT(*) AS count FROM auth_sessions").get())
+      .toEqual({ count: 10 });
+    await store.db.prepare("UPDATE auth_limits SET attempts = 200 WHERE key = 'global'").run();
+    await expect(authenticate(store, { action: "continue", email: "new@example.test" }))
+      .rejects.toBeInstanceOf(AuthRateLimit);
+    expect(await store.db.prepare("SELECT COUNT(*) AS count FROM users").get())
+      .toEqual({ count: 1 });
+  });
+  it("enforces same-origin and strict payloads, sets a private cookie, and rejects stale account logout", async () => {
+    vi.spyOn(storeModule, "getStore").mockReturnValue(store);
+    const request = (body: unknown, headers: Record<string, string> = {}) =>
+      new NextRequest("https://sidekick.example.test/api/auth", {
+        method: "POST",
+        headers: {
+          host: "sidekick.example.test",
+          origin: "https://sidekick.example.test",
+          "content-type": "application/json",
+          ...headers,
+        },
+        body: JSON.stringify(body),
+      });
+    const body = { action: "continue", email: "alex@example.test" };
+    expect((await POST(request(body, { origin: "https://foreign.example.test" }))).status).toBe(403);
+    expect((await POST(request(body, { "content-type": "text/plain" }))).status).toBe(415);
+    for (const extra of [{ userId: "other" }, { emailVerified: true }, { password: "unused" }])
+      expect((await POST(request({ ...body, ...extra }))).status).toBe(400);
+    expect(await store.db.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 0 });
+
+    const response = await POST(request(body));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    const cookie = response.cookies.get(SESSION_COOKIE)!;
+    expect(cookie).toMatchObject({ httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: LOGIN_MAX_AGE });
+    const account = (await response.json()).account;
+    expect(account).toMatchObject({ email: "alex@example.test", emailVerified: false });
+    const sessionHeaders = { cookie: `${SESSION_COOKIE}=${cookie.value}` };
+    expect((await POST(request({ ...body, email: "other@example.test" }, sessionHeaders))).status).toBe(409);
+    expect((await POST(request({ action: "logout" }, { ...sessionHeaders, "x-sidekick-account": "stale-account" }))).status).toBe(401);
+    expect((await store.account(cookie.value))?.id).toBe(account.id);
+    const logout = await POST(request({ action: "logout" }, { ...sessionHeaders, "x-sidekick-account": account.id }));
+    expect(logout.status).toBe(200);
+    expect(logout.cookies.get(SESSION_COOKIE)?.maxAge).toBe(0);
+    expect(await store.account(cookie.value)).toBeNull();
+  });
+  it("returns a retry window when successful email requests exhaust the limit", async () => {
+    vi.spyOn(storeModule, "getStore").mockReturnValue(store);
+    for (let n = 0; n < 10; n++)
+      await authenticate(store, { action: "continue", email: "alex@example.test" });
+    const response = await POST(new NextRequest("https://sidekick.example.test/api/auth", {
+      method: "POST",
+      headers: { host: "sidekick.example.test", origin: "https://sidekick.example.test", "content-type": "application/json" },
+      body: JSON.stringify({ action: "continue", email: "Alex@example.test" }),
+    }));
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("900");
   });
   it("adds account tables to the old database without deleting profile data", async () => {
     store.close();

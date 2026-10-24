@@ -10,7 +10,7 @@ The new network store shares the existing SQLite connection. A deterministic mat
 
 | Component     | Reuse or addition                                                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| Identity      | Existing email/password accounts and revocable sessions; registration email remains unverified.                                            |
+| Identity      | Email-only profile access and revocable sessions for the controlled MVP; anyone who knows the email can reopen its account. Email remains unverified. |
 | Context       | Existing confirmed bio, contribution, goal, SF trip, preferences and additional commitments. Draft conversation is never shared.           |
 | Calendar      | Existing encrypted per-account credentials and selected-calendar free/busy. Read-only OAuth cannot create Google events.                   |
 | Relationships | Add one canonical connection per pair, directional blocks, explicit request/accept and meeting context.                                    |

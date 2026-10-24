@@ -8,9 +8,9 @@ Live app: **[sf-sidekick-raupro.vercel.app](https://sf-sidekick-raupro.vercel.ap
 
 The new `/network` screen supports opt-in people discovery, persistent QR connections, permission-controlled agent queries, shared event plans, and bilateral meeting coordination. Read the [architecture and phased acceptance plan](docs/agent-social-graph.md) for data relationships, contracts, permissions, triggers, and boundaries.
 
-New visitors register with email and password before onboarding. Returning users sign in to the same account from any browser. Email is normalized for uniqueness, while a stable user ID owns the saved profile, conversation, and calendar connection. Sign-out revokes that browser's session without deleting the account or its progress. The header shows the signed-in email.
+Visitors enter their email and select **Continue** before onboarding. A new email creates an account; an existing email reopens its profile from any browser. Email is normalized for uniqueness, while a stable user ID owns the saved profile, conversation, and calendar connection. Sign-out revokes that browser's session without deleting the account or its progress. The header shows the signed-in email.
 
-Registration does not prove ownership of an email address: new accounts explicitly remain **Email unverified**. Email verification and password recovery require a separate implementation and are not available yet. Do not use unverified addresses for introductions or participant identity checks. No email provider or extra API key is required for this phase.
+This controlled MVP uses email as a profile identifier, without a password, verification code or magic link. **Anyone who knows an email can reopen that profile and its connected features.** It is not proof of identity or email ownership; new accounts remain **Email unverified**. Restore verified access before opening the product to a wider audience. No email provider or extra API key is required for this phase.
 
 The first registration in an existing anonymous browser preserves its stored draft, confirmed profile, and calendar connection. The old anonymous cookie loses access immediately. Signing in to an existing account restores that account's own data and does not merge anonymous content. The database migration adds account/session tables and one OAuth binding column; it does not delete existing profiles.
 
@@ -64,7 +64,7 @@ SIDEKICK_DEMO=1 DATABASE_PATH=/private/tmp/sidekick-network.demo.sqlite npm run 
 node scripts/demo-network.mjs
 ```
 
-Open `http://localhost:3001/login?next=%2Fnetwork` in a separate browser profile for each participant. Use `localhost` for the demo if your real session uses `127.0.0.1`; browser cookies are shared across ports on the same hostname. The script prints the fictional credentials and future SF date range. It creates Raul Demo, Agustin Demo and Pedro Demo, plus an explicitly labeled meetup; it never calls OpenAI, Google or an event provider.
+Open `http://localhost:3001/login?next=%2Fnetwork` in a separate browser profile for each participant and continue with their demo email. Use `localhost` for the demo if your real session uses `127.0.0.1`; browser cookies are shared across ports on the same hostname. The script prints the fictional emails and future SF date range. It creates Raul Demo, Agustin Demo and Pedro Demo, plus an explicitly labeled meetup; it never calls OpenAI, Google or an event provider.
 
 1. **Proactive networking:** sign in as Raul Demo; Agustin Demo appears automatically. Request a connection, accept as Agustin, propose a public meeting place, enter the printed manual windows from both accounts, then approve the same option and download the calendar file.
 2. **QR collaboration:** show Pedro Demo's QR, scan it as Raul (camera, image or connection link), request, then accept as Pedro. Open the person’s conversation in Agents and ask about an opportunity and inspect the authorized reply in their Agents conversation. Change Pedro's confirmed goal through the existing onboarding to hiring a founding engineer with ICPC/algorithms experience. The queue detects the new fit, records an authorized agent query and updates opportunities. Their shared meetup also supports a reunion recommendation.
@@ -93,13 +93,13 @@ The integration uses the official OpenAI SDK, Responses API, structured output, 
 
 ### Account storage and access
 
-`users` stores the stable user ID, unique normalized email, salted password hash, verification state, and profile reference. The legacy `sessions` table retains the profile data; `auth_sessions` holds revocable browser logins. Chat, operation history, and encrypted calendar tokens remain attached to the stable profile when a browser signs in, signs out, or completes OAuth. A successful Google connection rotates only the initiating login cookie.
+`users` stores the stable user ID, unique normalized email, verification state, and profile reference. The old password-hash column is retained for schema compatibility but is not used for email-only access; existing accounts and their data are preserved. The legacy `sessions` table retains the profile data; `auth_sessions` holds revocable browser sessions. Chat, operation history, and encrypted calendar tokens remain attached to the stable profile when a browser continues, signs out, or completes OAuth. A successful Google connection rotates only the initiating login cookie.
 
-Passwords use Node's asynchronous scrypt with a random 16-byte salt, `N=131072`, `r=8`, and `p=1`. Passwords allow 15–128 characters at registration, preserve whitespace, and support password managers. Random 32-byte login tokens are hashed in SQLite and sent only in HttpOnly, SameSite=Lax cookies (Secure over HTTPS). The server enforces a 30-day expiry; logout invalidates the token immediately. See [Node scrypt](https://nodejs.org/api/crypto.html#cryptoscryptpassword-salt-keylen-options-callback) and [OWASP password storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
+Random 32-byte session tokens are hashed in the database and sent only in HttpOnly, SameSite=Lax cookies (Secure over HTTPS). The server enforces a 30-day expiry; logout invalidates the token immediately. Continuing with the same email creates a new session for the same account without replacing its profile.
 
-All personal API routes require an authenticated account, independently of page redirects. Browser requests include an expected account ID to reject stale-tab writes after switching accounts; ownership always comes from the server session. State-changing requests verify Origin. Login failures use the same message for an unknown email and an incorrect password. SQLite tracks a conservative limit of ten attempts per email and 200 total attempts per 15 minutes, and the process runs at most two password hashes at once. Successful authentication clears that email's counter. A public deployment needs HTTPS and an appropriate trusted-proxy/IP abuse policy in addition to these MVP limits.
+All personal API routes require an active account session, independently of page redirects. Browser requests include an expected account ID to reject stale-tab writes after switching accounts; API ownership comes from the server session. State-changing requests verify Origin. The database limits email access to ten attempts per email and 200 total attempts per 15 minutes, including successful requests. These controls preserve session isolation but do not verify who entered the email.
 
-`GET /api/auth` returns the current account or null. `POST /api/auth` accepts `register`, `login`, or `logout`; responses never include password hashes or raw login tokens. No email address or user ID supplied by a client grants access to another account.
+`GET /api/auth` returns the current account or null. `POST /api/auth` accepts `{ action: "continue", email }` or `{ action: "logout" }`; responses never include password hashes or raw session tokens. Continue atomically creates or reopens the account identified by that normalized email. Other APIs reject client-supplied ownership, and switching profiles requires signing out first.
 
 ### Configure Google Calendar
 
@@ -178,7 +178,7 @@ LIVE_ONBOARDING_EVAL=1 npm test -- --run tests/onboarding-live.test.ts
 | Sign-out and session expiry revoke access without deleting progress                      | Service and API checks                           |
 | Existing anonymous data is preserved only on first registration                          | Migration and service checks                     |
 | Stale account requests cannot modify the newly signed-in account                         | API check                                        |
-| Passwords are salted, sessions are revocable, and guessing is throttled                  | Service and API checks                           |
+| Email-only access preserves existing accounts; sessions are revocable and requests are throttled | Service and API checks                    |
 
 `GET /api/onboarding` returns the account, conversation, and connection status. `POST /api/onboarding` accepts `message`, `confirm`, or `reload_saved`; clients cannot supply another session identity or a model draft. `GET /api/state` and `POST /api/context` expose confirmed context. Personal responses disable shared caching.
 

@@ -121,13 +121,12 @@ export class ContextStore {
       throw new SessionMissing();
     return account;
   }
-  async credentials(email: string) {
+  private async userForEmail(email: string) {
     return (await this.db
-      .prepare("SELECT id, password_hash FROM users WHERE email = ?")
+      .prepare("SELECT id FROM users WHERE email = ?")
       .get(emailSchema.parse(email))) as
       | {
           id: string;
-          password_hash: string;
         }
       | undefined;
   }
@@ -143,6 +142,21 @@ export class ContextStore {
       .run(hash(token), userId, now + LOGIN_MAX_AGE * 1000);
     return token;
   }
+  async continueAccount(email: string, previousToken?: string) {
+    email = emailSchema.parse(email);
+    return await this.db
+      .transaction(async () => {
+        if (await this.account(previousToken)) throw new AccountConflict();
+        const existing = await this.userForEmail(email);
+        if (existing) {
+          const token = await this.createLogin(existing.id);
+          return { token, account: await this.requireAccount(token) };
+        }
+        // Retain the legacy column without storing a usable password credential.
+        return this.registerAccount(email, "email-only", previousToken);
+      })
+      .immediate();
+  }
   async registerAccount(
     email: string,
     passwordHash: string,
@@ -152,7 +166,7 @@ export class ContextStore {
     return await this.db
       .transaction(async () => {
         if (
-          (await this.credentials(email)) ||
+          (await this.userForEmail(email)) ||
           (await this.account(previousToken))
         )
           throw new AccountConflict();
@@ -215,11 +229,6 @@ export class ContextStore {
             .run(limit.key, now + 15 * 60 * 1000);
       })
       .immediate();
-  }
-  async clearAuthAttempts(email: string) {
-    await this.db
-      .prepare("DELETE FROM auth_limits WHERE key = ?")
-      .run(`email:${hash(emailSchema.parse(email))}`);
   }
   private state(row: SessionRow): ContextState {
     return {

@@ -25,6 +25,8 @@ The production-only Turso integration uses `sf-sidekick-production` in Virginia 
 
 Google OAuth remains in **Testing**, so only configured Google test users can connect their calendars. Publishing the consent screen for a broader audience is a separate Google configuration and verification step.
 
+The controlled MVP uses email-only profile access: Continue creates a new account or reopens an existing email's account without a password or email verification. Existing profiles and calendar connections remain attached to their account. Knowing the email is sufficient to access that account, so this configuration assumes a trusted cohort rather than verified identity.
+
 Vercel supports Node 24 and 22; the current package engine range selects supported Node 24 there. Local development remains compatible with the existing Node installation. [Vercel Node versions](https://vercel.com/docs/functions/runtimes/node-js/node-js-versions)
 
 ## Persistence and work execution
