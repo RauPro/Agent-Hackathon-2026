@@ -52,7 +52,12 @@ test("a paragraph builds a reviewable profile; corrections remain drafts until c
   ).toBeNull();
   await page.getByRole("button", { name: "Review profile" }).click();
   await expect(page.locator(".inline-review")).toContainText("Alex Rivera");
-  await expect(page.locator(".inline-review")).toContainText("Not set");
+  await expect(page.locator(".inline-review")).not.toContainText(
+    "Preferred meeting times",
+  );
+  await expect(page.locator(".inline-review")).toContainText(
+    "Additional commitments",
+  );
   await noOverflow(page);
   await page
     .getByRole("button", { name: "Confirm profile", exact: true })
@@ -212,7 +217,7 @@ test("a stale tab recovers newer messages and keeps its unsent text", async ({
   await other.getByRole("button", { name: "Send message" }).click();
   await expect(
     other.getByText(
-      "Noted: no fixed commitments. Your availability can stay open for now.",
+      "No additional commitments noted. Your profile is ready to review.",
       { exact: true },
     ),
   ).toBeVisible();
