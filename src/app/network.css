@@ -1,56 +1,12 @@
-.network-header {
-  max-width: 1160px;
-  gap: 20px;
-  border-bottom: 1px solid var(--line);
-  padding: 18px 24px;
-}
-.network-header nav {
-  margin-left: auto;
-}
-.network-header nav a,
 .network-layout a {
   color: var(--green);
   text-underline-offset: 3px;
 }
-.network-header nav a {
-  min-height: 44px;
+.network-layout a.primary-button {
   display: inline-flex;
   align-items: center;
-  font-size: 14px;
-}
-.network-account {
-  position: relative;
-}
-.network-account > summary {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  background: #e9eee5;
-  border: 1px solid #dce3d6;
-  border-radius: 50%;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  list-style: none;
-}
-.network-account > summary::-webkit-details-marker {
-  display: none;
-}
-.network-account .account-menu {
-  position: absolute;
-  right: 0;
-  top: 54px;
-  z-index: 10;
-  width: min(300px, calc(100vw - 40px));
-  max-width: none;
-  padding: 18px;
-  background: white;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: 0 10px 32px #263a3012;
-  justify-content: space-between;
+  color: white;
+  text-decoration: none;
 }
 .network-layout {
   width: min(100%, 1120px);
@@ -911,10 +867,6 @@
   padding: 20px;
 }
 @media (max-width: 760px) {
-  .network-header {
-    padding: 12px 20px;
-    gap: 14px;
-  }
   .network-layout {
     padding: 24px 20px calc(30px + env(safe-area-inset-bottom));
   }
@@ -1035,20 +987,6 @@
     padding-left: 14px;
     padding-right: 14px;
   }
-  .network-header {
-    padding-left: 14px;
-    padding-right: 14px;
-  }
-  .network-header .brand {
-    font-size: 16px;
-  }
-  .network-header nav a {
-    font-size: 12px;
-  }
-  .network-account > summary {
-    width: 40px;
-    height: 44px;
-  }
   .network-page-heading h1 {
     font-size: 27px;
   }
@@ -1063,4 +1001,165 @@
   .agent-thread-body {
     padding: 16px 10px;
   }
+}
+
+/* The chat panel stays in one column, even beside a wide conversation. */
+.network-layout.network-panel {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 max(16px, env(safe-area-inset-right))
+    calc(20px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  font-size: 16px;
+}
+.network-panel-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+.network-panel-toolbar > a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  font-size: 14px;
+  text-decoration: none;
+}
+.network-panel h2,
+.network-panel .thread-identity h2 {
+  font-size: 17px;
+  line-height: 1.45;
+}
+.network-panel h3,
+.network-panel label,
+.network-panel legend,
+.network-panel summary,
+.network-panel .thread-row-copy strong,
+.network-panel .exchange-bubble p,
+.network-panel .exchange-facts dd,
+.network-panel .network-answer dd,
+.network-panel .dialogue-status p,
+.network-panel .thread-welcome p,
+.network-panel .network-blank p {
+  font-size: 16px;
+}
+.network-panel .agent-workspace {
+  display: block;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+.network-panel .agent-thread-list {
+  position: static;
+  padding: 0;
+}
+.network-panel .thread-list-heading {
+  padding: 0 0 10px;
+}
+.network-panel .thread-list-heading h2 {
+  font-size: 16px;
+  color: var(--ink);
+  letter-spacing: 0;
+}
+.network-panel .agent-thread-row {
+  padding: 16px 8px;
+  border-bottom: 1px solid var(--line);
+  border-radius: 8px;
+}
+.network-panel .thread-row-copy > span {
+  font-size: 14px;
+}
+.network-panel .thread-row-meta time {
+  font-size: 12px;
+}
+.network-panel .agent-thread-panel {
+  display: none;
+  border: 0;
+  background: transparent;
+}
+.network-panel .agent-workspace.has-selection .agent-thread-list {
+  display: none;
+}
+.network-panel .agent-workspace.has-selection .agent-thread-panel {
+  display: block;
+}
+.network-panel .thread-back {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  margin-bottom: 6px;
+  padding: 0;
+}
+.network-panel .agent-thread-header {
+  padding: 0 0 18px;
+  background: transparent;
+}
+.network-panel .thread-identity .person-avatar {
+  display: none;
+}
+.network-panel .thread-identity p {
+  font-size: 13px;
+}
+.network-panel .agent-thread-body {
+  padding: 18px 0 0;
+}
+.network-panel .agent-exchange {
+  max-width: 100%;
+}
+.network-panel .agent-exchange.from-own {
+  margin-left: 8px;
+}
+.network-panel .agent-exchange.from-peer {
+  margin-right: 8px;
+}
+.network-panel .exchange-meta {
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.network-panel .exchange-meta strong,
+.network-panel .exchange-meta time {
+  font-size: 12px;
+}
+.network-panel .exchange-bubble {
+  padding: 14px;
+}
+.network-panel .thread-compose {
+  padding: 0 14px;
+}
+.network-panel .network-field-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+.network-panel .network-utility-panel {
+  padding: 16px;
+  margin: 0;
+}
+.network-panel .network-card-heading {
+  align-items: center;
+}
+.network-panel .network-card-heading .text-button {
+  min-height: 44px;
+}
+.network-panel .network-blank {
+  padding: 24px 12px;
+  margin: 0;
+}
+.network-panel .network-blank .blank-glyph {
+  display: none;
+}
+.network-panel .network-card,
+.network-panel .dialogue-status.needs-answer {
+  padding: 16px;
+}
+.network-panel .network-actions {
+  gap: 10px;
+}
+.network-panel .network-actions > button {
+  min-height: 44px;
 }

@@ -25,8 +25,7 @@ import {
   type Visibility,
 } from "@/lib/domain/network";
 import { manualMeetingSlot, type MeetingView } from "@/lib/domain/meetings";
-import { Brand } from "./brand";
-import { AccountMenu } from "./account-menu";
+import { AppHeader } from "./app-header";
 import { QRScanner } from "./qr-scanner";
 import {
   AgentConversations,
@@ -79,33 +78,18 @@ const timeLabel = (value: string) =>
     timeZone: "America/Los_Angeles",
   }).format(new Date(value));
 
-function Header({
+export function Network({
   account,
-  disabled = false,
+  embedded = false,
+  active = true,
 }: {
   account: Account;
-  disabled?: boolean;
+  embedded?: boolean;
+  active?: boolean;
 }) {
-  return (
-    <header className="site-header network-header">
-      <Brand />
-      <nav aria-label="Main">
-        <a href="/onboarding">Your profile</a>
-      </nav>
-      <details className="network-account">
-        <summary aria-label="Account menu">
-          {account.email.slice(0, 1).toUpperCase()}
-        </summary>
-        <AccountMenu account={account} disabled={disabled} />
-      </details>
-    </header>
-  );
-}
-
-export function Network({ account }: { account: Account }) {
   const [state, setState] = useState<NetworkState | null>(null);
   const [tab, setTab] = useState<"opportunities" | "connections" | "agents">(
-    "opportunities",
+    embedded ? "agents" : "opportunities",
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -114,21 +98,25 @@ export function Network({ account }: { account: Account }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const inFlight = useRef(false);
+  const activeRef = useRef(active);
   const refreshSequence = useRef(0);
   const retry = useRef<{ signature: string; requestId: string } | null>(null);
   const goTo = (view: typeof tab, person: string | null = null) => {
-    setTab(view);
+    setTab(embedded ? "agents" : view);
     setSelectedId(person);
     const url = new URL(window.location.href);
-    url.searchParams.set("view", view);
+    if (embedded) url.searchParams.set("agents", "1");
+    else url.searchParams.set("view", view);
     if (person) url.searchParams.set("person", person);
     else url.searchParams.delete("person");
-    window.history.pushState(null, "", url);
+    if (url.href !== window.location.href)
+      window.history.pushState(null, "", url);
   };
   const openThread = (userId: string) => goTo("agents", userId);
 
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
+      if (!activeRef.current) return;
       const sequence = ++refreshSequence.current;
       try {
         const response = await fetch("/api/network", {
@@ -136,13 +124,17 @@ export function Network({ account }: { account: Account }) {
           signal,
           headers: { "X-Sidekick-Account": account.id },
         });
-        if (sequence !== refreshSequence.current || signal?.aborted) return;
+        if (!activeRef.current || sequence !== refreshSequence.current || signal?.aborted)
+          return;
         if (response.status === 401) {
-          window.location.replace("/login?next=%2Fnetwork");
+          window.location.replace(
+            embedded ? "/login?next=%2Fonboarding" : "/login?next=%2Fnetwork",
+          );
           return;
         }
         const result = await response.json();
-        if (sequence !== refreshSequence.current || signal?.aborted) return;
+        if (!activeRef.current || sequence !== refreshSequence.current || signal?.aborted)
+          return;
         if (!response.ok)
           throw new Error(
             result.message || "Could not load your network. Try again.",
@@ -154,22 +146,24 @@ export function Network({ account }: { account: Account }) {
         setState(result);
         setLoading(false);
       } catch (problem) {
-        if (sequence !== refreshSequence.current || signal?.aborted) return;
+        if (!activeRef.current || sequence !== refreshSequence.current || signal?.aborted)
+          return;
         throw problem;
       }
     },
-    [account.id],
+    [account.id, embedded],
   );
 
   useEffect(() => {
+    activeRef.current = active;
+    if (!active) return;
     const controller = new AbortController();
     void Promise.resolve()
       .then(() => {
         const view = new URLSearchParams(window.location.search).get("view");
         if (
-          view === "agents" ||
-          view === "connections" ||
-          view === "opportunities"
+          !embedded &&
+          (view === "agents" || view === "connections" || view === "opportunities")
         )
           setTab(view);
         setSelectedId(
@@ -195,22 +189,27 @@ export function Network({ account }: { account: Account }) {
       const parameters = new URLSearchParams(window.location.search),
         view = parameters.get("view");
       setTab(
-        view === "agents" || view === "connections" ? view : "opportunities",
+        embedded
+          ? "agents"
+          : view === "agents" || view === "connections" ? view : "opportunities",
       );
       setSelectedId(parameters.get("person"));
     };
     window.addEventListener("popstate", restoreView);
     return () => {
+      activeRef.current = false;
+      refreshSequence.current += 1;
       controller.abort();
       window.removeEventListener("focus", update);
       window.removeEventListener("popstate", restoreView);
     };
-  }, [refresh]);
+  }, [active, embedded, refresh]);
 
   const dialogueActive = state?.dialogues?.some((dialogue) =>
     dialogue.status === "queued" || dialogue.status === "running",
   ) ?? false;
   useEffect(() => {
+    if (!active) return;
     const controller = new AbortController();
     const interval = setInterval(() => {
       if (document.visibilityState === "visible" && !inFlight.current)
@@ -220,10 +219,10 @@ export function Network({ account }: { account: Account }) {
       controller.abort();
       clearInterval(interval);
     };
-  }, [dialogueActive, refresh]);
+  }, [active, dialogueActive, refresh]);
 
   const act: Action = async (payload, endpoint = "/api/network") => {
-    if (inFlight.current) return false;
+    if (!activeRef.current || inFlight.current) return false;
     inFlight.current = true;
     // A delayed poll must not restore state from before this action.
     refreshSequence.current += 1;
@@ -246,7 +245,9 @@ export function Network({ account }: { account: Account }) {
       });
       const result = await response.json();
       if (response.status === 401) {
-        window.location.replace("/login?next=%2Fnetwork");
+        window.location.replace(
+          embedded ? "/login?next=%2Fonboarding" : "/login?next=%2Fnetwork",
+        );
         return false;
       }
       if (!response.ok) {
@@ -258,6 +259,7 @@ export function Network({ account }: { account: Account }) {
       retry.current = null;
       await refresh();
       if (
+        activeRef.current &&
         (payload.action === "query" ||
           payload.action === "propose" ||
           (payload.action === "connection" && payload.decision === "accept")) &&
@@ -292,18 +294,34 @@ export function Network({ account }: { account: Account }) {
     state?.connections.filter(
       (item) => item.status === "pending" && item.direction === "incoming",
     ).length ?? 0;
+  const Container = embedded ? "div" : "main";
 
   return (
     <>
-      <a className="skip-link" href="#network">
-        Skip to network
-      </a>
-      <Header account={account} disabled={busy} />
-      <main
-        className={`network-layout${tab === "agents" ? " conversation-layout" : ""}`}
-        id="network"
+      {!embedded && (
+        <>
+          <a className="skip-link" href="#network">Skip to network</a>
+          <AppHeader account={account} active="network" disabled={busy} />
+        </>
+      )}
+      <Container
+        className={`network-layout${embedded ? " network-panel" : ""}${tab === "agents" ? " conversation-layout" : ""}`}
+        id={embedded ? undefined : "network"}
       >
-        <div className="network-page-heading">
+        {embedded ? (
+          <div className="network-panel-toolbar">
+            <button
+              className="toolbar-button"
+              aria-expanded={sharing}
+              onClick={() => setSharing(!sharing)}
+            >
+              Sharing
+            </button>
+            <a href={selectedId ? `/network?view=agents&person=${encodeURIComponent(selectedId)}` : "/network?view=agents"}>
+              Open Network <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        ) : <div className="network-page-heading">
           <div>
             <span className="network-eyebrow">SIDEKICK NETWORK</span>
             <h1>
@@ -341,7 +359,7 @@ export function Network({ account }: { account: Account }) {
               Connect with QR
             </button>
           </div>
-        </div>
+        </div>}
         {error && (
           <div className="notice network-notice" role="alert">
             <p>{error}</p>
@@ -359,7 +377,7 @@ export function Network({ account }: { account: Account }) {
             </button>
           </div>
         )}
-        {loading && <p className="loading-state">Opening your network…</p>}
+        {loading && <p className="loading-state">{embedded ? "Opening conversations…" : "Opening your network…"}</p>}
         {state && (
           <>
             {sharing && (
@@ -404,7 +422,7 @@ export function Network({ account }: { account: Account }) {
                 </div>
               </section>
             )}
-            <nav className="network-tabs" aria-label="Network views">
+            {!embedded && <nav className="network-tabs" aria-label="Network views">
               <button
                 aria-current={tab === "opportunities" ? "page" : undefined}
                 onClick={() => goTo("opportunities")}
@@ -427,7 +445,7 @@ export function Network({ account }: { account: Account }) {
                   <span className="nav-count">{incomingConnections}</span>
                 )}
               </button>
-            </nav>
+            </nav>}
             {tab === "opportunities" && (
               <section aria-label="For you">
                 {pending > 0 && (
@@ -576,12 +594,14 @@ export function Network({ account }: { account: Account }) {
               </section>
             )}
             {tab === "agents" && (
+              <div hidden={embedded && sharing}>
               <AgentConversations
                 accountId={account.id}
                 threads={threads}
                 selectedId={selectedId}
                 select={(id) => goTo("agents", id)}
                 seePeople={() => goTo("connections")}
+                peopleHref={embedded ? "/network?view=connections" : undefined}
                 response={(value) => <InformationAnswers response={value} />}
                 messageAction={(message) => (
                   <MessageCard
@@ -642,10 +662,11 @@ export function Network({ account }: { account: Account }) {
                   </div>
                 )}
               />
+              </div>
             )}
           </>
         )}
-      </main>
+      </Container>
     </>
   );
 }
@@ -948,7 +969,7 @@ export function ConnectPreview({
   }
   return (
     <>
-      <Header account={account} disabled={busy} />
+      <AppHeader account={account} active="network" disabled={busy} />
       <main className="network-layout">
         <h1>
           {person ? `Connect with ${person.name}` : "Connect on Sidekick"}

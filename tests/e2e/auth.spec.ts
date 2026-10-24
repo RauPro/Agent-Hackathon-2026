@@ -67,10 +67,12 @@ test("email entry leads to chat and returning by email restores the saved profil
   await fill(page, email);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page).toHaveURL(/\/onboarding$/);
+  await page.getByLabel("Account menu", { exact: true }).click();
   await expect(page.getByText(email, { exact: true })).toBeVisible();
   await expect(
     page.getByText("Email unverified", { exact: true }),
   ).toBeVisible();
+  await page.getByLabel("Account menu", { exact: true }).click();
   await page
     .getByLabel("Your message", { exact: true })
     .fill(
@@ -83,6 +85,7 @@ test("email entry leads to chat and returning by email restores the saved profil
     .click();
   await expect(page.getByText("Profile saved", { exact: true })).toBeVisible();
   const account = (await (await page.request.get("/api/auth")).json()).account;
+  await page.getByLabel("Account menu", { exact: true }).click();
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/login$/);
   expect((await page.request.get("/api/onboarding")).status()).toBe(401);
@@ -122,6 +125,7 @@ test("profile and calendar persist across browsers while different emails have s
   expect(
     (await (await second.request.get(origin + "/api/auth")).json()).account.id,
   ).toBe(account.id);
+  await second.getByLabel("Account menu", { exact: true }).click();
   await second.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(second).toHaveURL(/\/login$/);
   const separate = await register(second.request);

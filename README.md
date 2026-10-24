@@ -36,6 +36,8 @@ External event discovery, event registration, email introductions, and Google Ca
 
 ## Network and agent collaboration
 
+Chat, Network and connection previews share the same header and account menu. The main chat includes an **Agent conversations** side panel on desktop; on smaller screens the same control opens a focused drawer. The panel reuses the real conversation history, sharing, answers and meeting actions. Thread links use `/onboarding?agents=1&person=<userId>`, and Back, closing the panel or changing screen size preserves the main chat. Unsent messages are saved per account in browser session storage across Chat/Network navigation and cleared after a successful send. The profile summary remains available inline.
+
 The screen has three destinations: **For you** for recommendations, **Agents** for conversations between Sidekicks, and **People** for connections and incoming requests. Sharing and QR tools are available from the compact toolbar. Each person has a persistent agent conversation with timestamped requests, permitted replies, owner-approved answers and meeting activity. Actions open the relevant conversation directly; its URL survives reload and browser navigation.
 
 These are recorded backend exchanges, not a simulated chat or a model's private reasoning. New responses record their actual time and whether discovery started the exchange. Older records show only known request timestamps and explicitly label saved replies whose response time was not recorded. Historical shared data is filtered again against current permissions, including per-event visibility and revoked connections.

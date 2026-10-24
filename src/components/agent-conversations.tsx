@@ -179,6 +179,7 @@ export function AgentConversations({
   selectedId,
   select,
   seePeople,
+  peopleHref,
   response,
   messageAction,
   meetingAction,
@@ -190,6 +191,7 @@ export function AgentConversations({
   selectedId: string | null;
   select: (userId: string | null) => void;
   seePeople: () => void;
+  peopleHref?: string;
   response: (value: AgentMessage["response"]) => ReactNode;
   messageAction: (message: AgentMessage) => ReactNode;
   meetingAction: (meeting: MeetingView) => ReactNode;
@@ -198,8 +200,18 @@ export function AgentConversations({
 }) {
   const selected = threads.find((thread) => thread.userId === selectedId);
   const heading = useRef<HTMLHeadingElement>(null);
+  const listHeading = useRef<HTMLHeadingElement>(null);
+  const threadRows = useRef(new Map<string, HTMLButtonElement>());
+  const previousSelection = useRef<string | null>(null);
   useEffect(() => {
-    if (selectedId) heading.current?.focus({ preventScroll: true });
+    if (selectedId) {
+      heading.current?.focus({ preventScroll: true });
+    } else if (previousSelection.current) {
+      const destination =
+        threadRows.current.get(previousSelection.current) ?? listHeading.current;
+      destination?.focus({ preventScroll: true });
+    }
+    previousSelection.current = selectedId;
   }, [selectedId]);
   if (!threads.length)
     return (
@@ -212,21 +224,27 @@ export function AgentConversations({
           Discovery proposes connections. Your agents talk after you connect
           and both profiles are confirmed.
         </p>
-        <button className="primary-button" onClick={seePeople}>
-          Find your people
-        </button>
+        {peopleHref ? (
+          <a className="primary-button" href={peopleHref}>Find your people</a>
+        ) : (
+          <button className="primary-button" onClick={seePeople}>Find your people</button>
+        )}
       </div>
     );
   return (
     <div className={`agent-workspace${selected ? " has-selection" : ""}`}>
-      <aside className="agent-thread-list" aria-label="Agent conversations">
+      <aside className="agent-thread-list" aria-label="Conversation list">
         <div className="thread-list-heading">
-          <h2>Conversations</h2>
+          <h2 ref={listHeading} tabIndex={-1}>Conversations</h2>
           <span>{threads.length}</span>
         </div>
         {threads.map((thread) => (
           <button
             key={thread.userId}
+            ref={(node) => {
+              if (node) threadRows.current.set(thread.userId, node);
+              else threadRows.current.delete(thread.userId);
+            }}
             className="agent-thread-row"
             aria-current={
               selected?.userId === thread.userId ? "true" : undefined

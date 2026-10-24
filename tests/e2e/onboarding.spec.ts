@@ -93,6 +93,8 @@ test("reflows at 320px and desktop; a reload restores messages and an unconfirme
   page,
 }) => {
   for (const width of [320, 1280]) {
+    // End the previous account's live panel before replacing its browser login.
+    await page.goto("about:blank");
     await page.context().clearCookies();
     await register(page.request);
     await page.setViewportSize({ width, height: 900 });
