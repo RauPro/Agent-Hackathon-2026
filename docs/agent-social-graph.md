@@ -62,6 +62,8 @@ First require confirmed profiles, authorized sharing, overlapping future SF date
 
 Each phase receives focused tests and a coherent commit. Browser tests cover both end-to-end journeys with fictional accounts, a labeled event and manual/calendar fixtures, reload persistence, failed requests and narrow-screen reflow.
 
+Implementation checkpoints are recorded in the repository history: foundation, proactive discovery, meeting coordination, then the integrated QR and network interface. Foundation and meeting modules were built in parallel against agreed contracts, with their focused checks passing before UI integration.
+
 ## Integration and demo boundaries
 
 No new API key is required. QR encoding/decoding is local. Real Google availability reuses current OAuth credentials; provider errors are errors, never empty availability. Missing calendar connections permit explicit manual scheduling windows. The existing onboarding calendar requirement is unchanged.
@@ -71,3 +73,7 @@ This version can generate an `.ics` invitation only after both people agree. It 
 Demo seeding uses a separate explicitly selected database and fictional `.test` accounts. It never touches the real account or claims real events. Demonstrate: complementary hiring match → approved connection → availability comparison → both approvals → invitation download; QR request → acceptance → profile query → optional owner answer → goal/event update → contextual opportunity.
 
 The QR dependencies are used according to their primary documentation: [node-qrcode](https://github.com/soldair/node-qrcode) and [jsQR](https://github.com/cozmo/jsQR). Camera scanning requires a secure browser context; image and link input remain available.
+
+Meeting search is deliberately bounded to three 30-minute options on weekdays from 9 AM to 6 PM SF time within the first 14 days of overlapping stays. No travel buffers or venue search are assumed. The UI exposes these bounds before approval. Physical-phone camera, keyboard and safe-area behavior still needs a real-device check; automated browser tests decode an actual generated QR image.
+
+The ranking vocabulary covers common technical roles and signals, including AI agents, infrastructure, TypeScript, Python and ICPC/algorithms. It is conservative about unknown terms and conflicting explicit roles. It does not yet implement customer/supplier recommendations or a general semantic recommender.

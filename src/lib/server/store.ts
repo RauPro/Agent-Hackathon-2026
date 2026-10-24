@@ -72,6 +72,10 @@ export class ContextStore {
   readonly network: NetworkStore;
 
   constructor(path: string) {
+    if (process.env.SIDEKICK_DEMO === "1" && !path.endsWith(".demo.sqlite"))
+      throw new Error(
+        "Demo mode requires a separate database ending in .demo.sqlite.",
+      );
     if (path !== ":memory:")
       mkdirSync(dirname(resolve(path)), { recursive: true });
     this.db = new Database(path);

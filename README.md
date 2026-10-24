@@ -2,7 +2,9 @@
 
 A mobile-first web app that turns a visitor's goal in San Francisco into relevant people, useful conversations, and a daily plan. See the [product and implementation plan](SF-Sidekick-Implementation-Plan.md) for the full scope.
 
-## Current phase: email accounts, chat onboarding, and Google Calendar
+## Current phase: onboarding and an agent-powered social graph
+
+The new `/network` screen supports opt-in people discovery, persistent QR connections, permission-controlled agent queries, shared event plans, and bilateral meeting coordination. Read the [architecture and phased acceptance plan](docs/agent-social-graph.md) for data relationships, contracts, permissions, triggers, and boundaries.
 
 New visitors register with email and password before onboarding. Returning users sign in to the same account from any browser. Email is normalized for uniqueness, while a stable user ID owns the saved profile, conversation, and calendar connection. Sign-out revokes that browser's session without deleting the account or its progress. The header shows the signed-in email.
 
@@ -28,7 +30,42 @@ Conversation drafts and confirmed profiles are stored separately in SQLite. Relo
 
 The calendar card starts a real Google OAuth flow, shows the connected account, and checks busy times. The primary calendar is included by default; users can include other calendars containing their commitments. Each selected calendar must return a successful free/busy result. Checks cover inclusive trip dates in San Francisco time and expire after five minutes. The open page rechecks on date/profile changes, focus, reconnecting to the network, and once a minute when visible. This is a foreground availability check, not background event mirroring.
 
-Event discovery, ranking, introductions, event registration, and calendar writes are future phases. Profile confirmation and read-only calendar consent do not authorize those actions. Future scheduling must recheck both participants' availability immediately before booking, apply their meeting preferences, and require both participants' consent. A calendar without busy events does not establish willingness to meet.
+External event discovery, event registration, email introductions, and Google Calendar writes remain future work. Network matching uses registered users and explicitly shared event plans. Meeting coordination checks both participants' availability after their permission and again before the final agreement, applies their meeting preferences and additional commitments, and requires both approvals. A calendar without busy events does not establish willingness to meet.
+
+## Network and agent collaboration
+
+Discovery is off by default. In **Discovery and sharing**, users choose which confirmed profile fields can be seen by connections or by the network. The QR only identifies its owner for a connection request; the other person must accept. QR rotation, removal, blocking, and visibility changes revoke future access. Declined connection requests have a 24-hour retry cooldown.
+
+The agent runtime uses typed `PROFILE_QUERY` requests with an allowlist of profile, goal, trip and shared-event fields. It can answer from authorized information or ask its user for a one-time answer. Requests and results persist, expire after seven days, and are rechecked against current permissions on retrieval. No model can read another user's private memory or grant itself permission.
+
+The deterministic matcher looks for reciprocal professional fit and overlapping SF dates. It supports complementary hiring/role searches, collaboration, and shared-event reunions between existing connections. Explanations show benefits for both people and the signals used. Its finite English vocabulary and conservative role matching can miss valid matches; scores are heuristics, not probabilities. Unfamiliar roles and customer/supplier matching are not covered yet. It never contacts a new person automatically. For accepted connections, a new compatible context can trigger a bounded query of already-shared professional information.
+
+Confirmed profile changes, sharing settings, accepted connections and explicit event plans enqueue matching in SQLite. A timer in the existing Node process drains up to 20 coalesced jobs every 30 seconds; relevant HTTP responses also trigger a drain. Work is synchronous and transactional, with no external calls inside the transaction. Failed work remains queued for retry, and startup resumes pending work. The inbox refreshes while open. This requires the existing always-running single Node deployment; there is no email, push-notification service, Redis or extra worker service.
+
+Meeting requests appear in **Requests**. Each person first permits an availability comparison. Connected Google calendars are read on demand; raw busy intervals, calendar identities and event details never reach the other person. If no calendar is connected, the meeting flow accepts explicit manual windows. Provider failures never fall back to an empty calendar. Up to three 30-minute options are searched on weekdays, 9 AM–6 PM SF time, within the first 14 days of overlapping stays. A counterproposal clears previous approvals. Profile or relationship changes invalidate existing consent; reconnecting cannot revive old approvals.
+
+After both people approve the same time and place, each can download an `.ics` file. **The file needs importing; Sidekick has not sent an invitation or written to Google Calendar.** The current Google OAuth scopes are read-only, and registration emails are unverified. No new API keys are needed for these networking phases. Live calendar creation would require an additional write grant, verified invitation addresses, retry reconciliation and cancellation support.
+
+Events added in Network are user-reported plans, not verified registrations. No external event or places provider is integrated. Meeting locations are proposed by a participant; venue quality, travel time and hotel proximity are not inferred.
+
+### Isolated demo
+
+Run an additional local server using a separate database. The `.demo.sqlite` suffix is enforced, and the interface labels demo records. The fixture script refuses a server without demo mode.
+
+```bash
+SIDEKICK_DEMO=1 DATABASE_PATH=/private/tmp/sidekick-network.demo.sqlite npm run dev -- --port 3001
+# In another terminal:
+node scripts/demo-network.mjs
+```
+
+Open `http://localhost:3001/login?next=%2Fnetwork` in a separate browser profile for each participant. Use `localhost` for the demo if your real session uses `127.0.0.1`; browser cookies are shared across ports on the same hostname. The script prints the fictional credentials and future SF date range. It creates Raul Demo, Agustin Demo and Pedro Demo, plus an explicitly labeled meetup; it never calls OpenAI, Google or an event provider.
+
+1. **Proactive networking:** sign in as Raul Demo; Agustin Demo appears automatically. Request a connection, accept as Agustin, propose a public meeting place, enter the printed manual windows from both accounts, then approve the same option and download the calendar file.
+2. **QR collaboration:** show Pedro Demo's QR, scan it as Raul (camera, image or connection link), request, then accept as Pedro. Ask about an opportunity from Connections and inspect the authorized reply in Requests. Change Pedro's confirmed goal through the existing onboarding to hiring a founding engineer with ICPC/algorithms experience. The queue detects the new fit, records an authorized agent query and updates opportunities. Their shared meetup also supports a reunion recommendation.
+
+For a private-answer demo, set Pedro's profile visibility to private before Raul sends a query. Pedro can share a one-time answer or decline; blocking the connection immediately removes the response from future reads. For a CTO demo, confirm a compatible technical leadership goal for the seeker rather than assuming someone explicitly seeking only a founding engineer role wants a CTO role.
+
+The production server and development server share `.next`; stop the extra demo server before rebuilding. Use `npm run build` followed by `SIDEKICK_DEMO=1 DATABASE_PATH=/private/tmp/sidekick-network.demo.sqlite npm start -- --port 3001` to preview a production build.
 
 ## Run locally
 
@@ -109,31 +146,31 @@ LIVE_ONBOARDING_EVAL=1 npm test -- --run tests/onboarding-live.test.ts
 
 ### Acceptance checks
 
-| Behavior | Evidence |
-| --- | --- |
-| Draft changes do not silently update a confirmed profile | Domain tests, browser flow, and live runs |
-| Invalid dates, times, and incomplete profiles cannot be confirmed | Domain and API tests |
-| A lost response can be retried without duplicate effects | Service and browser tests |
-| Stale tabs cannot overwrite newer state | Revision-conflict tests |
-| Session data stays isolated | Store and API tests |
-| Greeting updates preserve message history and revisions | Focused migration test |
-| A non-English reply is repaired once or rejected | SDK-level regression tests and live verification |
-| Natural dates are normalized without asking for technical formats or manual availability | Opt-in live conversation regressions |
-| Calendar connection alone cannot complete onboarding | Service and browser checks |
-| Denied/partial Google permissions preserve the profile without claiming connection | Browser OAuth checks |
-| Missing or failed calendars never become empty/free availability | Provider and browser checks |
-| Expiry, changed dates, and changed calendar selection invalidate readiness | Service checks |
-| OAuth state rejects expiry, reuse, and another browser session | Store and API checks |
-| Session rotation preserves chat/profile and invalidates the old cookie | Service and browser checks |
-| A late sync cannot restore a disconnected calendar | Concurrent service check |
-| Calendar selection and connection survive reload | Browser check |
-| Registration precedes onboarding, including legacy URLs | Page and API browser checks |
-| Duplicate normalized emails cannot replace an account | Service and browser checks |
-| Sign-in restores the same profile/calendar in another browser | Service and browser checks |
-| Sign-out and session expiry revoke access without deleting progress | Service and API checks |
-| Existing anonymous data is preserved only on first registration | Migration and service checks |
-| Stale account requests cannot modify the newly signed-in account | API check |
-| Passwords are salted, sessions are revocable, and guessing is throttled | Service and API checks |
+| Behavior                                                                                 | Evidence                                         |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Draft changes do not silently update a confirmed profile                                 | Domain tests, browser flow, and live runs        |
+| Invalid dates, times, and incomplete profiles cannot be confirmed                        | Domain and API tests                             |
+| A lost response can be retried without duplicate effects                                 | Service and browser tests                        |
+| Stale tabs cannot overwrite newer state                                                  | Revision-conflict tests                          |
+| Session data stays isolated                                                              | Store and API tests                              |
+| Greeting updates preserve message history and revisions                                  | Focused migration test                           |
+| A non-English reply is repaired once or rejected                                         | SDK-level regression tests and live verification |
+| Natural dates are normalized without asking for technical formats or manual availability | Opt-in live conversation regressions             |
+| Calendar connection alone cannot complete onboarding                                     | Service and browser checks                       |
+| Denied/partial Google permissions preserve the profile without claiming connection       | Browser OAuth checks                             |
+| Missing or failed calendars never become empty/free availability                         | Provider and browser checks                      |
+| Expiry, changed dates, and changed calendar selection invalidate readiness               | Service checks                                   |
+| OAuth state rejects expiry, reuse, and another browser session                           | Store and API checks                             |
+| Session rotation preserves chat/profile and invalidates the old cookie                   | Service and browser checks                       |
+| A late sync cannot restore a disconnected calendar                                       | Concurrent service check                         |
+| Calendar selection and connection survive reload                                         | Browser check                                    |
+| Registration precedes onboarding, including legacy URLs                                  | Page and API browser checks                      |
+| Duplicate normalized emails cannot replace an account                                    | Service and browser checks                       |
+| Sign-in restores the same profile/calendar in another browser                            | Service and browser checks                       |
+| Sign-out and session expiry revoke access without deleting progress                      | Service and API checks                           |
+| Existing anonymous data is preserved only on first registration                          | Migration and service checks                     |
+| Stale account requests cannot modify the newly signed-in account                         | API check                                        |
+| Passwords are salted, sessions are revocable, and guessing is throttled                  | Service and API checks                           |
 
 `GET /api/onboarding` returns the account, conversation, and connection status. `POST /api/onboarding` accepts `message`, `confirm`, or `reload_saved`; clients cannot supply another session identity or a model draft. `GET /api/state` and `POST /api/context` expose confirmed context. Personal responses disable shared caching.
 
@@ -147,11 +184,11 @@ To audit the visible flow: confirm a chat profile, verify onboarding is incomple
 
 Three focused skills live in `.agents/skills`. Load the skill relevant to the work; supporting product details stay in the implementation plan.
 
-| Skill | Use it for | Origin |
-| --- | --- | --- |
-| [sf-sidekick-mobile-first](.agents/skills/sf-sidekick-mobile-first/SKILL.md) | Phone-first onboarding, opportunity cards, preparation, daily plan, and responsive interaction states | Custom for this project |
-| [sf-sidekick-core](.agents/skills/sf-sidekick-core/SKILL.md) | Evidence-backed matching, domain contracts, reliable plan changes, and focused acceptance checks | Custom for this project |
-| [web-design-guidelines](.agents/skills/web-design-guidelines/SKILL.md) | UI and accessibility review of implemented screens | Vercel, discovered on [skills.sh](https://skills.sh/vercel-labs/agent-skills/web-design-guidelines) |
+| Skill                                                                        | Use it for                                                                                            | Origin                                                                                              |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| [sf-sidekick-mobile-first](.agents/skills/sf-sidekick-mobile-first/SKILL.md) | Phone-first onboarding, opportunity cards, preparation, daily plan, and responsive interaction states | Custom for this project                                                                             |
+| [sf-sidekick-core](.agents/skills/sf-sidekick-core/SKILL.md)                 | Evidence-backed matching, domain contracts, reliable plan changes, and focused acceptance checks      | Custom for this project                                                                             |
+| [web-design-guidelines](.agents/skills/web-design-guidelines/SKILL.md)       | UI and accessibility review of implemented screens                                                    | Vercel, discovered on [skills.sh](https://skills.sh/vercel-labs/agent-skills/web-design-guidelines) |
 
 Codex discovers these project-local skills automatically. They can also be invoked explicitly, for example: “Use $sf-sidekick-mobile-first to build the opportunity screen.” See [skill discovery](https://learn.chatgpt.com/docs/customization/overview#skills).
 
