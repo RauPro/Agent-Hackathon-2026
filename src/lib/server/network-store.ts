@@ -34,11 +34,12 @@ type ConnectionRow = {
   user_a: string;
   user_b: string;
   requester_id: string;
-  status: "pending" | "accepted" | "removed";
+  status: "pending" | "accepted" | "removed" | "declined";
   context: string;
   source: "qr" | "opportunity";
   created_at: string;
   updated_at: string;
+  revision: number;
 };
 type MessageRow = {
   id: string;
@@ -73,6 +74,7 @@ export class NetworkStore {
         requester_id TEXT NOT NULL REFERENCES users(id),
         status TEXT NOT NULL, context TEXT NOT NULL, source TEXT NOT NULL,
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY(user_a, user_b), CHECK(user_a < user_b)
       );
       CREATE TABLE IF NOT EXISTS network_blocks (
@@ -92,6 +94,13 @@ export class NetworkStore {
         updated_at TEXT NOT NULL
       );
     `);
+    const connectionColumns = db
+      .prepare("PRAGMA table_info(network_connections)")
+      .all() as { name: string }[];
+    if (!connectionColumns.some((column) => column.name === "revision"))
+      db.exec(
+        "ALTER TABLE network_connections ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
+      );
   }
 
   private requireUser(userId: string) {
@@ -231,12 +240,20 @@ export class NetworkStore {
     );
   }
 
+  relationshipRevision(a: string, b: string): number {
+    return this.connection(a, b)?.revision ?? 0;
+  }
+
   private connectionView(userId: string, row: ConnectionRow): ConnectionView {
     const peer = row.user_a === userId ? row.user_b : row.user_a;
     return {
       userId: peer,
       name: this.name(peer),
-      status: this.blocked(userId, peer) ? "blocked" : row.status,
+      status: this.blocked(userId, peer)
+        ? "blocked"
+        : row.status === "declined"
+          ? "removed"
+          : row.status,
       direction: row.requester_id === userId ? "outgoing" : "incoming",
       context: row.context,
       source: row.source,
@@ -255,7 +272,8 @@ export class NetworkStore {
     return rows
       .filter(
         (row) =>
-          row.status !== "removed" || this.blocked(row.user_a, row.user_b),
+          !["removed", "declined"].includes(row.status) ||
+          this.blocked(row.user_a, row.user_b),
       )
       .map((row) => this.connectionView(userId, row));
   }
@@ -281,7 +299,16 @@ export class NetworkStore {
         } else if (!this.canContactFromOpportunity?.(userId, targetId))
           throw new NetworkError("not_available", 403);
         const current = this.connection(userId, targetId);
-        if (current && current.status !== "removed")
+        if (
+          current?.status === "declined" &&
+          Date.now() - Date.parse(current.updated_at) < 86400000
+        )
+          throw new NetworkError(
+            "connection_cooldown",
+            429,
+            "This connection request was declined. Wait a day before trying again.",
+          );
+        if (current && !["removed", "declined"].includes(current.status))
           return this.connectionView(userId, current);
         const count = this.db
           .prepare(
@@ -303,7 +330,7 @@ export class NetworkStore {
             `INSERT INTO network_connections (user_a, user_b, requester_id, status, context, source, created_at, updated_at)
         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?) ON CONFLICT(user_a, user_b) DO UPDATE SET
         requester_id = excluded.requester_id, status = 'pending', context = excluded.context, source = excluded.source,
-        created_at = excluded.created_at, updated_at = excluded.updated_at`,
+        created_at = excluded.created_at, updated_at = excluded.updated_at, revision = revision + 1`,
           )
           .run(a, b, userId, parsed.context, parsed.source, now, now);
         return this.connectionView(userId, this.connection(userId, targetId)!);
@@ -340,11 +367,17 @@ export class NetworkStore {
               )
               .run(...pair(userId, targetId), userId, now, now);
         } else if (action === "unblock") {
-          this.db
+          const removed = this.db
             .prepare(
               "DELETE FROM network_blocks WHERE user_id = ? AND blocked_user_id = ?",
             )
             .run(userId, targetId);
+          if (removed.changes)
+            this.db
+              .prepare(
+                "UPDATE network_connections SET revision = revision + 1, updated_at = ? WHERE user_a = ? AND user_b = ?",
+              )
+              .run(now, ...pair(userId, targetId));
           return null;
         } else if (!current || this.blocked(userId, targetId))
           throw new NetworkError("not_available", 403);
@@ -359,11 +392,18 @@ export class NetworkStore {
           (current!.requester_id === userId || current!.status !== "pending")
         )
           throw new NetworkError("not_available", 403);
-        const status = action === "accept" ? "accepted" : "removed";
+        if (action === "remove" && current?.status === "declined")
+          return this.connectionView(userId, current);
+        const status =
+          action === "accept"
+            ? "accepted"
+            : action === "decline" || current?.status === "declined"
+              ? "declined"
+              : "removed";
         if (current)
           this.db
             .prepare(
-              "UPDATE network_connections SET status = ?, updated_at = ? WHERE user_a = ? AND user_b = ?",
+              "UPDATE network_connections SET status = ?, updated_at = ?, revision = revision + 1 WHERE user_a = ? AND user_b = ?",
             )
             .run(status, now, ...pair(userId, targetId));
         if (status === "accepted") {

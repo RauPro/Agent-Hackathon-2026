@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,6 +84,7 @@ beforeEach(() => {
   c = account("Casey");
 });
 afterEach(() => {
+  vi.useRealTimers();
   db.close();
   store.close();
   rmSync(folder, { recursive: true, force: true });
@@ -129,6 +130,35 @@ describe("authorized social graph and agent messages", () => {
     network.connectionAction(b, a, "accept");
     expect(network.isConnected(a, b)).toBe(true);
     expect(network.isConnected(b, a)).toBe(true);
+  });
+
+  it("waits a day before retrying a declined connection and cannot bypass the cooldown by removing or blocking", () => {
+    vi.useFakeTimers();
+    const start = new Date("2026-10-24T17:00:00Z");
+    vi.setSystemTime(start);
+    const input = {
+      source: "qr" as const,
+      token: network.settings(b).qrToken,
+      context: "Discuss a shared interest.",
+    };
+    const pending = network.requestConnection(a, b, input);
+    expect(network.requestConnection(a, b, input)).toEqual(pending);
+    const declined = network.connectionAction(b, a, "decline");
+    expect(declined?.status).toBe("removed");
+    expect(network.connections(a)).toEqual([]);
+    expect(network.connections(b)).toEqual([]);
+    expect(() => network.requestConnection(a, b, input)).toThrow("Wait a day");
+    network.connectionAction(a, b, "remove");
+    expect(() => network.requestConnection(a, b, input)).toThrow("Wait a day");
+    network.connectionAction(a, b, "block");
+    network.connectionAction(a, b, "unblock");
+    expect(() => network.requestConnection(a, b, input)).toThrow("Wait a day");
+    vi.setSystemTime(new Date(start.getTime() + 86400000 - 1));
+    expect(() => network.requestConnection(a, b, input)).toThrow("Wait a day");
+    vi.setSystemTime(new Date(start.getTime() + 86400000));
+    expect(network.requestConnection(a, b, input).status).toBe("pending");
+    network.connectionAction(b, a, "accept");
+    expect(network.isConnected(a, b)).toBe(true);
   });
 
   it("rejects forged QR targets, unavailable opportunities and unconnected agent requests", () => {
@@ -341,6 +371,28 @@ describe("authorized social graph and agent messages", () => {
     network.connectionAction(b, a, "unblock");
     expect(network.blocked(a, b)).toBe(false);
     expect(network.isConnected(a, b)).toBe(false);
+  });
+
+  it("advances relationship revisions across removal, reconnection and blocks even when timestamps collide", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-24T17:00:00Z"));
+    expect(network.relationshipRevision(a, b)).toBe(0);
+    connect();
+    const accepted = network.relationshipRevision(a, b);
+    expect(accepted).toBeGreaterThan(0);
+    network.connectionAction(b, a, "accept");
+    expect(network.relationshipRevision(a, b)).toBe(accepted);
+    network.connectionAction(b, a, "remove");
+    const removed = network.relationshipRevision(a, b);
+    expect(removed).toBeGreaterThan(accepted);
+    connect();
+    const reconnected = network.relationshipRevision(a, b);
+    expect(reconnected).toBeGreaterThan(removed);
+    network.connectionAction(a, b, "block");
+    const blocked = network.relationshipRevision(a, b);
+    expect(blocked).toBeGreaterThan(reconnected);
+    network.connectionAction(a, b, "unblock");
+    expect(network.relationshipRevision(a, b)).toBeGreaterThan(blocked);
   });
 
   it("expires requests and prevents later answers", () => {
