@@ -18,6 +18,7 @@ import { Mark } from "./brand";
 import { AppHeader } from "./app-header";
 import { ChatAgentPanel, useAgentPanel } from "./chat-agent-panel";
 import "@/app/chat-workspace.css";
+import { EventRecommendations } from "./event-recommendations";
 import type { Account } from "@/lib/domain/auth";
 
 export function Onboarding({ account }: { account: Account }) {
@@ -295,6 +296,14 @@ export function Onboarding({ account }: { account: Account }) {
                     <strong>Profile saved</strong>
                   </div>
                 </div>
+              )}
+              {chat.baseRevision > 0 && (
+                <EventRecommendations
+                  key={`${account.id}-${chat.baseRevision}`}
+                  accountId={account.id}
+                  revision={chat.baseRevision}
+                  draftChanged={!chat.confirmed}
+                />
               )}
               {ready && !chat.confirmed && (
                 <section

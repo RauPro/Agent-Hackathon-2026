@@ -14,6 +14,8 @@ Sidekick keeps one Next.js application. Vercel hosts the UI and route handlers; 
 | `SIDEKICK_DEMO` | `0` for production. `1` requires `DATABASE_PURPOSE=demo` for a remote database. |
 | `OPENAI_API_KEY` | Existing onboarding model key, stored only in server environment variables. |
 | `OPENAI_MODEL` | Optional model override; current default remains unchanged. |
+| `EXA_API_KEY` | Server-only key enabling personalized event recommendations after profile confirmation. Without it, onboarding, Calendar and Network remain usable. |
+| `DISCOVERY_DAILY_RUN_LIMIT` | Maximum event discovery pipelines per SF calendar day across the shared database; defaults to 100. Set to 0 to pause new event searches. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Existing Google web OAuth client. |
 | `GOOGLE_REDIRECT_URI` | `https://<production-domain>/api/calendar/callback`, also registered in Google Cloud. |
 | `TOKEN_ENCRYPTION_KEY` | Stable 32-byte AES key encoded as 64 hex characters. Never rotate casually or expose to the client. |
@@ -36,6 +38,8 @@ The async database adapter supports the existing local SQLite files and remote `
 Onboarding and calendar operations use database leases instead of process-local in-flight sets. Meeting approvals still recheck the relationship, profile revision, calendar revision and conflicts in a transaction after external reads. Google/OpenAI requests never run inside a database transaction.
 
 `agent_dialogues` adds one durable row per accepted connection for the current AI conversation round. Existing connections are reconciled on network reads and worker triggers. Each worker invocation advances at most two model turns after bounded discovery; each model attempt has a 12-second deadline, and each pair has a 45-second fenced lease. All replies recheck current confirmed context, sharing and relationship before committing. Six agent turns per round and 24 completion attempts per pair per SF day prevent unbounded iteration. No new environment variables or provider credentials are needed. These limits do not authorize a meeting or a calendar write.
+
+Event discovery uses separate `event-discovery` domain/service modules so it does not replace the people matcher. Its claims, results, daily budget and three-run concurrency cap persist in the same database. The route schedules the provider pipeline with `after()`, bounded to 55 seconds within the configured 60-second function duration. Interrupted runs expire after a 90-second lease and can be retried. Verify live Exa/OpenAI recommendation quality and the deployed background run before release; local provider fixtures do not establish those results.
 
 Vercel skips the process timer. Confirmed onboarding/profile changes and network mutations use `after()` to process bounded queued work. `GET /api/cron/network` requires `Authorization: Bearer <CRON_SECRET>`. The queue persists a cursor and source version, skips ineligible profiles, rotates progress fairly and uses a lease to prevent competing workers. Each pair commits separately, keeping transactions short for remote libSQL. [Turso transaction reference](https://docs.turso.tech/sdk/ts/reference)
 

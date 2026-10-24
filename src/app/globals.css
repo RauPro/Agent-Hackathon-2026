@@ -240,6 +240,7 @@ h1 {
   padding: 24px 0 calc(22px + env(safe-area-inset-bottom));
 }
 .composer-wrap.reviewing,
+.conversation-column:has(.event-section) .composer-wrap,
 .conversation-column:has(.calendar-options[open]) .composer-wrap,
 .mobile-profile[open] + .composer-wrap {
   position: static;
@@ -601,6 +602,91 @@ h1 {
 }
 .calendar-card .notice {
   margin-bottom: 0;
+}
+.event-section {
+  margin: 20px 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.event-section .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.event-section h2 {
+  font-size: 18px;
+  margin: 0 0 14px;
+}
+.event-section p {
+  font-size: 16px;
+  line-height: 1.6;
+  margin: 10px 0;
+}
+.event-list {
+  display: grid;
+  gap: 14px;
+}
+.event-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px;
+  background: #fdfefa;
+  min-width: 0;
+}
+.event-card h3 {
+  margin: 0 0 12px;
+  font-size: 19px;
+  line-height: 1.4;
+}
+.event-date {
+  font-weight: 600;
+}
+.event-section .event-detail {
+  font-size: 13px;
+  color: var(--muted);
+}
+.event-section .event-caveat {
+  color: #706249;
+}
+.event-evidence summary {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 12px 0;
+}
+.event-evidence blockquote {
+  margin: 10px 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+}
+.event-evidence blockquote p {
+  font-size: 14px;
+}
+.event-section a {
+  color: var(--green);
+}
+.event-section a:not(.event-open) {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+.event-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  text-decoration: none;
+  margin-top: 12px;
+  max-width: 100%;
+}
+.event-section :is(a, button, summary):focus-visible {
+  outline: 3px solid #4d8164;
+  outline-offset: 4px;
 }
 .auth-layout {
   max-width: 420px;
