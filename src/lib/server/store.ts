@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import type { CalendarConnection, CalendarRecord } from "@/lib/domain/calendar";
 import {
   contextSchema,
   type ContextState,
@@ -31,6 +32,11 @@ export class ContextConflict extends Error {
   }
 }
 export class SessionMissing extends Error {}
+export class CalendarConflict extends Error {
+  constructor(public code: "invalid_state" | "calendar_changed") {
+    super(code);
+  }
+}
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 
@@ -64,6 +70,18 @@ export class ContextStore {
       CREATE TABLE IF NOT EXISTS onboarding_chats (
         session_id TEXT PRIMARY KEY REFERENCES sessions(token_hash),
         state_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS calendar_connections (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(token_hash),
+        revision INTEGER NOT NULL,
+        connection_json TEXT
+      );
+      CREATE TABLE IF NOT EXISTS calendar_oauth_states (
+        state_hash TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(token_hash),
+        encrypted_verifier TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        base_revision INTEGER NOT NULL
       );
     `);
   }
@@ -279,6 +297,157 @@ export class ContextStore {
             new Date().toISOString(),
           );
         return next;
+      })
+      .immediate();
+  }
+
+  calendarOwner(token: string | undefined) {
+    const session = this.session(token);
+    if (!session) throw new SessionMissing();
+    return session.token_hash;
+  }
+
+  readCalendar(token: string | undefined): CalendarRecord {
+    const row = this.db
+      .prepare(
+        "SELECT revision, connection_json FROM calendar_connections WHERE session_id = ?",
+      )
+      .get(this.calendarOwner(token)) as
+      | { revision: number; connection_json: string | null }
+      | undefined;
+    return {
+      revision: row?.revision ?? 0,
+      connection: row?.connection_json
+        ? (JSON.parse(row.connection_json) as CalendarConnection)
+        : null,
+    };
+  }
+
+  writeCalendar(
+    token: string | undefined,
+    revision: number,
+    connection: CalendarConnection | null,
+  ): CalendarRecord {
+    return this.db
+      .transaction(() => {
+        const owner = this.calendarOwner(token);
+        if (this.readCalendar(token).revision !== revision)
+          throw new CalendarConflict("calendar_changed");
+        const next = { revision: revision + 1, connection };
+        this.db
+          .prepare(
+            "INSERT INTO calendar_connections (session_id, revision, connection_json) VALUES (?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET revision = excluded.revision, connection_json = excluded.connection_json",
+          )
+          .run(
+            owner,
+            next.revision,
+            connection ? JSON.stringify(connection) : null,
+          );
+        return next;
+      })
+      .immediate();
+  }
+
+  startCalendarOAuth(
+    token: string,
+    state: string,
+    encryptedVerifier: string,
+    now = Date.now(),
+  ) {
+    this.db
+      .transaction(() => {
+        const owner = this.calendarOwner(token);
+        this.db
+          .prepare(
+            "DELETE FROM calendar_oauth_states WHERE session_id = ? OR expires_at <= ?",
+          )
+          .run(owner, now);
+        this.db
+          .prepare(
+            "INSERT INTO calendar_oauth_states (state_hash, session_id, encrypted_verifier, expires_at, base_revision) VALUES (?, ?, ?, ?, ?)",
+          )
+          .run(
+            hash(state),
+            owner,
+            encryptedVerifier,
+            now + 10 * 60 * 1000,
+            this.readCalendar(token).revision,
+          );
+      })
+      .immediate();
+  }
+
+  consumeCalendarOAuth(
+    token: string | undefined,
+    state: string,
+    now = Date.now(),
+  ) {
+    const result = this.db
+      .transaction(() => {
+        const owner = this.calendarOwner(token);
+        const row = this.db
+          .prepare(
+            "SELECT encrypted_verifier, expires_at, base_revision FROM calendar_oauth_states WHERE state_hash = ? AND session_id = ?",
+          )
+          .get(hash(state), owner) as
+          | {
+              encrypted_verifier: string;
+              expires_at: number;
+              base_revision: number;
+            }
+          | undefined;
+        if (!row) throw new CalendarConflict("invalid_state");
+        this.db
+          .prepare(
+            "DELETE FROM calendar_oauth_states WHERE state_hash = ? AND session_id = ?",
+          )
+          .run(hash(state), owner);
+        return row;
+      })
+      .immediate();
+    if (result.expires_at <= now) throw new CalendarConflict("invalid_state");
+    return result;
+  }
+
+  connectCalendar(
+    token: string,
+    revision: number,
+    connectionForOwner: (owner: string) => CalendarConnection,
+  ): string {
+    return this.db
+      .transaction(() => {
+        const owner = this.calendarOwner(token);
+        if (this.readCalendar(token).revision !== revision)
+          throw new CalendarConflict("calendar_changed");
+        const nextToken = randomBytes(32).toString("hex"),
+          nextOwner = hash(nextToken);
+        const connection = connectionForOwner(nextOwner);
+        this.db
+          .prepare(
+            "INSERT INTO sessions (token_hash, revision, context_json, confirmed_at, created_at) SELECT ?, revision, context_json, confirmed_at, created_at FROM sessions WHERE token_hash = ?",
+          )
+          .run(nextOwner, owner);
+        this.db
+          .prepare("UPDATE runs SET session_id = ? WHERE session_id = ?")
+          .run(nextOwner, owner);
+        this.db
+          .prepare(
+            "UPDATE onboarding_chats SET session_id = ? WHERE session_id = ?",
+          )
+          .run(nextOwner, owner);
+        this.db
+          .prepare("DELETE FROM calendar_oauth_states WHERE session_id = ?")
+          .run(owner);
+        this.db
+          .prepare("DELETE FROM calendar_connections WHERE session_id = ?")
+          .run(owner);
+        this.db
+          .prepare(
+            "INSERT INTO calendar_connections (session_id, revision, connection_json) VALUES (?, ?, ?)",
+          )
+          .run(nextOwner, revision + 1, JSON.stringify(connection));
+        this.db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(owner);
+        return nextToken;
       })
       .immediate();
   }

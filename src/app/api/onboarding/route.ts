@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { calendarStatus } from "@/lib/server/calendar-service";
 import { chatRequestSchema } from "@/lib/domain/onboarding-chat";
 import { json, readJson, sameOrigin, SESSION_COOKIE } from "@/lib/server/http";
 import { ContextConflict, getStore, SessionMissing } from "@/lib/server/store";
@@ -24,6 +25,7 @@ export async function GET(request: NextRequest) {
     const response = json({
       chat: store.readChat(session.token),
       configured: assistantConfigured(),
+      calendar: calendarStatus(store, session.token),
     });
     if (session.created)
       response.cookies.set(SESSION_COOKIE, session.token, {
