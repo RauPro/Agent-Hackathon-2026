@@ -323,7 +323,6 @@ export function Network({
           </div>
         ) : <div className="network-page-heading">
           <div>
-            <span className="network-eyebrow">SIDEKICK NETWORK</span>
             <h1>
               {tab === "agents"
                 ? "Agent conversations"

@@ -22,7 +22,7 @@
   gap: 10px;
   min-width: 44px;
   min-height: 44px;
-  color: var(--green);
+  color: var(--ink);
   text-decoration: none;
 }
 
@@ -33,9 +33,10 @@
 .app-header .app-header-brand span {
   display: none;
   color: var(--ink);
-  font-size: 19px;
-  font-weight: 650;
-  letter-spacing: -0.7px;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.6px;
 }
 
 .app-header nav {
@@ -50,7 +51,8 @@
   justify-content: center;
   min-height: 44px;
   padding: 0 14px;
-  border-radius: 9px;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   color: var(--muted);
   font-size: 14px;
   font-weight: 500;
@@ -59,12 +61,13 @@
 
 .app-header nav a:hover {
   color: var(--ink);
-  background: #eef1e9;
+  background: var(--surface-muted);
 }
 
 .app-header nav a[aria-current="page"] {
-  color: var(--green);
-  background: #e8eee3;
+  border-bottom-color: var(--ink);
+  color: var(--ink);
+  background: transparent;
   font-weight: 600;
 }
 
@@ -79,10 +82,10 @@
   width: 44px;
   height: 44px;
   padding: 0;
-  border: 1px solid #dce3d6;
+  border: 1px solid var(--border-strong);
   border-radius: 50%;
-  background: #e9eee5;
-  color: var(--green);
+  background: var(--surface-muted);
+  color: var(--ink);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
@@ -104,11 +107,11 @@
   gap: 12px;
   width: min(280px, calc(100vw - 32px));
   max-width: none;
-  padding: 18px;
+  padding: 16px;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 10px 32px #263a3012;
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-overlay);
 }
 
 .app-header .account-identity {
