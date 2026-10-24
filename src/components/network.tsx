@@ -27,6 +27,11 @@ import { manualMeetingSlot, type MeetingView } from "@/lib/domain/meetings";
 import { Brand } from "./brand";
 import { AccountMenu } from "./account-menu";
 import { QRScanner } from "./qr-scanner";
+import {
+  AgentConversations,
+  conversationThreads,
+  PersonAvatar,
+} from "./agent-conversations";
 import "@/app/network.css";
 
 type NetworkState = {
@@ -83,25 +88,41 @@ function Header({
     <header className="site-header network-header">
       <Brand />
       <nav aria-label="Main">
-        <a href="/onboarding">Profile</a>
-        <a href="/network">Network</a>
+        <a href="/onboarding">Your profile</a>
       </nav>
-      <AccountMenu account={account} disabled={disabled} />
+      <details className="network-account">
+        <summary aria-label="Account menu">
+          {account.email.slice(0, 1).toUpperCase()}
+        </summary>
+        <AccountMenu account={account} disabled={disabled} />
+      </details>
     </header>
   );
 }
 
 export function Network({ account }: { account: Account }) {
   const [state, setState] = useState<NetworkState | null>(null);
-  const [tab, setTab] = useState<"opportunities" | "connections" | "requests">(
+  const [tab, setTab] = useState<"opportunities" | "connections" | "agents">(
     "opportunities",
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [tools, setTools] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const inFlight = useRef(false);
   const retry = useRef<{ signature: string; requestId: string } | null>(null);
+  const goTo = (view: typeof tab, person: string | null = null) => {
+    setTab(view);
+    setSelectedId(person);
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", view);
+    if (person) url.searchParams.set("person", person);
+    else url.searchParams.delete("person");
+    window.history.pushState(null, "", url);
+  };
+  const openThread = (userId: string) => goTo("agents", userId);
 
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
@@ -132,7 +153,19 @@ export function Network({ account }: { account: Account }) {
   useEffect(() => {
     const controller = new AbortController();
     void Promise.resolve()
-      .then(() => refresh(controller.signal))
+      .then(() => {
+        const view = new URLSearchParams(window.location.search).get("view");
+        if (
+          view === "agents" ||
+          view === "connections" ||
+          view === "opportunities"
+        )
+          setTab(view);
+        setSelectedId(
+          new URLSearchParams(window.location.search).get("person"),
+        );
+        return refresh(controller.signal);
+      })
       .catch((problem: unknown) => {
         if (problem instanceof Error && problem.name === "AbortError") return;
         setError(
@@ -148,10 +181,20 @@ export function Network({ account }: { account: Account }) {
     };
     const interval = setInterval(update, 15000);
     window.addEventListener("focus", update);
+    const restoreView = () => {
+      const parameters = new URLSearchParams(window.location.search),
+        view = parameters.get("view");
+      setTab(
+        view === "agents" || view === "connections" ? view : "opportunities",
+      );
+      setSelectedId(parameters.get("person"));
+    };
+    window.addEventListener("popstate", restoreView);
     return () => {
       controller.abort();
       clearInterval(interval);
       window.removeEventListener("focus", update);
+      window.removeEventListener("popstate", restoreView);
     };
   }, [refresh]);
 
@@ -188,6 +231,13 @@ export function Network({ account }: { account: Account }) {
       }
       retry.current = null;
       await refresh();
+      if (
+        (payload.action === "query" ||
+          payload.action === "propose" ||
+          (payload.action === "connection" && payload.decision === "accept")) &&
+        typeof payload.toUserId === "string"
+      )
+        openThread(payload.toUserId);
       return true;
     } catch (problem) {
       setError(
@@ -202,24 +252,19 @@ export function Network({ account }: { account: Account }) {
     }
   };
 
-  const pending = state
-    ? state.connections.filter(
-        (connection) =>
-          connection.status === "pending" &&
-          connection.direction === "incoming",
-      ).length +
-      state.messages.filter(
-        (message) =>
-          message.toUserId === account.id && message.status === "needs_user",
-      ).length +
-      state.meetings.filter(
-        (meeting) =>
-          (meeting.status === "awaiting_permission" &&
-            !meeting.consentedUserIds.includes(account.id)) ||
-          (meeting.status === "options_ready" &&
-            !meeting.approvedUserIds.includes(account.id)),
-      ).length
-    : 0;
+  const threads = state
+    ? conversationThreads(
+        account.id,
+        state.connections,
+        state.messages,
+        state.meetings,
+      )
+    : [];
+  const pending = threads.reduce((sum, thread) => sum + thread.needsYou, 0);
+  const incomingConnections =
+    state?.connections.filter(
+      (item) => item.status === "pending" && item.direction === "incoming",
+    ).length ?? 0;
 
   return (
     <>
@@ -227,9 +272,49 @@ export function Network({ account }: { account: Account }) {
         Skip to network
       </a>
       <Header account={account} disabled={busy} />
-      <main className="network-layout" id="network">
-        <h1>Your network</h1>
-        {state?.demo && <p className="network-badge">Demo data</p>}
+      <main
+        className={`network-layout${tab === "agents" ? " conversation-layout" : ""}`}
+        id="network"
+      >
+        <div className="network-page-heading">
+          <div>
+            <span className="network-eyebrow">SIDEKICK NETWORK</span>
+            <h1>
+              {tab === "agents"
+                ? "Agent conversations"
+                : tab === "connections"
+                  ? "Your people"
+                  : "Worth a conversation"}
+            </h1>
+          </div>
+          <div className="network-toolbar">
+            {state?.demo && <span className="demo-label">Demo</span>}
+            <button
+              className="toolbar-button"
+              aria-expanded={sharing}
+              onClick={() => {
+                setSharing(!sharing);
+                setTools(false);
+              }}
+            >
+              Sharing{" "}
+              <span
+                className={`discovery-dot${state?.settings.discoverable ? " enabled" : ""}`}
+                aria-hidden="true"
+              />
+            </button>
+            <button
+              className="secondary-button"
+              aria-expanded={tools}
+              onClick={() => {
+                setTools(!tools);
+                setSharing(false);
+              }}
+            >
+              Connect with QR
+            </button>
+          </div>
+        </div>
         {error && (
           <div className="notice network-notice" role="alert">
             <p>{error}</p>
@@ -247,134 +332,231 @@ export function Network({ account }: { account: Account }) {
             </button>
           </div>
         )}
-        {loading && <p className="loading-state">Loading your network…</p>}
+        {loading && <p className="loading-state">Opening your network…</p>}
         {state && (
           <>
-            <details className="network-settings">
-              <summary>Discovery and sharing</summary>
-              <Settings
-                key={state.settings.revision}
-                settings={state.settings}
-                act={act}
-                busy={busy}
-              />
-            </details>
-            <div className="network-actions">
-              <button
-                className="secondary-button"
-                aria-expanded={tools}
-                onClick={() => setTools(!tools)}
+            {sharing && (
+              <section
+                className="network-utility-panel"
+                aria-label="Discovery and sharing"
               >
-                {tools ? "Close QR tools" : "Connect with QR"}
-              </button>
-            </div>
+                <div className="network-card-heading">
+                  <h2>Discovery and sharing</h2>
+                  <button
+                    className="text-button"
+                    onClick={() => setSharing(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+                <Settings
+                  key={state.settings.revision}
+                  settings={state.settings}
+                  act={act}
+                  busy={busy}
+                />
+              </section>
+            )}
             {tools && (
-              <section className="network-tools" aria-label="QR connections">
-                <MyQR token={state.settings.qrToken} act={act} busy={busy} />
-                <QRScanner />
+              <section
+                className="network-utility-panel network-tools"
+                aria-label="QR connections"
+              >
+                <div className="network-card-heading">
+                  <h2>Connect in person</h2>
+                  <button
+                    className="text-button"
+                    onClick={() => setTools(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="qr-columns">
+                  <MyQR token={state.settings.qrToken} act={act} busy={busy} />
+                  <QRScanner />
+                </div>
               </section>
             )}
             <nav className="network-tabs" aria-label="Network views">
               <button
                 aria-current={tab === "opportunities" ? "page" : undefined}
-                onClick={() => setTab("opportunities")}
+                onClick={() => goTo("opportunities")}
               >
-                Opportunities
+                For you
+              </button>
+              <button
+                aria-current={tab === "agents" ? "page" : undefined}
+                onClick={() => goTo("agents", selectedId)}
+              >
+                Agents{" "}
+                {pending > 0 && <span className="nav-count">{pending}</span>}
               </button>
               <button
                 aria-current={tab === "connections" ? "page" : undefined}
-                onClick={() => setTab("connections")}
+                onClick={() => goTo("connections")}
               >
-                Connections
-              </button>
-              <button
-                aria-current={tab === "requests" ? "page" : undefined}
-                onClick={() => setTab("requests")}
-              >
-                Requests{pending > 0 ? ` (${pending})` : ""}
+                People{" "}
+                {incomingConnections > 0 && (
+                  <span className="nav-count">{incomingConnections}</span>
+                )}
               </button>
             </nav>
             {tab === "opportunities" && (
-              <section aria-label="Opportunities">
-                {!state.settings.discoverable && (
-                  <p className="network-muted">
-                    Discovery is off. Enable it in Discovery and sharing to
-                    receive recommendations from the network.
-                  </p>
+              <section aria-label="For you">
+                {pending > 0 && (
+                  <button
+                    className="agent-attention"
+                    onClick={() =>
+                      openThread(
+                        threads.find((thread) => thread.needsYou)!.userId,
+                      )
+                    }
+                  >
+                    <span className="attention-mark" aria-hidden="true">
+                      ↔
+                    </span>
+                    <span>
+                      <strong>Your Sidekick needs you</strong>
+                      <span>
+                        {pending}{" "}
+                        {pending === 1 ? "decision is" : "decisions are"}{" "}
+                        waiting in your agent conversations.
+                      </span>
+                    </span>
+                    <span aria-hidden="true">→</span>
+                  </button>
                 )}
                 {!state.opportunities.length && (
-                  <p className="network-empty">
-                    No new matches yet. Sidekick checks for shared goals and
-                    overlapping SF dates as profiles and events change.
-                  </p>
-                )}
-                {state.opportunities.slice(0, 3).map((opportunity) => (
-                  <OpportunityCard
-                    key={opportunity.id}
-                    opportunity={opportunity}
-                    act={act}
-                    busy={busy}
-                    connection={state.connections.find(
-                      (item) => item.userId === opportunity.userId,
+                  <div className="network-blank">
+                    <span className="blank-glyph" aria-hidden="true">
+                      ↗
+                    </span>
+                    <h2>
+                      {state.settings.discoverable
+                        ? "Your next connection starts here"
+                        : "Let the right people find you"}
+                    </h2>
+                    <p>
+                      {state.settings.discoverable
+                        ? "Sidekick will suggest people with shared goals and overlapping time in SF."
+                        : "Choose what your Sidekick can share before it recommends you to the network."}
+                    </p>
+                    {!state.settings.discoverable && (
+                      <button
+                        className="primary-button"
+                        onClick={() => setSharing(true)}
+                      >
+                        Review sharing preferences
+                      </button>
                     )}
-                  />
-                ))}
+                  </div>
+                )}
+                <div className="opportunity-grid">
+                  {state.opportunities.slice(0, 3).map((opportunity) => (
+                    <OpportunityCard
+                      key={opportunity.id}
+                      opportunity={opportunity}
+                      act={act}
+                      busy={busy}
+                      openThread={openThread}
+                      connection={state.connections.find(
+                        (item) => item.userId === opportunity.userId,
+                      )}
+                    />
+                  ))}
+                </div>
+                {threads.some((thread) => thread.messages.length > 0) && (
+                  <section
+                    className="recent-agent-section"
+                    aria-label="Recent agent activity"
+                  >
+                    <div className="section-heading">
+                      <h2>Behind the connection</h2>
+                      <button
+                        className="text-button"
+                        onClick={() => goTo("agents")}
+                      >
+                        All conversations →
+                      </button>
+                    </div>
+                    {threads
+                      .filter((thread) => thread.messages.length > 0)
+                      .slice(0, 2)
+                      .map((thread) => (
+                        <button
+                          className="recent-agent-row"
+                          key={thread.userId}
+                          onClick={() => openThread(thread.userId)}
+                        >
+                          <PersonAvatar name={thread.name} agent />
+                          <span>
+                            <strong>
+                              Your Sidekick ↔ {thread.name.split(" ")[0]}’s
+                              Sidekick
+                            </strong>
+                            <span>
+                              {thread.needsYou
+                                ? "Your input is needed"
+                                : "View the shared context and next steps"}
+                            </span>
+                          </span>
+                          <span aria-hidden="true">→</span>
+                        </button>
+                      ))}
+                  </section>
+                )}
                 <EventList events={state.events} act={act} busy={busy} />
               </section>
             )}
             {tab === "connections" && (
-              <section aria-label="Connections">
-                {!state.connections.filter(
-                  (connection) => connection.status !== "removed",
-                ).length && (
-                  <p className="network-empty">
-                    No connections yet. Share your QR code with someone you
-                    meet.
-                  </p>
+              <section aria-label="People">
+                {!state.connections.length && (
+                  <div className="network-blank">
+                    <span className="blank-glyph" aria-hidden="true">
+                      +
+                    </span>
+                    <h2>Keep the conversation going</h2>
+                    <p>Scan someone’s Sidekick QR to connect your agents.</p>
+                    <button
+                      className="primary-button"
+                      onClick={() => setTools(true)}
+                    >
+                      Connect with QR
+                    </button>
+                  </div>
                 )}
-                {state.connections
-                  .filter((connection) => connection.status !== "removed")
-                  .map((connection) => (
-                    <ConnectionCard
-                      key={connection.userId}
-                      connection={connection}
-                      act={act}
-                      busy={busy}
-                    />
-                  ))}
+                <div className="people-grid">
+                  {[...state.connections]
+                    .sort(
+                      (a, b) =>
+                        Number(
+                          b.status === "pending" && b.direction === "incoming",
+                        ) -
+                        Number(
+                          a.status === "pending" && a.direction === "incoming",
+                        ),
+                    )
+                    .map((connection) => (
+                      <ConnectionCard
+                        key={connection.userId}
+                        connection={connection}
+                        act={act}
+                        busy={busy}
+                        openThread={openThread}
+                      />
+                    ))}
+                </div>
               </section>
             )}
-            {tab === "requests" && (
-              <section aria-label="Requests">
-                {state.connections
-                  .filter(
-                    (connection) =>
-                      connection.status === "pending" &&
-                      connection.direction === "incoming",
-                  )
-                  .map((connection) => (
-                    <ConnectionCard
-                      key={connection.userId}
-                      connection={connection}
-                      act={act}
-                      busy={busy}
-                    />
-                  ))}
-                {!pending &&
-                  !state.messages.length &&
-                  !state.meetings.length && (
-                    <p className="network-empty">No requests yet.</p>
-                  )}
-                {state.meetings.map((meeting) => (
-                  <MeetingCard
-                    key={`${meeting.id}-${meeting.revision}`}
-                    meeting={meeting}
-                    accountId={account.id}
-                    act={act}
-                    busy={busy}
-                  />
-                ))}
-                {state.messages.map((message) => (
+            {tab === "agents" && (
+              <AgentConversations
+                accountId={account.id}
+                threads={threads}
+                selectedId={selectedId}
+                select={(id) => goTo("agents", id)}
+                seePeople={() => goTo("connections")}
+                response={(value) => <InformationAnswers response={value} />}
+                messageAction={(message) => (
                   <MessageCard
                     key={message.id}
                     message={message}
@@ -382,8 +564,43 @@ export function Network({ account }: { account: Account }) {
                     act={act}
                     busy={busy}
                   />
-                ))}
-              </section>
+                )}
+                meetingAction={(meeting) => (
+                  <MeetingCard
+                    key={meeting.id}
+                    meeting={meeting}
+                    accountId={account.id}
+                    act={act}
+                    busy={busy}
+                  />
+                )}
+                compose={(thread) => (
+                  <div className="thread-compose">
+                    <details>
+                      <summary>
+                        Ask about an opportunity{" "}
+                        <span aria-hidden="true">+</span>
+                      </summary>
+                      <QueryForm
+                        userId={thread.userId}
+                        name={thread.name}
+                        act={act}
+                        busy={busy}
+                      />
+                    </details>
+                    <details>
+                      <summary>
+                        Coordinate a meeting <span aria-hidden="true">+</span>
+                      </summary>
+                      <MeetingForm
+                        userId={thread.userId}
+                        act={act}
+                        busy={busy}
+                      />
+                    </details>
+                  </div>
+                )}
+              />
             )}
           </>
         )}
@@ -671,32 +888,36 @@ function OpportunityCard({
   act,
   busy,
   connection,
+  openThread,
 }: {
   opportunity: Opportunity;
   act: Action;
   busy: boolean;
   connection?: ConnectionView;
+  openThread: (userId: string) => void;
 }) {
   return (
-    <article className="network-card">
+    <article className="network-card opportunity-card">
       <div className="network-card-heading">
-        <h2>{opportunity.name}</h2>
-        <span className="network-badge">
-          {opportunity.source === "demo" ? "Demo · " : ""}Match score{" "}
-          {opportunity.score}/100
-        </span>
+        <div className="person-heading">
+          <PersonAvatar name={opportunity.name} />
+          <div>
+            <h2>{opportunity.name}</h2>
+            <span className="network-badge">
+              In SF {dateLabel(opportunity.overlap.start)}–
+              {dateLabel(opportunity.overlap.end)}
+            </span>
+          </div>
+        </div>
       </div>
-      <p>
-        <strong>For you:</strong> {opportunity.benefits.you}
+      <p className="opportunity-reason">
+        {opportunity.goal?.text ?? opportunity.benefits.you}
       </p>
-      <p>
-        <strong>For {opportunity.name}:</strong> {opportunity.benefits.them}
-      </p>
-      <p>In common: {opportunity.signals.slice(0, 4).join(", ")}</p>
-      <p className="network-muted">
-        Both in SF: {dateLabel(opportunity.overlap.start)}–
-        {dateLabel(opportunity.overlap.end)}
-      </p>
+      <div className="signal-tags" aria-label="Shared interests">
+        {opportunity.signals.slice(0, 3).map((signal) => (
+          <span key={signal}>{signal}</span>
+        ))}
+      </div>
       {opportunity.sharedEvents.map((event) => (
         <p key={event.id}>
           Shared event: {event.title} · {timeLabel(event.start)} SF time
@@ -711,12 +932,21 @@ function OpportunityCard({
       ))}
       <details>
         <summary>Why this was suggested</summary>
-        <ul>
-          {opportunity.reasons.map((reason) => (
-            <li key={reason}>{reason}</li>
-          ))}
-        </ul>
-        <p>Shared signals: {opportunity.signals.join(", ")}</p>
+        <p>
+          <strong>For you:</strong> {opportunity.benefits.you}
+        </p>
+        <p>
+          <strong>For {opportunity.name}:</strong> {opportunity.benefits.them}
+        </p>
+        <p className="network-muted">
+          Shared interests: {opportunity.signals.join(", ")}
+        </p>
+        <p className="network-muted">
+          Heuristic score {opportunity.score}/100 ·{" "}
+          {opportunity.source === "demo"
+            ? "Demo data"
+            : "Self-reported information"}
+        </p>
         <p className="network-muted">
           Based on shared, self-reported profile and event information. Reviewed{" "}
           {dateLabel(opportunity.createdAt)}. Availability has not been checked.
@@ -724,9 +954,12 @@ function OpportunityCard({
       </details>
       <div className="network-actions">
         {connection?.status === "accepted" ? (
-          <span className="network-status">
-            Connected · coordinate from Connections
-          </span>
+          <button
+            className="primary-button"
+            onClick={() => openThread(opportunity.userId)}
+          >
+            Open agent conversation <span aria-hidden="true">↗</span>
+          </button>
         ) : connection?.status === "pending" ? (
           <span className="network-status">Connection request pending</span>
         ) : (
@@ -763,17 +996,22 @@ function ConnectionCard({
   connection,
   act,
   busy,
+  openThread,
 }: {
   connection: ConnectionView;
   act: Action;
   busy: boolean;
+  openThread: (userId: string) => void;
 }) {
   const decide = (decision: ConnectionAction) =>
     void act({ action: "connection", toUserId: connection.userId, decision });
   return (
     <article className="network-card">
       <div className="network-card-heading">
-        <h2>{connection.name}</h2>
+        <div className="person-heading">
+          <PersonAvatar name={connection.name} />
+          <h2>{connection.name}</h2>
+        </div>
         <span className="network-badge">
           {connection.status === "accepted"
             ? "Connected"
@@ -817,21 +1055,12 @@ function ConnectionCard({
           </>
         )}
       {connection.status === "accepted" && (
-        <>
-          <details>
-            <summary>Ask about an opportunity</summary>
-            <QueryForm
-              userId={connection.userId}
-              name={connection.name}
-              act={act}
-              busy={busy}
-            />
-          </details>
-          <details>
-            <summary>Coordinate a meeting</summary>
-            <MeetingForm userId={connection.userId} act={act} busy={busy} />
-          </details>
-        </>
+        <button
+          className="primary-button"
+          onClick={() => openThread(connection.userId)}
+        >
+          Open agent conversation <span aria-hidden="true">↗</span>
+        </button>
       )}
       <details>
         <summary>Manage connection</summary>
@@ -936,7 +1165,7 @@ function QueryForm({
       </button>
       {sent && (
         <p className="network-status" role="status">
-          Request sent. Follow the response in Requests.
+          Request sent. The exchange is recorded in this conversation.
         </p>
       )}
     </form>
@@ -960,6 +1189,23 @@ function informationText(result: InformationResult): ReactNode {
   if ("start" in value)
     return `${dateLabel(value.start)}–${dateLabel(value.end)} in San Francisco`;
   return "Not provided";
+}
+
+function InformationAnswers({
+  response,
+}: {
+  response: AgentMessage["response"];
+}) {
+  return (
+    <dl className="exchange-facts">
+      {NETWORK_FIELDS.filter((field) => response[field]).map((field) => (
+        <div key={field}>
+          <dt>{fieldLabels[field]}</dt>
+          <dd>{informationText(response[field]!)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 function MessageCard({
@@ -986,28 +1232,12 @@ function MessageCard({
     revoked: "Access revoked",
   };
   return (
-    <article className="network-card">
+    <article className="network-card approval-card">
       <div className="network-card-heading">
-        <h2>
-          {incoming
-            ? `${message.senderName} asked`
-            : `Your request to ${message.recipientName}`}
-        </h2>
+        <h2>Your Sidekick needs your answer</h2>
         <span className="network-badge">{labels[message.status]}</span>
       </div>
       <p>{message.purpose}</p>
-      <dl>
-        {message.fields.map((field) => (
-          <div className="network-answer" key={field}>
-            <dt>{fieldLabels[field]}</dt>
-            <dd>
-              {informationText(
-                message.response[field] || { status: "unknown" },
-              )}
-            </dd>
-          </div>
-        ))}
-      </dl>
       {needsAnswer && (
         <form
           onSubmit={async (event) => {
@@ -1143,7 +1373,7 @@ function MeetingForm({
       </button>
       {sent && (
         <p className="network-status" role="status">
-          Proposed. Review availability in Requests.
+          Proposed. Availability and approvals appear in this conversation.
         </p>
       )}
     </form>

@@ -79,6 +79,29 @@ async function shot(page: Page, name: string) {
     });
 }
 
+async function view(page: Page, name: "For you" | "Agents" | "People") {
+  await page
+    .getByRole("navigation", { name: "Network views" })
+    .getByRole("button", { name: new RegExp(`^${name}(?: \\d+)?$`) })
+    .click();
+}
+
+async function openConversation(page: Page, name: string) {
+  await page.goto("/network?view=agents");
+  await page
+    .getByRole("button", {
+      name: `Open agent conversation with ${name}`,
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("region", {
+      name: `Conversation with ${name}`,
+      exact: true,
+    }),
+  ).toBeVisible();
+}
+
 test("a QR image opens a name-only preview; a request requires acceptance and persists", async ({
   browser,
 }) => {
@@ -119,20 +142,26 @@ test("a QR image opens a name-only preview; a request requires acceptance and pe
       "Connection request sent",
     );
     await pedro.page.goto("/network");
-    await pedro.page.getByRole("button", { name: /^Requests/ }).click();
+    await view(pedro.page, "People");
     await pedro.page.getByRole("button", { name: "Accept connection" }).click();
-    await pedro.page
-      .getByRole("button", { name: "Connections", exact: true })
-      .click();
     await expect(
-      pedro.page.getByRole("heading", { name: "Alex Rivera" }),
+      pedro.page.getByRole("region", {
+        name: "Conversation with Alex Rivera",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(pedro.page).toHaveURL(
+      new RegExp(`view=agents&person=${alex.account.id}$`),
+    );
+    await expect(
+      pedro.page.getByRole("heading", { name: "Your Sidekicks are connected" }),
     ).toBeVisible();
     await pedro.page.reload();
-    await pedro.page
-      .getByRole("button", { name: "Connections", exact: true })
-      .click();
     await expect(
-      pedro.page.getByText("Connected", { exact: true }),
+      pedro.page.getByRole("region", {
+        name: "Conversation with Alex Rivera",
+        exact: true,
+      }),
     ).toBeVisible();
     await shot(pedro.page, "network-connected-mobile");
     for (const width of [320, 1280]) {
@@ -144,6 +173,10 @@ test("a QR image opens a name-only preview; a request requires acceptance and pe
       ).toBe(true);
       await shot(pedro.page, `network-connected-${width}`);
     }
+    await view(pedro.page, "People");
+    await expect(
+      pedro.page.getByText("Connected", { exact: true }),
+    ).toBeVisible();
   } finally {
     await alex.context.close();
     await pedro.context.close();
@@ -160,7 +193,7 @@ test("discovery recommends a reciprocal match after explicit sharing consent", a
     for (const current of [alex, agustin]) {
       await current.page.goto("/network");
       await current.page
-        .getByText("Discovery and sharing", { exact: true })
+        .getByRole("button", { name: "Sharing", exact: true })
         .click();
       await current.page
         .getByLabel("Let Sidekick recommend me to compatible people")
@@ -178,8 +211,14 @@ test("discovery recommends a reciprocal match after explicit sharing consent", a
         .getByRole("button", { name: "Save sharing preferences" })
         .click();
       await expect(
-        current.page.getByText("Discovery is off.", { exact: false }),
-      ).toHaveCount(0);
+        current.page.getByLabel(
+          "Let Sidekick recommend me to compatible people",
+        ),
+      ).toBeChecked();
+      await current.page
+        .getByRole("region", { name: "Discovery and sharing" })
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
     }
     await alex.page.reload();
     const recommendation = alex.page.locator("article").filter({
@@ -189,6 +228,9 @@ test("discovery recommends a reciprocal match after explicit sharing consent", a
       }),
     });
     await expect(recommendation).toBeVisible({ timeout: 25000 });
+    await recommendation
+      .getByText("Why this was suggested", { exact: true })
+      .click();
     await expect(recommendation).toContainText("For you:");
     await expect(recommendation).toContainText("For Agustin Park:");
     await expect(
@@ -205,7 +247,7 @@ test("discovery recommends a reciprocal match after explicit sharing consent", a
       recommendation.getByText("Connection request pending"),
     ).toBeVisible();
     await agustin.page.reload();
-    await agustin.page.getByRole("button", { name: /^Requests/ }).click();
+    await view(agustin.page, "People");
     await expect(
       agustin.page.getByRole("heading", { name: "Alex Rivera", exact: true }),
     ).toBeVisible();
@@ -213,8 +255,12 @@ test("discovery recommends a reciprocal match after explicit sharing consent", a
       .getByRole("button", { name: "Accept connection" })
       .click();
     await alex.page.reload();
+    await recommendation
+      .getByRole("button", { name: "Open agent conversation", exact: true })
+      .click();
     await expect(
-      alex.page.getByText("Connected · coordinate from Connections", {
+      alex.page.getByRole("region", {
+        name: "Conversation with Agustin Park",
         exact: true,
       }),
     ).toBeVisible();
@@ -244,12 +290,10 @@ test("a private profile needs an explicit one-time answer and blocking revokes t
   const pedro = await person(browser, "Pedro Chen");
   try {
     await connect(alex, pedro);
-    await pedro.page.goto("/network");
+    await openConversation(pedro.page, "Alex Rivera");
     await pedro.page
-      .getByRole("button", { name: "Connections", exact: true })
-      .click();
-    await pedro.page
-      .getByText("Ask about an opportunity", { exact: true })
+      .locator("summary")
+      .filter({ hasText: "Ask about an opportunity" })
       .click();
     const purpose =
       "Would an AI infrastructure founding engineer role interest Alex?";
@@ -291,14 +335,21 @@ test("a private profile needs an explicit one-time answer and blocking revokes t
     await expect(pedro.page.getByRole("status")).toContainText("Request sent");
     expect(requestIds).toHaveLength(2);
     expect(requestIds[1]).toBe(requestIds[0]);
-    await pedro.page.getByRole("button", { name: /^Requests/ }).click();
     await expect(pedro.page.getByText("Orchard", { exact: false })).toHaveCount(
       0,
     );
-    await expect(pedro.page.getByText("Waiting for an answer")).toBeVisible();
-    await alex.page.goto("/network");
-    await alex.page.getByRole("button", { name: /^Requests/ }).click();
-    await expect(alex.page.getByText(purpose)).toBeVisible();
+    await expect(
+      pedro.page.getByText("Waiting for Alex to decide what to share."),
+    ).toBeVisible();
+    await expect(
+      pedro.page.getByText("Your Sidekick → Alex’s Sidekick", { exact: true }),
+    ).toBeVisible();
+    await openConversation(alex.page, "Pedro Chen");
+    await expect(
+      alex.page
+        .getByRole("list", { name: "Agent exchange history" })
+        .getByText(purpose, { exact: true }),
+    ).toBeVisible();
     await alex.page
       .getByRole("textbox", { name: "Experience and projects", exact: true })
       .fill(
@@ -314,10 +365,11 @@ test("a private profile needs an explicit one-time answer and blocking revokes t
       .getByRole("button", { name: "Decline to share more" })
       .click();
     await expect(
-      alex.page.getByText("Declined", { exact: true }),
+      alex.page.getByText("No additional information was shared.", {
+        exact: true,
+      }),
     ).toBeVisible();
     await pedro.page.reload();
-    await pedro.page.getByRole("button", { name: /^Requests/ }).click();
     await expect(
       pedro.page.getByText(
         "I have built production AI agents and would be open to a conversation.",
@@ -327,14 +379,17 @@ test("a private profile needs an explicit one-time answer and blocking revokes t
     await expect(pedro.page.getByText("Orchard", { exact: false })).toHaveCount(
       0,
     );
-    await alex.page
-      .getByRole("button", { name: "Connections", exact: true })
-      .click();
+    await view(alex.page, "People");
     await alex.page.getByText("Manage connection", { exact: true }).click();
     await alex.page.getByRole("button", { name: "Block", exact: true }).click();
     await expect(alex.page.getByText("Blocked", { exact: true })).toBeVisible();
     await pedro.page.reload();
-    await pedro.page.getByRole("button", { name: /^Requests/ }).click();
+    await expect(
+      pedro.page.getByText(
+        "Access revoked. Previously shared information is hidden.",
+        { exact: true },
+      ),
+    ).toBeVisible();
     await expect(
       pedro.page.getByText(
         "I have built production AI agents and would be open to a conversation.",
@@ -393,11 +448,11 @@ test("a meeting uses manual availability only when calendar is missing and requi
   const agustin = await person(browser, "Agustin Park", "hiring");
   try {
     await connect(alex, agustin);
-    await alex.page.goto("/network");
+    await openConversation(alex.page, "Agustin Park");
     await alex.page
-      .getByRole("button", { name: "Connections", exact: true })
+      .locator("summary")
+      .filter({ hasText: "Coordinate a meeting" })
       .click();
-    await alex.page.getByText("Coordinate a meeting", { exact: true }).click();
     await alex.page
       .getByLabel("What would you like to discuss?")
       .fill("Discuss the AI founding engineer opportunity.");
@@ -409,8 +464,10 @@ test("a meeting uses manual availability only when calendar is missing and requi
       .click();
     await expect(alex.page.getByRole("status")).toContainText("Proposed");
     for (const current of [alex, agustin]) {
-      await current.page.goto("/network");
-      await current.page.getByRole("button", { name: /^Requests/ }).click();
+      await openConversation(
+        current.page,
+        current === alex ? "Agustin Park" : "Alex Rivera",
+      );
       await current.page
         .getByLabel("Date in SF", { exact: true })
         .fill(alex.date);
@@ -446,7 +503,6 @@ test("a meeting uses manual availability only when calendar is missing and requi
       await route.continue();
     });
     await alex.page.reload();
-    await alex.page.getByRole("button", { name: /^Requests/ }).click();
     await expect(
       alex.page.getByText(
         "The calendar provider is temporarily unavailable. Try again.",
@@ -485,7 +541,6 @@ test("a meeting uses manual availability only when calendar is missing and requi
       alex.page.getByRole("link", { name: "Download calendar file" }),
     ).toHaveCount(0);
     await agustin.page.reload();
-    await agustin.page.getByRole("button", { name: /^Requests/ }).click();
     await expect(
       agustin.page.getByText(
         /Alex Rivera proposed .* Approve it or choose another option./,
@@ -504,7 +559,6 @@ test("a meeting uses manual availability only when calendar is missing and requi
       agustin.page.getByRole("link", { name: "Download calendar file" }),
     ).toHaveCount(0);
     await alex.page.reload();
-    await alex.page.getByRole("button", { name: /^Requests/ }).click();
     await expect(
       alex.page.getByText(
         /Agustin Park proposed .* Approve it or choose another option./,
@@ -518,7 +572,6 @@ test("a meeting uses manual availability only when calendar is missing and requi
       alex.page.getByText("Both people approved", { exact: true }),
     ).toBeVisible();
     await agustin.page.reload();
-    await agustin.page.getByRole("button", { name: /^Requests/ }).click();
     await expect(
       agustin.page.getByText("Both people approved", { exact: true }),
     ).toBeVisible();
@@ -531,6 +584,183 @@ test("a meeting uses manual availability only when calendar is missing and requi
     await shot(agustin.page, "network-meeting-approved-mobile");
   } finally {
     await alex.context.close();
+    await agustin.context.close();
+  }
+});
+
+test("agent conversations isolate each person and preserve recorded exchanges through reload and keyboard navigation", async ({
+  browser,
+}) => {
+  const alex = await person(browser, "Alex Rivera");
+  const pedro = await person(browser, "Pedro Chen");
+  const agustin = await person(
+    browser,
+    "Agustin Park with a longer display name",
+    "hiring",
+  );
+  const pedroPurpose = "Explore a technical cofounder opportunity with Pedro.";
+  const agustinPurpose = "Discuss Agustin's founding engineer hiring plans.";
+  try {
+    await alex.page.goto("/network");
+    await view(alex.page, "Agents");
+    await expect(
+      alex.page.getByRole("heading", { name: "No agent conversations yet" }),
+    ).toBeVisible();
+    await alex.page.getByRole("button", { name: "Find your people" }).click();
+    await expect(
+      alex.page.getByRole("heading", { name: "Your people", exact: true }),
+    ).toBeVisible();
+    await connect(alex, pedro);
+    await connect(alex, agustin);
+    const { qrToken: _qr, ...pedroSettings } = pedro.state.settings;
+    void _qr;
+    const shared = await pedro.page.request.post("/api/network", {
+      headers: { origin },
+      data: {
+        action: "settings",
+        settings: {
+          ...pedroSettings,
+          visibility: { ...pedroSettings.visibility, profile: "friends" },
+        },
+      },
+    });
+    expect(shared.status()).toBe(200);
+    for (const [target, purpose] of [
+      [pedro, pedroPurpose],
+      [agustin, agustinPurpose],
+    ] as const) {
+      const sent = await alex.page.request.post("/api/network", {
+        headers: { origin },
+        data: {
+          action: "query",
+          toUserId: target.account.id,
+          purpose,
+          fields: ["profile"],
+          requestId: crypto.randomUUID(),
+        },
+      });
+      expect(sent.status()).toBe(200);
+    }
+    await alex.page.goto("/network");
+    const navigation = alex.page.getByRole("navigation", {
+      name: "Network views",
+    });
+    await navigation
+      .getByRole("button", { name: "For you", exact: true })
+      .focus();
+    await alex.page.keyboard.press("Tab");
+    await expect(
+      navigation.getByRole("button", { name: /^Agents/ }),
+    ).toBeFocused();
+    await alex.page.keyboard.press("Enter");
+    const pedroThread = alex.page.getByRole("button", {
+      name: "Open agent conversation with Pedro Chen",
+      exact: true,
+    });
+    await pedroThread.focus();
+    await alex.page.keyboard.press("Enter");
+    const conversation = alex.page.getByRole("region", {
+      name: "Conversation with Pedro Chen",
+      exact: true,
+    });
+    await expect(
+      conversation.getByText(pedroPurpose, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      conversation.getByText(agustinPurpose, { exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      conversation.getByText("Your Sidekick → Pedro’s Sidekick", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      conversation.getByText("Shared a reply", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      conversation.getByText(
+        "Pedro Chen builds AI agents and TypeScript software in production. Private project: Orchard.",
+        { exact: false },
+      ),
+    ).toBeVisible();
+    const state = await (await alex.page.request.get("/api/network")).json();
+    const exchange = state.messages.find(
+      (message: { toUserId: string }) => message.toUserId === pedro.account.id,
+    );
+    const expectedTimes = exchange.activity
+      .map((entry: { at: string }) => entry.at)
+      .sort();
+    expect(expectedTimes.length).toBeGreaterThanOrEqual(2);
+    const history = conversation.getByRole("list", {
+      name: "Agent exchange history",
+    });
+    await expect
+      .poll(() =>
+        history
+          .locator("time")
+          .evaluateAll((times) =>
+            times.map((time) => time.getAttribute("datetime")),
+          ),
+      )
+      .toEqual(expectedTimes);
+    for (const time of await history.locator("time").all()) {
+      await expect(time).toBeVisible();
+      await expect(time).toContainText(/\d+:\d{2}/);
+    }
+    await alex.page.reload();
+    await expect(conversation).toBeVisible();
+    await expect(
+      history.getByText(pedroPurpose, { exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(() =>
+        history
+          .locator("time")
+          .evaluateAll((times) =>
+            times.map((time) => time.getAttribute("datetime")),
+          ),
+      )
+      .toEqual(expectedTimes);
+    await shot(alex.page, "agent-conversation-mobile");
+    await alex.page
+      .getByRole("button", { name: "All conversations", exact: false })
+      .focus();
+    await alex.page.keyboard.press("Enter");
+    const agustinThread = alex.page.getByRole("button", {
+      name: "Open agent conversation with Agustin Park with a longer display name",
+      exact: true,
+    });
+    await agustinThread.focus();
+    await alex.page.keyboard.press("Enter");
+    const otherConversation = alex.page.getByRole("region", {
+      name: "Conversation with Agustin Park with a longer display name",
+      exact: true,
+    });
+    await expect(
+      otherConversation.getByText(agustinPurpose, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      otherConversation.getByText(pedroPurpose, { exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      otherConversation.getByText(
+        "Waiting for Agustin to decide what to share.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    for (const width of [320, 390, 1280]) {
+      await alex.page.setViewportSize({ width, height: 900 });
+      expect(
+        await alex.page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
+      await expect(otherConversation).toBeVisible();
+      await shot(alex.page, `agent-conversation-${width}`);
+    }
+  } finally {
+    await alex.context.close();
+    await pedro.context.close();
     await agustin.context.close();
   }
 });

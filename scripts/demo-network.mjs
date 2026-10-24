@@ -55,6 +55,7 @@ const people = [
       "Competitive programming and optimization experience, AI infrastructure and startup opportunities.",
   },
 ];
+const clients = new Map();
 for (const person of people) {
   let cookie = "";
   const call = async (path, data) => {
@@ -103,6 +104,11 @@ for (const person of people) {
     },
   });
   const network = await call("/api/network");
+  clients.set(person.name, {
+    call,
+    accountId: network.accountId,
+    qrToken: network.settings.qrToken,
+  });
   await call("/api/network", {
     action: "settings",
     settings: {
@@ -133,6 +139,35 @@ for (const person of people) {
     },
   });
   console.log(`${person.name}: ${person.email}`);
+}
+// Optional replayable conversation fixture, using the same human-approved APIs.
+// Only fictional accounts in the explicitly isolated demo can reach this block.
+if (process.env.DEMO_CONVERSATION === "1") {
+  const raul = clients.get("Raul Demo"),
+    pedro = clients.get("Pedro Demo");
+  await raul.call("/api/network", {
+    action: "connect",
+    toUserId: pedro.accountId,
+    source: "qr",
+    token: pedro.qrToken,
+    context: "Demo: met at the AI builders meetup.",
+  });
+  await pedro.call("/api/network", {
+    action: "connection",
+    toUserId: raul.accountId,
+    decision: "accept",
+  });
+  await pedro.call("/api/network", {
+    action: "query",
+    toUserId: raul.accountId,
+    requestId: "1a467a4d-f4b7-4d76-a2ba-312ad86d6304",
+    fields: ["profile", "goal"],
+    purpose:
+      "Pedro is exploring an optimization startup. Does Raul have algorithms experience, and is he open to an early-stage technical role?",
+  });
+  console.log(
+    `Agent conversation: ${new URL(`/network?view=agents&person=${pedro.accountId}`, origin)}`,
+  );
 }
 console.log(
   `\nDemo password: ${password}\nOpen ${new URL("/login?next=%2Fnetwork", origin)} in separate browser profiles.`,
