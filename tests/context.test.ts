@@ -59,7 +59,7 @@ describe("confirmed onboarding context", () => {
     context.commitments = {
       status: "none",
       items: [
-        { title: "Cena", date: "2026-10-26", start: "18:00", end: "19:00" },
+        { title: "Dinner", date: "2026-10-26", start: "18:00", end: "19:00" },
       ],
     };
     expect(contextSchema.safeParse(context).success).toBe(false);

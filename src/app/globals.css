@@ -126,15 +126,7 @@ h1 {
   font-weight: 550;
   margin: 14px 0 12px;
 }
-.conversation-heading > p {
-  font-size: 14px;
-  line-height: 1.7;
-  margin: 0;
-  color: var(--muted);
-}
-.mobile-break {
-  display: none;
-}
+
 .chat-messages {
   min-height: 235px;
   padding: 16px 0 24px;
@@ -253,14 +245,11 @@ h1 {
 .composer-bottom {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 10px;
   margin-top: 12px;
 }
-.composer-bottom > span {
-  font-size: 11px;
-  color: var(--muted);
-}
+
 .send-button {
   border: 0;
   display: grid;
@@ -355,12 +344,7 @@ h1 {
   overflow-wrap: anywhere;
   margin: 20px 0 8px;
 }
-.profile-intro {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.7;
-  margin: 0 0 8px;
-}
+
 .profile-facts {
   margin: 0;
 }
@@ -406,15 +390,7 @@ h1 {
   line-height: 1.7;
   margin: 16px 0 0;
 }
-.correction-hint {
-  margin: 24px 0 0;
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--muted);
-}
-.correction-hint span {
-  margin-right: 4px;
-}
+
 .review-prompt {
   border: 1px solid #d9e3d1;
   padding: 18px;
@@ -422,16 +398,14 @@ h1 {
   background: #f1f5ea;
   margin: 0 0 20px 40px;
 }
+.review-prompt > .secondary-button {
+  margin-top: 12px;
+}
 .review-prompt strong {
   font-size: 14px;
   font-weight: 600;
 }
-.review-prompt > div > p {
-  margin: 6px 0 12px;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--muted);
-}
+
 .inline-review {
   border-top: 1px solid var(--line);
   margin-top: 18px;
@@ -493,12 +467,7 @@ h1 {
 .confirmed-note strong {
   font-size: 13px;
 }
-.confirmed-note p {
-  margin: 5px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
+
 .notice {
   padding: 14px;
   border: 1px solid #dfceb1;
@@ -567,12 +536,7 @@ h1 {
     font-size: 30px;
     margin: 13px 0 12px;
   }
-  .conversation-heading > p {
-    font-size: 13px;
-  }
-  .mobile-break {
-    display: block;
-  }
+
   .chat-messages {
     min-height: 200px;
     padding-top: 22px;
@@ -627,9 +591,7 @@ h1 {
   .composer-bottom {
     margin-top: 8px;
   }
-  .composer-bottom > span {
-    font-size: 10px;
-  }
+
   .composer-hint {
     justify-content: center;
     font-size: 10px;

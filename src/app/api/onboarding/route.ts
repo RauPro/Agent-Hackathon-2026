@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
     return json(
       {
         code: "unavailable",
-        message: "No pudimos abrir tu conversación. Inténtalo de nuevo.",
+        message: "Could not open the conversation. Try again.",
       },
       503,
     );
@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
     return json(
       {
         code: "invalid_origin",
-        message: "Abre la conversación desde SF Sidekick.",
+        message: "Open the conversation in SF Sidekick.",
       },
       403,
     );
@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
     return json(
       {
         code: "invalid_content_type",
-        message: "Formato de mensaje no válido.",
+        message: "Invalid message format.",
       },
       415,
     );
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
     return json(
       {
         code: "invalid_body",
-        message: "El mensaje es demasiado largo o no se pudo leer.",
+        message: "The message is too long or could not be read.",
       },
       error instanceof Error && error.message === "payload_too_large"
         ? 413
@@ -81,7 +81,7 @@ export async function POST(request: NextRequest) {
     return json(
       {
         code: "invalid_message",
-        message: "Escribe un mensaje de hasta 3.000 caracteres.",
+        message: "Write a message of up to 3,000 characters.",
       },
       400,
     );
@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
       return json(
         {
           code: "session_missing",
-          message: "La sesión ha cambiado. Reconecta para continuar.",
+          message: "Your session changed. Reconnect to continue.",
         },
         401,
       );
@@ -108,8 +108,8 @@ export async function POST(request: NextRequest) {
           code: error.code,
           message:
             error.code === "profile_changed"
-              ? "Tu perfil se actualizó en otra pestaña. Recupera esa versión antes de continuar."
-              : "La conversación cambió en otra pestaña. Recupera los últimos mensajes.",
+              ? "Your profile changed in another tab. Load the saved version to continue."
+              : "The conversation changed in another tab. Load the latest messages.",
         },
         409,
       );
@@ -118,7 +118,7 @@ export async function POST(request: NextRequest) {
         {
           code: "busy",
           message:
-            "Ya estoy respondiendo a un mensaje. Reintenta en unos segundos.",
+            "A reply is already in progress. Try again in a few seconds.",
         },
         429,
       );
@@ -127,7 +127,7 @@ export async function POST(request: NextRequest) {
         {
           code: "chat_limit",
           message:
-            "Esta conversación ha llegado a su límite. Confirma el perfil si está listo o empieza de nuevo desde el perfil guardado.",
+            "This conversation reached its limit. Confirm your profile if ready, or restart from the saved profile.",
         },
         429,
       );
@@ -137,8 +137,8 @@ export async function POST(request: NextRequest) {
           code: error.code,
           message:
             error.code === "not_configured"
-              ? "OpenAI aún no está conectado. Tu mensaje sigue aquí."
-              : "No pude responder ahora. Tu mensaje sigue aquí; puedes reintentarlo.",
+              ? "OpenAI is not connected. Your message is still here."
+              : "Could not get a reply. Your message is still here; try again.",
         },
         error.code === "timeout" ? 504 : 503,
       );
@@ -147,7 +147,7 @@ export async function POST(request: NextRequest) {
         {
           code: "draft_incomplete",
           message:
-            "Faltan datos o hay horarios por aclarar antes de confirmar.",
+            "Some details or times need clarification before confirmation.",
         },
         400,
       );
@@ -156,7 +156,7 @@ export async function POST(request: NextRequest) {
       {
         code: "unavailable",
         message:
-          "No pudimos confirmar el resultado. Puedes reintentar sin duplicar el mensaje.",
+          "Could not confirm the result. Try again; your message will not be duplicated.",
       },
       503,
     );

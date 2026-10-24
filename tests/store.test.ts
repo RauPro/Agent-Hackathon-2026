@@ -80,7 +80,7 @@ describe("context persistence and ownership", () => {
     const newer = input(1);
     newer.context.goal = {
       type: "hiring",
-      text: "Encontrar un founding engineer para mi equipo de agentes.",
+      text: "Find a founding engineer for my agent team.",
     };
     expect(store.save(session.token, newer).revision).toBe(2);
     expect(() => store.save(session.token, input(1))).toThrow(ContextConflict);
@@ -92,11 +92,11 @@ describe("context persistence and ownership", () => {
     const first = input();
     store.save(session.token, first);
     const second = input(1);
-    second.context.profile.name = "Alex corregido";
+    second.context.profile.name = "Alex updated";
     store.save(session.token, second);
     expect(store.save(session.token, first).revision).toBe(1);
     expect(store.read(session.token)?.context?.profile.name).toBe(
-      "Alex corregido",
+      "Alex updated",
     );
   });
 

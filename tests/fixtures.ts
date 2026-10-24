@@ -5,13 +5,13 @@ export function validContext(): UserContext {
     ...emptyContext(),
     profile: {
       name: "Alex Rivera",
-      bio: "Ingeniero de producto con experiencia construyendo agentes en producción.",
+      bio: "Product engineer with experience building agents in production.",
       offers:
-        "Puedo aportar experiencia en TypeScript, producto y equipos pequeños.",
+        "I can offer experience in TypeScript, product work, and small teams.",
     },
     goal: {
       type: "seeking_role",
-      text: "Conocer equipos que busquen un founding engineer para productos de agentes.",
+      text: "Meet teams hiring a founding engineer for agent products.",
     },
     trip: {
       city: "San Francisco",

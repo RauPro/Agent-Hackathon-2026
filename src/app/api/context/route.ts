@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
     return json(
       {
         code: "invalid_origin",
-        message: "Abre el formulario desde SF Sidekick para guardar.",
+        message: "Open SF Sidekick to save your profile.",
       },
       403,
     );
@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
     return json(
       {
         code: "invalid_content_type",
-        message: "Formato de solicitud no válido.",
+        message: "Invalid request format.",
       },
       415,
     );
@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
     return json(
       {
         code: tooLarge ? "payload_too_large" : "invalid_json",
-        message: "No pudimos leer estos datos. Revisa el formulario.",
+        message: "Could not read these details. Review your profile.",
       },
       tooLarge ? 413 : 400,
     );
@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
     return json(
       {
         code: "validation_failed",
-        message: "Revisa los campos señalados.",
+        message: "Review the highlighted details.",
         errors: fieldErrors(parsed.error),
       },
       400,
@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
         {
           code: "session_missing",
           message:
-            "La sesión ha cambiado. Reconecta antes de guardar; conservamos tu formulario.",
+            "Your session changed. Reconnect before saving; your changes are still here.",
         },
         401,
       );
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
         {
           code: error.code,
           message:
-            "Tu perfil cambió en otra pestaña. Revisa la versión guardada antes de continuar.",
+            "Your profile changed in another tab. Review the saved version to continue.",
         },
         409,
       );
@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
       {
         code: "storage_unavailable",
         message:
-          "No se pudo confirmar el guardado. Conservamos tus datos; puedes reintentar.",
+          "Could not confirm the save. Your changes are still here; try again.",
       },
       503,
     );

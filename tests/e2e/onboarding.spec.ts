@@ -6,8 +6,8 @@ const origin = "http://127.0.0.1:3100";
 const intro =
   "I'm Alex Rivera, a product engineer building TypeScript agents in production. I'm in SF from October 24 to November 5, 2026, looking for a founding engineer role on a small team. I can share my experience building agents and working in product teams.";
 async function send(page: Page, message: string) {
-  await page.getByLabel("Tu mensaje", { exact: true }).fill(message);
-  await page.getByRole("button", { name: "Enviar mensaje" }).click();
+  await page.getByLabel("Your message", { exact: true }).fill(message);
+  await page.getByRole("button", { name: "Send message" }).click();
 }
 async function shot(page: Page, name: string) {
   if (process.env.PREVIEW_DIR)
@@ -28,57 +28,50 @@ test("a paragraph builds a reviewable profile; corrections remain drafts until c
   page,
 }) => {
   await page.goto("/");
-  await expect(page.getByLabel("Tu mensaje", { exact: true })).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.getByLabel("Your message", { exact: true })).toBeVisible();
   await expect(page.getByRole("radio")).toHaveCount(0);
   await expect(page.locator("select")).toHaveCount(0);
   await shot(page, "chat-mobile-connected-test-fixture");
   await page.keyboard.press("Tab");
   await expect(
-    page.getByRole("link", { name: "Ir a la conversación" }),
+    page.getByRole("link", { name: "Skip to conversation" }),
   ).toBeFocused();
   await send(page, intro);
   await expect(
-    page.getByRole("button", { name: "Revisar mi perfil" }),
+    page.getByRole("button", { name: "Review profile" }),
   ).toBeVisible();
   expect(
     (await (await page.request.get("/api/state")).json()).context,
   ).toBeNull();
-  await page.getByRole("button", { name: "Revisar mi perfil" }).click();
+  await page.getByRole("button", { name: "Review profile" }).click();
   await expect(page.locator(".inline-review")).toContainText("Alex Rivera");
-  await expect(page.locator(".inline-review")).toContainText(
-    "Por definir; puede esperar.",
-  );
+  await expect(page.locator(".inline-review")).toContainText("Not set");
   await noOverflow(page);
   await page
-    .getByRole("button", { name: "Confirmar perfil", exact: true })
+    .getByRole("button", { name: "Confirm profile", exact: true })
     .click();
-  await expect(
-    page.getByText("Perfil confirmado", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText("Profile saved", { exact: true })).toBeVisible();
   await send(
     page,
     "Actually, I'm hiring a founding engineer for my agent startup.",
   );
   await expect(
-    page.getByRole("button", { name: "Revisar mi perfil" }),
+    page.getByRole("button", { name: "Review profile" }),
   ).toBeVisible();
   expect(
     (await (await page.request.get("/api/state")).json()).context.goal.type,
   ).toBe("seeking_role");
-  await page.getByRole("button", { name: "Revisar mi perfil" }).click();
+  await page.getByRole("button", { name: "Review profile" }).click();
   await expect(page.locator(".inline-review")).toContainText(
-    "Encontrar talento",
+    "Hire an engineer",
   );
   await page
-    .getByRole("button", { name: "Confirmar perfil", exact: true })
+    .getByRole("button", { name: "Confirm profile", exact: true })
     .click();
-  await expect(
-    page.getByText("Perfil confirmado", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText("Profile saved", { exact: true })).toBeVisible();
   await page.reload();
-  await expect(
-    page.getByText("Perfil confirmado", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText("Profile saved", { exact: true })).toBeVisible();
   expect((await (await page.request.get("/api/state")).json()).revision).toBe(
     2,
   );
@@ -92,16 +85,18 @@ test("reflows at 320px and desktop; a reload restores messages and an unconfirme
     await page.context().clearCookies();
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/");
-    await expect(page.getByLabel("Tu mensaje", { exact: true })).toBeVisible();
+    await expect(
+      page.getByLabel("Your message", { exact: true }),
+    ).toBeVisible();
     await noOverflow(page);
     await shot(page, `chat-empty-${width}-test-fixture`);
     await send(page, intro);
     await expect(
-      page.getByRole("button", { name: "Revisar mi perfil" }),
+      page.getByRole("button", { name: "Review profile" }),
     ).toBeVisible();
     await page.reload();
     await expect(page.getByText(intro, { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Revisar mi perfil" }).click();
+    await page.getByRole("button", { name: "Review profile" }).click();
     await expect(page.locator(".inline-review")).toContainText("Alex Rivera");
     await noOverflow(page);
     await shot(page, `chat-draft-${width}-test-fixture`);
@@ -129,16 +124,14 @@ test("a lost turn response keeps the input and retries without duplicate message
   });
   await send(page, intro);
   await expect(
-    page
-      .getByRole("alert")
-      .filter({ hasText: "No pudimos confirmar la respuesta" }),
+    page.getByRole("alert").filter({ hasText: "Could not confirm the reply" }),
   ).toBeVisible();
-  await expect(page.getByLabel("Tu mensaje", { exact: true })).toHaveValue(
+  await expect(page.getByLabel("Your message", { exact: true })).toHaveValue(
     intro,
   );
-  await page.getByRole("button", { name: "Enviar mensaje" }).click();
+  await page.getByRole("button", { name: "Send message" }).click();
   await expect(
-    page.getByRole("button", { name: "Revisar mi perfil" }),
+    page.getByRole("button", { name: "Review profile" }),
   ).toBeVisible();
   expect(keys).toHaveLength(2);
   expect(keys[0]).toBe(keys[1]);
@@ -153,9 +146,9 @@ test("provider errors preserve input and ambiguous or invalid dates cannot be co
   await page.goto("/");
   await send(page, "FAIL_PROVIDER");
   await expect(
-    page.getByRole("alert").filter({ hasText: "No pude responder ahora" }),
+    page.getByRole("alert").filter({ hasText: "Could not get a reply" }),
   ).toBeVisible();
-  await expect(page.getByLabel("Tu mensaje", { exact: true })).toHaveValue(
+  await expect(page.getByLabel("Your message", { exact: true })).toHaveValue(
     "FAIL_PROVIDER",
   );
   expect(
@@ -163,7 +156,7 @@ test("provider errors preserve input and ambiguous or invalid dates cannot be co
   ).toHaveLength(1);
   await send(page, intro);
   await expect(
-    page.getByRole("button", { name: "Revisar mi perfil" }),
+    page.getByRole("button", { name: "Review profile" }),
   ).toBeVisible();
   await send(page, "I leave before I arrive");
   await expect(
@@ -173,7 +166,7 @@ test("provider errors preserve input and ambiguous or invalid dates cannot be co
     ),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Revisar mi perfil" }),
+    page.getByRole("button", { name: "Review profile" }),
   ).toHaveCount(0);
   const state = (await (await page.request.get("/api/onboarding")).json()).chat;
   const response = await page.request.post("/api/onboarding", {
@@ -192,24 +185,24 @@ test("a stale tab recovers newer messages and keeps its unsent text", async ({
   context,
 }) => {
   await page.goto("/");
-  await expect(page.getByLabel("Tu mensaje", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Your message", { exact: true })).toBeVisible();
   const other = await context.newPage();
   await other.goto("/");
-  await expect(other.getByLabel("Tu mensaje", { exact: true })).toBeVisible();
+  await expect(other.getByLabel("Your message", { exact: true })).toBeVisible();
   await send(page, intro);
   await expect(
-    page.getByRole("button", { name: "Revisar mi perfil" }),
+    page.getByRole("button", { name: "Review profile" }),
   ).toBeVisible();
   await send(other, "No commitments");
   await expect(
-    other.getByRole("alert").filter({ hasText: "La conversación cambió" }),
+    other.getByRole("alert").filter({ hasText: "The conversation changed" }),
   ).toBeVisible();
-  await other.getByRole("button", { name: "Recuperar conversación" }).click();
+  await other.getByRole("button", { name: "Load conversation" }).click();
   await expect(other.getByText(intro, { exact: true })).toBeVisible();
-  await expect(other.getByLabel("Tu mensaje", { exact: true })).toHaveValue(
+  await expect(other.getByLabel("Your message", { exact: true })).toHaveValue(
     "No commitments",
   );
-  await other.getByRole("button", { name: "Enviar mensaje" }).click();
+  await other.getByRole("button", { name: "Send message" }).click();
   await expect(
     other.getByText(
       "Noted: no fixed commitments. Your availability can stay open for now.",
@@ -227,18 +220,16 @@ test("missing connection is explicit, and the composer supports keyboard newline
     await route.fulfill({ response, json: { ...body, configured: false } });
   });
   await page.goto("/");
-  await expect(
-    page.getByText("Vista previa · OpenAI por conectar"),
-  ).toBeVisible();
+  await expect(page.getByText("OpenAI is not connected")).toBeVisible();
   await page
-    .getByLabel("Tu mensaje", { exact: true })
+    .getByLabel("Your message", { exact: true })
     .fill("A message before connecting");
-  await page.getByLabel("Tu mensaje", { exact: true }).press("Shift+Enter");
-  await expect(page.getByLabel("Tu mensaje", { exact: true })).toHaveValue(
+  await page.getByLabel("Your message", { exact: true }).press("Shift+Enter");
+  await expect(page.getByLabel("Your message", { exact: true })).toHaveValue(
     "A message before connecting\n",
   );
   await expect(
-    page.getByRole("button", { name: "Enviar mensaje" }),
+    page.getByRole("button", { name: "Send message" }),
   ).toBeDisabled();
   await shot(page, "chat-preview-disconnected");
 });

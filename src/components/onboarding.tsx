@@ -61,7 +61,7 @@ export function Onboarding() {
       .catch((error: unknown) => {
         if (error instanceof Error && error.name === "AbortError") return;
         setLoading(false);
-        setNotice("No pudimos abrir tu conversación.");
+        setNotice("Could not open your conversation.");
       });
     return () => controller.abort();
   }, []);
@@ -74,7 +74,7 @@ export function Onboarding() {
       retry.current = null;
     } catch {
       setNotice(
-        "No pudimos recuperar la conversación. Tu mensaje sigue aquí; vuelve a intentarlo.",
+        "Could not load the conversation. Your message is still here; try again.",
       );
     }
   }
@@ -122,9 +122,7 @@ export function Onboarding() {
       });
       const result = await response.json();
       if (!response.ok) {
-        setNotice(
-          result.message || "No pude responder ahora. Puedes reintentar.",
-        );
+        setNotice(result.message || "Could not get a reply. Try again.");
         setProblem(result.code || "unavailable");
         if (result.code === "not_configured") setConfigured(false);
         return;
@@ -139,7 +137,7 @@ export function Onboarding() {
       scrollToReply();
     } catch {
       setNotice(
-        "No pudimos confirmar la respuesta. Tu mensaje sigue aquí; reintenta sin volver a escribirlo.",
+        "Could not confirm the reply. Your message is still here; try again.",
       );
     } finally {
       inFlight.current = false;
@@ -163,7 +161,7 @@ export function Onboarding() {
   return (
     <>
       <a className="skip-link" href="#conversation">
-        Ir a la conversación
+        Skip to conversation
       </a>
       <header className="site-header">
         <div className="brand">
@@ -184,24 +182,17 @@ export function Onboarding() {
           id="conversation"
         >
           <div className="conversation-heading">
-            <span className="eyebrow">EMPECEMOS POR TI</span>
-            <h1 id="chat-title">
-              Tu semana en SF,
-              <br className="mobile-break" /> en tus palabras.
-            </h1>
-            <p>
-              Cuéntame lo que buscas. Yo me encargo de ordenar los detalles.
-            </p>
+            <h1 id="chat-title">Your plans in SF</h1>
           </div>
           {loading ? (
             <div className="loading-state" role="status">
-              Abriendo tu conversación…
+              Opening conversation…
             </div>
           ) : !chat ? (
             <div className="notice" role="alert">
               <p>{notice}</p>
               <button className="text-button" onClick={() => void reconnect()}>
-                Volver a intentar
+                Try again
               </button>
             </div>
           ) : (
@@ -209,17 +200,13 @@ export function Onboarding() {
               <div
                 className="chat-messages"
                 role="log"
-                aria-label="Conversación de onboarding"
-                aria-live="polite"
+                aria-label="Onboarding conversation"
                 aria-relevant="additions"
               >
                 {chat.messages.map((message) => (
                   <article
                     key={message.id}
                     className={`message ${message.role}`}
-                    aria-label={
-                      message.role === "assistant" ? "Sidekick" : "Tú"
-                    }
                   >
                     {message.role === "assistant" && (
                       <div className="assistant-avatar">
@@ -228,31 +215,28 @@ export function Onboarding() {
                     )}
                     <div className="message-content">
                       <span className="message-author">
-                        {message.role === "assistant" ? "Sidekick" : "Tú"}
+                        {message.role === "assistant" ? "Sidekick" : "You"}
                       </span>
                       <p>{message.content}</p>
                     </div>
                   </article>
                 ))}
                 {pendingMessage && (
-                  <article
-                    className="message user pending"
-                    aria-label="Tu mensaje en curso"
-                  >
+                  <article className="message user pending">
                     <div className="message-content">
-                      <span className="message-author">Tú</span>
+                      <span className="message-author">You</span>
                       <p>{pendingMessage}</p>
                     </div>
                   </article>
                 )}
                 {busy === "message" && (
-                  <div className="thinking" role="status">
+                  <div className="thinking">
                     <span className="thinking-dots" aria-hidden="true">
                       <i />
                       <i />
                       <i />
                     </span>
-                    Sidekick está respondiendo…
+                    Sidekick is replying…
                   </div>
                 )}
                 <div ref={lastMessage} />
@@ -262,21 +246,17 @@ export function Onboarding() {
                 <div className="confirmed-note" role="status">
                   <span aria-hidden="true">✓</span>
                   <div>
-                    <strong>Perfil confirmado</strong>
-                    <p>
-                      Guardado en este navegador. Si algo cambia, cuéntamelo.
-                    </p>
+                    <strong>Profile saved</strong>
                   </div>
                 </div>
               )}
               {ready && !chat.confirmed && (
                 <section
                   className="review-prompt"
-                  aria-label="Confirmación del perfil"
+                  aria-label="Profile confirmation"
                 >
                   <div>
-                    <strong>Ya tenemos un punto de partida.</strong>
-                    <p>Revisa lo que he entendido antes de confirmarlo.</p>
+                    <strong>Your profile is ready to review.</strong>
                   </div>
                   <button
                     className="secondary-button"
@@ -284,7 +264,7 @@ export function Onboarding() {
                     onClick={() => setShowReview((value) => !value)}
                     aria-expanded={showReview}
                   >
-                    {showReview ? "Ocultar resumen" : "Revisar mi perfil"}
+                    {showReview ? "Hide summary" : "Review profile"}
                   </button>
                   {showReview && (
                     <div className="inline-review">
@@ -295,12 +275,12 @@ export function Onboarding() {
                         type="button"
                         onClick={() => void act("confirm")}
                       >
-                        {busy === "confirm" ? "Guardando…" : "Confirmar perfil"}
+                        {busy === "confirm" ? "Saving…" : "Confirm profile"}
                         <span aria-hidden="true">✓</span>
                       </button>
                       <p className="privacy-note">
-                        Confirmar no autoriza introducciones ni cambios de
-                        calendario.
+                        Introductions and calendar changes require separate
+                        approval.
                       </p>
                     </div>
                   )}
@@ -320,7 +300,7 @@ export function Onboarding() {
                       type="button"
                       onClick={() => void reconnect()}
                     >
-                      Recuperar conversación
+                      Load conversation
                     </button>
                   )}
                   {["profile_changed", "chat_limit"].includes(problem) && (
@@ -330,7 +310,7 @@ export function Onboarding() {
                       disabled={!!busy}
                       onClick={() => void act("reload_saved")}
                     >
-                      Empezar desde el perfil guardado
+                      Start from saved profile
                     </button>
                   )}
                 </div>
@@ -338,9 +318,9 @@ export function Onboarding() {
 
               <details className="mobile-profile">
                 <summary>
-                  Lo que voy entendiendo{" "}
+                  Profile{" "}
                   <span>
-                    {chat.confirmed ? "Confirmado" : "Ver perfil"}{" "}
+                    {chat.confirmed ? "Confirmed" : "Draft"}{" "}
                     <span aria-hidden="true">↗</span>
                   </span>
                 </summary>
@@ -353,9 +333,9 @@ export function Onboarding() {
                   <div className="connection-note">
                     <span className="connection-indicator" />
                     <p>
-                      <strong>Vista previa · OpenAI por conectar</strong>
+                      <strong>OpenAI is not connected</strong>
                       <br />
-                      Puedes escribir; tu mensaje no se enviará todavía.
+                      Messages cannot be sent yet.
                     </p>
                     <button
                       className="text-button"
@@ -363,17 +343,17 @@ export function Onboarding() {
                       disabled={!!busy}
                       onClick={() => void reconnect()}
                     >
-                      Comprobar
+                      Check connection
                     </button>
                   </div>
                 )}
                 <form
                   onSubmit={send}
                   className="composer"
-                  aria-label="Enviar un mensaje"
+                  aria-label="Message composer"
                 >
                   <label htmlFor="chat-input" className="sr-only">
-                    Tu mensaje
+                    Your message
                   </label>
                   <textarea
                     ref={composer}
@@ -383,11 +363,7 @@ export function Onboarding() {
                     value={input}
                     maxLength={3000}
                     disabled={!!busy}
-                    placeholder={
-                      chat.messages.length === 1 && !chat.confirmed
-                        ? "Estoy en SF esta semana y me gustaría…"
-                        : "Cuéntame más, o corrige algún detalle…"
-                    }
+                    placeholder="Message Sidekick…"
                     onChange={(event) => {
                       setInput(event.target.value);
                       event.target.style.height = "auto";
@@ -408,7 +384,6 @@ export function Onboarding() {
                     aria-describedby="composer-hint"
                   />
                   <div className="composer-bottom">
-                    <span>En tus palabras. Sin formularios.</span>
                     <button
                       className="send-button"
                       type="submit"
@@ -419,7 +394,7 @@ export function Onboarding() {
                         blocked ||
                         problem === "chat_limit"
                       }
-                      aria-label="Enviar mensaje"
+                      aria-label="Send message"
                     >
                       <svg
                         width="20"
@@ -438,11 +413,9 @@ export function Onboarding() {
                   </div>
                 </form>
                 <p id="composer-hint" className="composer-hint">
-                  {configured
-                    ? "Conversación con OpenAI · tú confirmas el perfil."
-                    : "El perfil solo se confirma cuando tú lo decides."}
+                  {configured && <span>Messages are processed by OpenAI.</span>}
                   <span className="keyboard-hint">
-                    Mayús + Intro para una nueva línea.
+                    Shift + Enter for a new line.
                   </span>
                 </p>
               </div>
@@ -450,15 +423,8 @@ export function Onboarding() {
           )}
         </section>
         {chat && (
-          <aside
-            className="desktop-profile"
-            aria-label="Perfil en construcción"
-          >
+          <aside className="desktop-profile" aria-label="Profile preview">
             <ProfilePreview chat={chat} />
-            <p className="correction-hint">
-              <span aria-hidden="true">↳</span> ¿Algo no encaja? Dímelo en el
-              chat.
-            </p>
           </aside>
         )}
       </main>

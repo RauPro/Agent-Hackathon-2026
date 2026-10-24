@@ -1,13 +1,13 @@
 import { GOALS } from "@/lib/domain/context";
-import { validateDraft, type ChatState } from "@/lib/domain/onboarding-chat";
+import type { ChatState } from "@/lib/domain/onboarding-chat";
 
 function dateLabel(value: string) {
-  if (!value) return "Por definir";
+  if (!value) return "Not set";
   const date = new Date(`${value}T12:00:00Z`);
   return Number.isNaN(date.getTime()) ||
     date.toISOString().slice(0, 10) !== value
-    ? `${value} · por revisar`
-    : new Intl.DateTimeFormat("es", {
+    ? `${value} · needs review`
+    : new Intl.DateTimeFormat("en-US", {
         day: "numeric",
         month: "short",
         timeZone: "UTC",
@@ -16,28 +16,20 @@ function dateLabel(value: string) {
 
 export function ProfilePreview({ chat }: { chat: ChatState }) {
   const draft = chat.draft;
-  const ready = validateDraft(draft).success;
   return (
     <>
       <div className="profile-heading">
-        <span className="eyebrow">TU PERFIL</span>
+        <span className="eyebrow">PROFILE</span>
         <span className={`profile-status ${chat.confirmed ? "confirmed" : ""}`}>
-          {chat.confirmed ? "Confirmado" : "Borrador"}
+          {chat.confirmed ? "Confirmed" : "Draft"}
         </span>
       </div>
-      <h2>{draft.name || "Te voy conociendo"}</h2>
-      <p className="profile-intro">
-        {chat.confirmed
-          ? "Este es el perfil que has confirmado."
-          : "Lo que voy entendiendo, para que puedas corregirme."}
-      </p>
+      {draft.name && <h2>{draft.name}</h2>}
       <dl className="profile-facts">
         <div>
-          <dt>Qué buscas</dt>
+          <dt>Goal</dt>
           <dd>
-            {draft.goalText || (
-              <span className="unknown">Empecemos por aquí.</span>
-            )}
+            {draft.goalText || <span className="unknown">Not provided</span>}
           </dd>
           {draft.goalType && (
             <dd className="fact-tag">
@@ -46,34 +38,30 @@ export function ProfilePreview({ chat }: { chat: ChatState }) {
           )}
         </div>
         <div>
-          <dt>Tu experiencia</dt>
+          <dt>Experience</dt>
+          <dd>{draft.bio || <span className="unknown">Not provided</span>}</dd>
+        </div>
+        <div>
+          <dt>What you can offer</dt>
           <dd>
-            {draft.bio || <span className="unknown">Todavía por conocer.</span>}
+            {draft.offers || <span className="unknown">Not provided</span>}
           </dd>
         </div>
         <div>
-          <dt>Qué puedes aportar</dt>
-          <dd>
-            {draft.offers || (
-              <span className="unknown">Lo descubrimos conversando.</span>
-            )}
-          </dd>
-        </div>
-        <div>
-          <dt>Tu estancia en SF</dt>
+          <dt>Dates in SF</dt>
           <dd>
             {draft.arrival || draft.departure ? (
               `${dateLabel(draft.arrival)} — ${dateLabel(draft.departure)}`
             ) : (
-              <span className="unknown">Fechas por definir.</span>
+              <span className="unknown">Not set</span>
             )}
           </dd>
         </div>
         <div>
-          <dt>Disponibilidad</dt>
+          <dt>Availability</dt>
           <dd>
             {draft.availability.status === "unknown" ? (
-              <span className="unknown">Por definir; puede esperar.</span>
+              <span className="unknown">Not set</span>
             ) : (
               draft.availability.windows.map((window, i) => (
                 <span className="fact-row" key={i}>
@@ -84,12 +72,12 @@ export function ProfilePreview({ chat }: { chat: ChatState }) {
           </dd>
         </div>
         <div>
-          <dt>Compromisos fijos</dt>
+          <dt>Fixed commitments</dt>
           <dd>
             {draft.commitments.status === "unknown" ? (
-              <span className="unknown">Todavía por revisar.</span>
+              <span className="unknown">Not reviewed</span>
             ) : draft.commitments.status === "none" ? (
-              "Has indicado que no tienes."
+              "None reported"
             ) : (
               draft.commitments.items.map((item, i) => (
                 <span className="fact-row" key={i}>
@@ -102,27 +90,23 @@ export function ProfilePreview({ chat }: { chat: ChatState }) {
         {(draft.preferences.meetingFormat !== "any" ||
           draft.preferences.budgetUsd !== null) && (
           <div>
-            <dt>Preferencias</dt>
+            <dt>Preferences</dt>
             <dd>
               {draft.preferences.meetingFormat === "one_to_one"
-                ? "Conversaciones 1 a 1. "
+                ? "One-to-one conversations. "
                 : draft.preferences.meetingFormat === "small_groups"
-                  ? "Grupos pequeños. "
+                  ? "Small groups. "
                   : ""}
               {draft.preferences.budgetUsd !== null
-                ? `Hasta $${draft.preferences.budgetUsd} USD por evento.`
+                ? `Up to $${draft.preferences.budgetUsd} USD per event.`
                 : ""}
             </dd>
           </div>
         )}
       </dl>
-      <p className="profile-footnote">
-        {chat.confirmed
-          ? `Guardado · versión ${chat.baseRevision}`
-          : ready
-            ? "Listo para revisar y confirmar."
-            : "Seguimos completándolo. Nada se confirma automáticamente."}
-      </p>
+      {chat.confirmed && (
+        <p className="profile-footnote">Saved · version {chat.baseRevision}</p>
+      )}
     </>
   );
 }

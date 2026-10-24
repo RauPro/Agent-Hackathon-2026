@@ -5,23 +5,23 @@ export const SF_TIMEZONE = "America/Los_Angeles" as const;
 export const GOALS = [
   {
     value: "seeking_role",
-    label: "Encontrar un rol",
-    detail: "Conocer equipos que buscan un founding engineer.",
+    label: "Find a role",
+    detail: "Meet teams hiring a founding engineer.",
   },
   {
     value: "hiring",
-    label: "Encontrar talento",
-    detail: "Conocer a tu próximo founding engineer.",
+    label: "Hire an engineer",
+    detail: "Meet your next founding engineer.",
   },
   {
     value: "customers",
-    label: "Encontrar clientes",
-    detail: "Explorar pilotos y posibles design partners.",
+    label: "Find customers",
+    detail: "Explore pilots and potential design partners.",
   },
   {
     value: "collaborators",
-    label: "Conocer colaboradores",
-    detail: "Conectar con personas con intereses afines.",
+    label: "Find collaborators",
+    detail: "Connect with people who share your interests.",
   },
 ] as const;
 
@@ -30,24 +30,20 @@ const text = (min: number, max: number, message: string) =>
     .string()
     .trim()
     .min(min, message)
-    .max(max, `Usa como máximo ${max} caracteres.`);
-const date = z.iso.date({ error: "Introduce una fecha válida." });
+    .max(max, `Use no more than ${max} characters.`);
+const date = z.iso.date({ error: "Enter a valid date." });
 const time = z
   .string()
-  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Introduce una hora válida.");
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Enter a valid time.");
 
 export const profileSchema = z
   .object({
-    name: text(2, 80, "Escribe el nombre que quieres usar."),
-    bio: text(
-      20,
-      2000,
-      "Cuéntanos un poco más sobre tu experiencia (al menos 20 caracteres).",
-    ),
+    name: text(2, 80, "Enter the name you want to use."),
+    bio: text(20, 2000, "Describe your experience in at least 20 characters."),
     offers: text(
       10,
       1000,
-      "Describe qué puedes aportar (al menos 10 caracteres).",
+      "Describe what you can offer in at least 10 characters.",
     ),
   })
   .strict();
@@ -55,19 +51,15 @@ export const profileSchema = z
 export const goalSchema = z
   .object({
     type: z.enum(["seeking_role", "hiring", "customers", "collaborators"], {
-      error: "Elige un objetivo.",
+      error: "Clarify your main goal.",
     }),
-    text: text(
-      10,
-      1000,
-      "Describe qué te gustaría conseguir (al menos 10 caracteres).",
-    ),
+    text: text(10, 1000, "Describe your goal in at least 10 characters."),
   })
   .strict();
 
 export const windowSchema = z.object({ date, start: time, end: time }).strict();
 export const commitmentSchema = windowSchema.extend({
-  title: text(2, 120, "Añade un nombre para este compromiso."),
+  title: text(2, 120, "Name this commitment."),
 });
 export type TimeWindow = z.infer<typeof windowSchema>;
 
@@ -94,7 +86,7 @@ const scheduleShape = {
   availability: z
     .object({
       status: z.enum(["unknown", "provided"]),
-      windows: z.array(windowSchema).max(14, "Puedes añadir hasta 14 franjas."),
+      windows: z.array(windowSchema).max(14, "Add no more than 14 time slots."),
     })
     .strict(),
   commitments: z
@@ -102,7 +94,7 @@ const scheduleShape = {
       status: z.enum(["unknown", "none", "provided"]),
       items: z
         .array(commitmentSchema)
-        .max(12, "Puedes añadir hasta 12 compromisos."),
+        .max(12, "Add no more than 12 commitments."),
     })
     .strict(),
   preferences: z
@@ -119,10 +111,7 @@ function validateSchedule(value: Schedule, ctx: z.RefinementCtx) {
     ctx.addIssue({ code: "custom", path, message });
   // Arrival/departure are inclusive calendar dates, so a one-day visit is valid.
   if (value.trip.end < value.trip.start)
-    issue(
-      ["trip", "end"],
-      "La salida debe ser el mismo día o después de la llegada.",
-    );
+    issue(["trip", "end"], "Departure must be on or after arrival.");
   const groups = [
     {
       path: ["availability", "windows"],
@@ -137,25 +126,22 @@ function validateSchedule(value: Schedule, ctx: z.RefinementCtx) {
   ];
   for (const group of groups) {
     if (group.status === "provided" && !group.rows.length)
-      issue(
-        group.path,
-        "Añade al menos una franja o indica que todavía no lo sabes.",
-      );
+      issue(group.path, "Add a time slot or leave availability unknown.");
     if (group.status !== "provided" && group.rows.length)
-      issue(group.path, "El estado elegido no puede incluir horarios.");
+      issue(group.path, "This status cannot include time slots.");
     const parsed: { start: number; end: number }[] = [];
     group.rows.forEach((row, index) => {
       if (row.date < value.trip.start || row.date > value.trip.end)
         issue(
           [...group.path, index, "date"],
-          "Elige un día dentro de tu estancia.",
+          "Choose a date within your stay.",
         );
       try {
         const slot = windowInstants(row);
         if (slot.end <= slot.start)
           issue(
             [...group.path, index, "end"],
-            "La hora de fin debe ser posterior al inicio.",
+            "End time must be after start time.",
           );
         if (
           parsed.some(
@@ -164,13 +150,13 @@ function validateSchedule(value: Schedule, ctx: z.RefinementCtx) {
         )
           issue(
             [...group.path, index, "start"],
-            "Este horario se solapa con otro de la misma lista.",
+            "This time slot overlaps another in the same list.",
           );
         parsed.push(slot);
       } catch {
         issue(
           [...group.path, index, "start"],
-          "Esta hora no es inequívoca en SF por el cambio horario. Elige otra franja.",
+          "This time is ambiguous or unavailable in SF due to daylight saving. Choose another time.",
         );
       }
     });
@@ -194,7 +180,7 @@ export const saveContextSchema = z
     baseRevision: z.number().int().min(0),
     requestId: z.uuid(),
     confirmed: z.literal(true, {
-      error: "Confirma que el resumen refleja tu situación.",
+      error: "Confirm that the profile reflects your situation.",
     }),
   })
   .strict();

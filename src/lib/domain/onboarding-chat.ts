@@ -123,6 +123,31 @@ export function draftIssues(draft: ProfileDraft): string[] {
   ];
 }
 
+const WELCOME = "What would you like to get out of your time in San Francisco?";
+const WELCOME_BACK = "What would you like to update in your profile?";
+
+// App-owned greeting copy can change without rewriting user or model messages.
+export function refreshWelcome(chat: ChatState): ChatState {
+  return {
+    ...chat,
+    messages: chat.messages.map((message) => {
+      if (
+        message.role !== "assistant" ||
+        !["welcome", "welcome-back"].includes(message.id)
+      )
+        return message;
+      const returning =
+        message.id === "welcome-back" ||
+        (chat.messages.length === 1 && chat.confirmed);
+      return {
+        ...message,
+        id: returning ? "welcome-back" : "welcome",
+        content: returning ? WELCOME_BACK : WELCOME,
+      };
+    }),
+  };
+}
+
 export function initialChat(state: ContextState): ChatState {
   return {
     revision: 0,
@@ -131,11 +156,9 @@ export function initialChat(state: ContextState): ChatState {
     draft: draftFromContext(state.context),
     messages: [
       {
-        id: "welcome",
+        id: state.context ? "welcome-back" : "welcome",
         role: "assistant",
-        content: state.context
-          ? "Ya tengo el perfil que confirmaste. Cuéntame qué ha cambiado y lo actualizamos juntos."
-          : "Hola, soy Sidekick. ¿Qué te gustaría conseguir durante tu estancia en San Francisco? Cuéntamelo en tus palabras; yo iré ordenando los detalles.",
+        content: state.context ? WELCOME_BACK : WELCOME,
       },
     ],
   };

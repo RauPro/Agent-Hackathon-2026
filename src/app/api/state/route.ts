@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
     return json(
       {
         code: "storage_unavailable",
-        message: "No pudimos abrir tu perfil. Inténtalo de nuevo.",
+        message: "Could not open your profile. Try again.",
       },
       503,
     );

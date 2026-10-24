@@ -9,6 +9,7 @@ import {
 } from "@/lib/domain/context";
 import {
   initialChat,
+  refreshWelcome,
   modelReplySchema,
   validateDraft,
   type ChatRequest,
@@ -171,7 +172,8 @@ export class ContextStore {
     const existing = this.db
       .prepare("SELECT state_json FROM onboarding_chats WHERE session_id = ?")
       .get(session.token_hash) as { state_json: string } | undefined;
-    if (existing) return JSON.parse(existing.state_json) as ChatState;
+    if (existing)
+      return refreshWelcome(JSON.parse(existing.state_json) as ChatState);
     const chat = initialChat(this.state(session));
     this.db
       .prepare(
@@ -197,7 +199,7 @@ export class ContextStore {
     if (!prior) return null;
     if (prior.payload_hash !== hash(JSON.stringify(request)))
       throw new ContextConflict("request_reused");
-    return JSON.parse(prior.result_json) as ChatState;
+    return refreshWelcome(JSON.parse(prior.result_json) as ChatState);
   }
 
   checkChat(token: string | undefined, request: ChatRequest): ChatState {
