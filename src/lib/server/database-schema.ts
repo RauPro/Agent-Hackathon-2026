@@ -8,6 +8,21 @@ CREATE TABLE IF NOT EXISTS runs (
   operation_key TEXT NOT NULL, payload_hash TEXT NOT NULL, result_json TEXT NOT NULL,
   created_at TEXT NOT NULL, UNIQUE(session_id, operation_key)
 );
+CREATE TABLE IF NOT EXISTS event_discoveries (
+  owner_id TEXT NOT NULL REFERENCES sessions(token_hash),
+  profile_revision INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  attempts INTEGER NOT NULL,
+  request_id TEXT,
+  lease_expires_at INTEGER,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  error_code TEXT,
+  result_json TEXT,
+  PRIMARY KEY(owner_id, profile_revision)
+);
+CREATE INDEX IF NOT EXISTS runs_created_at ON runs(created_at);
 CREATE TABLE IF NOT EXISTS onboarding_chats (
   session_id TEXT PRIMARY KEY REFERENCES sessions(token_hash), state_json TEXT NOT NULL
 );

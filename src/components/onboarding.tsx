@@ -14,6 +14,7 @@ import {
 } from "@/lib/domain/onboarding-chat";
 import { ProfilePreview } from "./profile-preview";
 import { CalendarConnect } from "./calendar-connect";
+import { EventRecommendations } from "./event-recommendations";
 import { Brand, Mark } from "./brand";
 import { AccountMenu } from "./account-menu";
 import type { Account } from "@/lib/domain/auth";
@@ -271,6 +272,14 @@ export function Onboarding({ account }: { account: Account }) {
                     <strong>Profile saved</strong>
                   </div>
                 </div>
+              )}
+              {chat.baseRevision > 0 && (
+                <EventRecommendations
+                  key={`${account.id}-${chat.baseRevision}`}
+                  accountId={account.id}
+                  revision={chat.baseRevision}
+                  draftChanged={!chat.confirmed}
+                />
               )}
               {ready && !chat.confirmed && (
                 <section
