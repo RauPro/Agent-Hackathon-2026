@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
       403,
     );
   try {
-    getStore().requireAccount(
+    await getStore().requireAccount(
       request.cookies.get(SESSION_COOKIE)?.value,
       request.headers.get("x-sidekick-account"),
     );
@@ -36,7 +36,9 @@ export async function POST(request: NextRequest) {
       );
     const token = request.cookies.get(SESSION_COOKIE)?.value;
     if (!token) throw new SessionMissing();
-    const response = json({ url: beginCalendarConnection(getStore(), token) });
+    const response = json({
+      url: await beginCalendarConnection(getStore(), token),
+    });
     // Lax permits the top-level callback from Google; POST mutations check Origin.
     response.cookies.set(SESSION_COOKIE, token, {
       httpOnly: true,

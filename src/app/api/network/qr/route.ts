@@ -6,8 +6,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   try {
-    const account = networkAccount(request);
-    const { qrToken } = getStore().network.settings(account.id);
+    const account = await networkAccount(request);
+    const { qrToken } = await getStore().network.settings(account.id);
     const origin = `${new URL(request.url).protocol}//${request.headers.get("host")}`;
     const url = new URL(`/connect/${qrToken}`, origin).toString();
     const svg = await QRCode.toString(url, {

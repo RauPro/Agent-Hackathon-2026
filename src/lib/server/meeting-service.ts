@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Temporal } from "@js-temporal/polyfill";
-import type Database from "better-sqlite3";
+import type { AsyncDatabase } from "./database";
 import {
   calendarWindow,
   type CalendarConnection,
@@ -61,11 +61,11 @@ type MeetingRecord = {
   error: string | null;
 };
 type NetworkAccess = {
-  db: Database.Database;
-  profile(userId: string): ContextState;
-  isConnected(a: string, b: string): boolean;
-  blocked(a: string, b: string): boolean;
-  relationshipRevision(a: string, b: string): number;
+  db: AsyncDatabase;
+  profile(userId: string): Promise<ContextState>;
+  isConnected(a: string, b: string): Promise<boolean>;
+  blocked(a: string, b: string): Promise<boolean>;
+  relationshipRevision(a: string, b: string): Promise<number>;
 };
 type Coverage = {
   busy: MeetingSlot[];
@@ -74,6 +74,10 @@ type Coverage = {
   source: "google" | "manual";
 };
 type CalendarOwner = CalendarRecord & { owner: string };
+type SchedulingConstraints = {
+  context: UserContext;
+  confirmedSlots: MeetingSlot[];
+};
 
 const meetingErrors = {
   not_found: [404, "This meeting is not available to your account."],
@@ -142,49 +146,44 @@ export class MeetingError extends Error {
 
 export class MeetingService {
   private network: NetworkAccess;
-  private db: Database.Database;
+  private db: AsyncDatabase;
   constructor(store: ContextStore) {
     this.network = store.network;
     this.db = this.network.db;
-    this.db.exec(`CREATE TABLE IF NOT EXISTS meetings (
-      id TEXT PRIMARY KEY, initiator_id TEXT NOT NULL REFERENCES users(id),
-      first_user_id TEXT NOT NULL REFERENCES users(id), second_user_id TEXT NOT NULL REFERENCES users(id),
-      request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, revision INTEGER NOT NULL, state_json TEXT NOT NULL,
-      UNIQUE(initiator_id, request_id)
-    ); CREATE INDEX IF NOT EXISTS meetings_first ON meetings(first_user_id);
-    CREATE INDEX IF NOT EXISTS meetings_second ON meetings(second_user_id);`);
   }
 
-  private requireUser(userId: string) {
-    if (!this.db.prepare("SELECT id FROM users WHERE id = ?").get(userId))
+  private async requireUser(userId: string) {
+    if (
+      !(await this.db.prepare("SELECT id FROM users WHERE id = ?").get(userId))
+    )
       throw new MeetingError("not_found");
   }
-  private relationship(a: string, b: string) {
+  private async relationship(a: string, b: string) {
     if (
       a === b ||
-      !this.network.isConnected(a, b) ||
-      this.network.blocked(a, b)
+      !(await this.network.isConnected(a, b)) ||
+      (await this.network.blocked(a, b))
     )
       throw new MeetingError("not_connected");
   }
-  private context(userId: string) {
-    const profile = this.network.profile(userId);
+  private async context(userId: string) {
+    const profile = await this.network.profile(userId);
     if (!profile.context || !profile.confirmedAt)
       throw new MeetingError("profile_required");
     return profile as ContextState & { context: UserContext };
   }
-  private read(actorId: string, meetingId: string) {
-    const row = this.db
+  private async read(actorId: string, meetingId: string) {
+    const row = (await this.db
       .prepare(
         "SELECT state_json FROM meetings WHERE id = ? AND (first_user_id = ? OR second_user_id = ?)",
       )
-      .get(meetingId, actorId, actorId) as { state_json: string } | undefined;
+      .get(meetingId, actorId, actorId)) as { state_json: string } | undefined;
     if (!row) throw new MeetingError("not_found");
     return JSON.parse(row.state_json) as MeetingRecord;
   }
-  private save(value: MeetingRecord, expected: number) {
+  private async save(value: MeetingRecord, expected: number) {
     const next = { ...value, revision: expected + 1 };
-    const result = this.db
+    const result = await this.db
       .prepare(
         "UPDATE meetings SET revision = ?, state_json = ? WHERE id = ? AND revision = ?",
       )
@@ -225,10 +224,10 @@ export class MeetingService {
       ],
     };
   }
-  private current(value: MeetingRecord) {
-    this.relationship(...value.participants);
+  private async current(value: MeetingRecord) {
+    await this.relationship(...value.participants);
     if (
-      this.network.relationshipRevision(...value.participants) !==
+      (await this.network.relationshipRevision(...value.participants)) !==
       value.relationshipRevision
     )
       throw new MeetingError("meeting_changed");
@@ -238,28 +237,28 @@ export class MeetingService {
     )
       throw new MeetingError("meeting_expired");
     for (const id of value.participants) {
-      if (this.context(id).revision !== value.contextRevisions[id])
+      if ((await this.context(id)).revision !== value.contextRevisions[id])
         throw new MeetingError("meeting_changed");
     }
   }
-  private writable(actorId: string, meetingId: string, revision: number) {
-    const value = this.read(actorId, meetingId);
+  private async writable(actorId: string, meetingId: string, revision: number) {
+    const value = await this.read(actorId, meetingId);
     if (value.revision !== revision) throw new MeetingError("meeting_changed");
-    this.current(value);
+    await this.current(value);
     if (!liveStatuses.includes(value.status))
       throw new MeetingError("meeting_closed");
     return value;
   }
-  private calendar(userId: string): CalendarOwner {
-    const owner = this.db
+  private async calendar(userId: string): Promise<CalendarOwner> {
+    const owner = (await this.db
       .prepare("SELECT profile_id FROM users WHERE id = ?")
-      .get(userId) as { profile_id: string } | undefined;
+      .get(userId)) as { profile_id: string } | undefined;
     if (!owner) throw new MeetingError("not_found");
-    const record = this.db
+    const record = (await this.db
       .prepare(
         "SELECT revision, connection_json FROM calendar_connections WHERE session_id = ?",
       )
-      .get(owner.profile_id) as
+      .get(owner.profile_id)) as
       | { revision: number; connection_json: string | null }
       | undefined;
     return {
@@ -270,8 +269,11 @@ export class MeetingService {
         : null,
     };
   }
-  private saveCalendar(record: CalendarOwner, connection: CalendarConnection) {
-    const result = this.db
+  private async saveCalendar(
+    record: CalendarOwner,
+    connection: CalendarConnection,
+  ) {
+    const result = await this.db
       .prepare(
         "UPDATE calendar_connections SET revision = revision + 1, connection_json = ? WHERE session_id = ? AND revision = ?",
       )
@@ -279,33 +281,51 @@ export class MeetingService {
     if (result.changes !== 1) throw new MeetingError("availability_changed");
     return { ...record, revision: record.revision + 1, connection };
   }
-  private view(actorId: string, record: MeetingRecord): MeetingView {
+  private async view(
+    actorId: string,
+    record: MeetingRecord,
+  ): Promise<MeetingView> {
     let value = record;
     if (liveStatuses.includes(value.status) || value.status === "confirmed") {
       try {
-        this.current(value);
+        await this.current(value);
       } catch (error) {
-        const status =
-          error instanceof MeetingError && error.code === "meeting_expired"
-            ? "expired"
-            : "stale";
-        value = this.save(
-          this.withActivity(
-            {
-              ...value,
-              status,
-              options: [],
-              approvals: {},
-              selectedOptionId: null,
-              error:
-                status === "expired"
-                  ? "This proposal expired. Start a new one."
-                  : "The profile or relationship changed. Start a new proposal.",
-            },
-            { kind: status },
-          ),
-          value.revision,
-        );
+        if (!(error instanceof MeetingError)) throw error;
+        value = await this.db
+          .transaction(async () => {
+            const latest = await this.read(actorId, value.id);
+            if (
+              !liveStatuses.includes(latest.status) &&
+              latest.status !== "confirmed"
+            )
+              return latest;
+            try {
+              await this.current(latest);
+              return latest;
+            } catch (failure) {
+              if (!(failure instanceof MeetingError)) throw failure;
+              const status =
+                failure.code === "meeting_expired" ? "expired" : "stale";
+              return this.save(
+                this.withActivity(
+                  {
+                    ...latest,
+                    status,
+                    options: [],
+                    approvals: {},
+                    selectedOptionId: null,
+                    error:
+                      status === "expired"
+                        ? "This proposal expired. Start a new one."
+                        : "The profile or relationship changed. Start a new proposal.",
+                  },
+                  { kind: status },
+                ),
+                latest.revision,
+              );
+            }
+          })
+          .immediate();
       }
     }
     return {
@@ -336,7 +356,7 @@ export class MeetingService {
       selectedOptionId: value.selectedOptionId,
       consentedUserIds: Object.keys(value.consents),
       approvedUserIds: Object.keys(value.approvals),
-      manualAvailabilityNeeded: !this.calendar(actorId).connection,
+      manualAvailabilityNeeded: !(await this.calendar(actorId)).connection,
       availabilitySource: value.availabilitySource,
       checkedAt: value.checkedAt,
       expiresAt: value.expiresAt,
@@ -345,18 +365,20 @@ export class MeetingService {
       error: value.error,
     };
   }
-  list(actorId: string): MeetingView[] {
-    this.requireUser(actorId);
-    const rows = this.db
+  async list(actorId: string): Promise<MeetingView[]> {
+    await this.requireUser(actorId);
+    const rows = (await this.db
       .prepare(
         "SELECT state_json FROM meetings WHERE first_user_id = ? OR second_user_id = ? ORDER BY rowid DESC LIMIT 50",
       )
-      .all(actorId, actorId) as { state_json: string }[];
-    return rows.map((row) =>
-      this.view(actorId, JSON.parse(row.state_json) as MeetingRecord),
+      .all(actorId, actorId)) as { state_json: string }[];
+    return Promise.all(
+      rows.map((row) =>
+        this.view(actorId, JSON.parse(row.state_json) as MeetingRecord),
+      ),
     );
   }
-  propose(
+  async propose(
     actorId: string,
     raw: {
       toUserId: string;
@@ -364,19 +386,19 @@ export class MeetingService {
       purpose: string;
       location?: string;
     },
-  ): MeetingView {
+  ): Promise<MeetingView> {
     const input = proposeMeetingSchema.parse(raw);
     const payloadHash = createHash("sha256")
       .update(JSON.stringify(input))
       .digest("hex");
-    const result = this.db
-      .transaction(() => {
-        this.requireUser(actorId);
-        const previous = this.db
+    const result = await this.db
+      .transaction(async () => {
+        await this.requireUser(actorId);
+        const previous = (await this.db
           .prepare(
             "SELECT payload_hash, state_json FROM meetings WHERE initiator_id = ? AND request_id = ?",
           )
-          .get(actorId, input.requestId) as
+          .get(actorId, input.requestId)) as
           | { payload_hash: string; state_json: string }
           | undefined;
         if (previous) {
@@ -384,17 +406,19 @@ export class MeetingService {
             throw new MeetingError("request_conflict");
           return JSON.parse(previous.state_json) as MeetingRecord;
         }
-        this.relationship(actorId, input.toUserId);
-        const count = this.db
+        await this.relationship(actorId, input.toUserId);
+        const count = (await this.db
           .prepare(
             "SELECT COUNT(*) AS n FROM meetings WHERE initiator_id = ? AND json_extract(state_json, '$.createdAt') > ?",
           )
-          .get(actorId, new Date(Date.now() - 86400000).toISOString()) as {
+          .get(actorId, new Date(Date.now() - 86400000).toISOString())) as {
           n: number;
         };
         if (count.n >= 10) throw new MeetingError("rate_limit");
         const participants: [string, string] = [actorId, input.toUserId];
-        const profiles = participants.map((id) => this.context(id));
+        const profiles = await Promise.all(
+          participants.map((id) => this.context(id)),
+        );
         let value: MeetingRecord = {
           id: randomUUID(),
           revision: 1,
@@ -412,7 +436,7 @@ export class MeetingService {
           contextRevisions: Object.fromEntries(
             participants.map((id, index) => [id, profiles[index].revision]),
           ),
-          relationshipRevision: this.network.relationshipRevision(
+          relationshipRevision: await this.network.relationshipRevision(
             ...participants,
           ),
           consents: {},
@@ -426,7 +450,7 @@ export class MeetingService {
           error: null,
         };
         value = { ...value, activity: this.activity(value) };
-        this.db
+        await this.db
           .prepare(
             "INSERT INTO meetings (id, initiator_id, first_user_id, second_user_id, request_id, payload_hash, revision, state_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
           )
@@ -442,18 +466,18 @@ export class MeetingService {
         return value;
       })
       .immediate();
-    return this.view(actorId, result);
+    return await this.view(actorId, result);
   }
   async optIn(
     actorId: string,
     raw: { meetingId: string; revision: number; manualSlots?: MeetingSlot[] },
   ): Promise<MeetingView> {
     const input = meetingOptInSchema.parse(raw);
-    const value = this.db
-      .transaction(() => {
-        const current = this.read(actorId, input.meetingId);
-        this.current(current);
-        const calendar = this.calendar(actorId);
+    const value = await this.db
+      .transaction(async () => {
+        const current = await this.read(actorId, input.meetingId);
+        await this.current(current);
+        const calendar = await this.calendar(actorId);
         if (calendar.connection && input.manualSlots)
           throw new MeetingError("manual_not_allowed");
         if (
@@ -475,9 +499,9 @@ export class MeetingService {
             current.status === "confirmed")
         )
           return current;
-        this.writable(actorId, input.meetingId, input.revision);
+        await this.writable(actorId, input.meetingId, input.revision);
         if (manual) {
-          const trip = this.context(actorId).context.trip;
+          const trip = (await this.context(actorId)).context.trip;
           const limits = calendarWindow(trip.start, trip.end)!;
           if (
             manual.some(
@@ -489,7 +513,7 @@ export class MeetingService {
           )
             throw new MeetingError("invalid_manual_slots");
         }
-        return this.save(
+        return await this.save(
           this.withActivity(
             {
               ...current,
@@ -513,16 +537,20 @@ export class MeetingService {
       })
       .immediate();
     if (value.status === "options_ready" || value.status === "confirmed")
-      return this.view(actorId, value);
+      return await this.view(actorId, value);
     if (value.participants.every((id) => value.consents[id])) {
       try {
         const available = await this.availability(value);
-        const updated = this.db
-          .transaction(() => {
-            const current = this.writable(actorId, value.id, value.revision);
-            this.validateCoverage(current, available.coverages);
+        const updated = await this.db
+          .transaction(async () => {
+            const current = await this.writable(
+              actorId,
+              value.id,
+              value.revision,
+            );
+            await this.validateCoverage(current, available.coverages);
             if (!available.options.length)
-              return this.save(
+              return await this.save(
                 this.withActivity(
                   {
                     ...current,
@@ -533,7 +561,7 @@ export class MeetingService {
                 ),
                 current.revision,
               );
-            return this.save(
+            return await this.save(
               this.withActivity(
                 {
                   ...current,
@@ -552,42 +580,51 @@ export class MeetingService {
             );
           })
           .immediate();
-        return this.view(actorId, updated);
+        return await this.view(actorId, updated);
       } catch (error) {
-        this.recordFailure(actorId, value, error);
+        await this.recordFailure(actorId, value, error);
         throw error;
       }
     }
-    return this.view(actorId, value);
+    return await this.view(actorId, value);
   }
-  private recordFailure(actorId: string, value: MeetingRecord, error: unknown) {
-    const current = this.read(actorId, value.id);
-    if (current.revision !== value.revision) return;
-    this.save(
-      this.withActivity(
-        {
-          ...current,
-          status: "awaiting_permission",
-          options: [],
-          selectedOptionId: null,
-          approvals: {},
-          error:
-            error instanceof MeetingError && error.code === "no_slots"
-              ? "Your upcoming stays do not overlap. Update your trip dates before proposing another meeting."
-              : error instanceof MeetingError &&
-                  error.code === "availability_changed"
-                ? "Availability changed. Check for another time."
-                : "Availability could not be checked. Reconnect your calendar or try again.",
-        },
-        { kind: "availability_failed" },
-      ),
-      current.revision,
-    );
+  private async recordFailure(
+    actorId: string,
+    value: MeetingRecord,
+    error: unknown,
+  ) {
+    await this.db
+      .transaction(async () => {
+        const current = await this.read(actorId, value.id);
+        if (current.revision !== value.revision) return;
+        await this.save(
+          this.withActivity(
+            {
+              ...current,
+              status: "awaiting_permission",
+              options: [],
+              selectedOptionId: null,
+              approvals: {},
+              error:
+                error instanceof MeetingError && error.code === "no_slots"
+                  ? "Your upcoming stays do not overlap. Update your trip dates before proposing another meeting."
+                  : error instanceof MeetingError &&
+                      error.code === "availability_changed"
+                    ? "Availability changed. Check for another time."
+                    : "Availability could not be checked. Reconnect your calendar or try again.",
+            },
+            { kind: "availability_failed" },
+          ),
+          current.revision,
+        );
+      })
+      .immediate();
   }
-  private bounds(value: MeetingRecord): CalendarWindow {
-    const [a, b] = value.participants.map(
-      (id) => this.context(id).context.trip,
+  private async bounds(value: MeetingRecord): Promise<CalendarWindow> {
+    const profiles = await Promise.all(
+      value.participants.map((id) => this.context(id)),
     );
+    const [a, b] = profiles.map((profile) => profile.context.trip);
     const today = Temporal.Now.plainDateISO(SF_TIMEZONE).toString();
     const start = [a.start, b.start, today].sort().at(-1)!;
     const end = [
@@ -604,7 +641,7 @@ export class MeetingService {
     consent: Consent,
     window: CalendarWindow,
   ): Promise<Coverage> {
-    let record = this.calendar(userId);
+    let record = await this.calendar(userId);
     if (!record.connection) {
       if (!consent.manualSlots?.length)
         throw new MeetingError("manual_required");
@@ -617,7 +654,12 @@ export class MeetingService {
     }
     if (consent.manualSlots) throw new MeetingError("availability_changed");
     if (!googleCalendarConfig()) throw new MeetingError("calendar_unavailable");
+    const leaseKey = `calendar:${record.owner}`;
+    const lease = await this.db.acquireLease(leaseKey, 35_000);
+    if (!lease) throw new MeetingError("calendar_unavailable");
     try {
+      record = await this.calendar(userId);
+      if (!record.connection) throw new MeetingError("availability_changed");
       let tokens = tokenDataSchema.parse(
         openCalendarData(record.connection.encryptedTokens, record.owner),
       );
@@ -626,7 +668,7 @@ export class MeetingService {
       const signal = AbortSignal.timeout(25000);
       if (tokens.expiresAt < Date.now() + 60000) {
         tokens = await refreshGoogleTokens(tokens, signal);
-        record = this.saveCalendar(record, {
+        record = await this.saveCalendar(record, {
           ...record.connection,
           encryptedTokens: sealCalendarData(tokens, record.owner),
         });
@@ -644,25 +686,45 @@ export class MeetingService {
     } catch (error) {
       if (error instanceof MeetingError) throw error;
       throw new MeetingError("calendar_unavailable");
+    } finally {
+      await this.db.releaseLease(leaseKey, lease);
     }
   }
-  private validateCoverage(value: MeetingRecord, coverages: Coverage[]) {
-    this.current(value);
-    value.participants.forEach((id, index) => {
+  private async validateCoverage(value: MeetingRecord, coverages: Coverage[]) {
+    await this.current(value);
+    for (const [index, id] of value.participants.entries()) {
       if (
         !value.consents[id] ||
-        this.calendar(id).revision !== coverages[index].revision
+        (await this.calendar(id)).revision !== coverages[index].revision
       )
         throw new MeetingError("availability_changed");
+    }
+  }
+  private async constraints(
+    userId: string,
+    meetingId: string,
+  ): Promise<SchedulingConstraints> {
+    const context = (await this.context(userId)).context;
+    const local = (await this.db
+      .prepare(
+        "SELECT state_json FROM meetings WHERE id <> ? AND (first_user_id = ? OR second_user_id = ?)",
+      )
+      .all(meetingId, userId, userId)) as { state_json: string }[];
+    const confirmedSlots = local.flatMap((row) => {
+      const other = JSON.parse(row.state_json) as MeetingRecord;
+      const chosen = other.options.find(
+        (option) => option.id === other.selectedOptionId,
+      );
+      return other.status === "confirmed" && chosen ? [chosen] : [];
     });
+    return { context, confirmedSlots };
   }
   private permitted(
-    userId: string,
     coverage: Coverage,
     slot: MeetingSlot,
-    meetingId: string,
+    constraints: SchedulingConstraints,
   ) {
-    const context = this.context(userId).context;
+    const { context, confirmedSlots } = constraints;
     const start = Date.parse(slot.start),
       end = Date.parse(slot.end);
     if (start <= Date.now()) return false;
@@ -692,28 +754,25 @@ export class MeetingService {
       })
     )
       return false;
-    const local = this.db
-      .prepare(
-        "SELECT state_json FROM meetings WHERE id <> ? AND (first_user_id = ? OR second_user_id = ?)",
-      )
-      .all(meetingId, userId, userId) as { state_json: string }[];
-    return !local.some((row) => {
-      const other = JSON.parse(row.state_json) as MeetingRecord;
-      const chosen = other.options.find(
-        (option) => option.id === other.selectedOptionId,
-      );
-      return other.status === "confirmed" && chosen && overlaps(chosen);
-    });
+    return !confirmedSlots.some(overlaps);
   }
   private async availability(value: MeetingRecord) {
-    this.current(value);
+    await this.current(value);
     if (!value.participants.every((id) => value.consents[id]))
       throw new MeetingError("approval_required");
-    const window = this.bounds(value);
-    const coverages = await Promise.all(
+    const window = await this.bounds(value);
+    const results = await Promise.allSettled(
       value.participants.map((id) =>
         this.coverage(id, value.consents[id], window),
       ),
+    );
+    // Finish both reads and release their leases before handling a failure.
+    const coverages = results.map((result) => {
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    });
+    const constraints = await Promise.all(
+      value.participants.map((id) => this.constraints(id, value.id)),
     );
     const options: MeetingOption[] = [];
     for (
@@ -737,8 +796,8 @@ export class MeetingService {
           end: new Date(start + HALF_HOUR).toISOString(),
         };
         if (
-          !value.participants.every((id, index) =>
-            this.permitted(id, coverages[index], slot, value.id),
+          !coverages.every((coverage, index) =>
+            this.permitted(coverage, slot, constraints[index]),
           )
         )
           continue;
@@ -764,27 +823,27 @@ export class MeetingService {
     raw: { meetingId: string; revision: number; optionId: string },
   ): Promise<MeetingView> {
     const input = meetingApprovalSchema.parse(raw);
-    const existing = this.read(actorId, input.meetingId);
+    const existing = await this.read(actorId, input.meetingId);
     let value: MeetingRecord;
     if (
       ["options_ready", "confirmed"].includes(existing.status) &&
       existing.selectedOptionId === input.optionId &&
       existing.approvals[actorId] === input.optionId
     ) {
-      this.current(existing);
+      await this.current(existing);
       if (
         existing.status === "confirmed" ||
         !existing.participants.every(
           (id) => existing.approvals[id] === input.optionId,
         )
       )
-        return this.view(actorId, existing);
+        return await this.view(actorId, existing);
       // Both approvals may have survived a restart before the final check finished.
       value = existing;
     } else
-      value = this.db
-        .transaction(() => {
-          const current = this.writable(
+      value = await this.db
+        .transaction(async () => {
+          const current = await this.writable(
             actorId,
             input.meetingId,
             input.revision,
@@ -800,7 +859,7 @@ export class MeetingService {
             current.selectedOptionId !== input.optionId
               ? {}
               : current.approvals;
-          return this.save(
+          return await this.save(
             this.withActivity(
               {
                 ...current,
@@ -824,28 +883,30 @@ export class MeetingService {
     if (
       !value.participants.every((id) => value.approvals[id] === input.optionId)
     )
-      return this.view(actorId, value);
+      return await this.view(actorId, value);
     try {
       const available = await this.availability(value);
       const selected = value.options.find(
         (option) => option.id === input.optionId,
       )!;
-      const confirmed = this.db
-        .transaction(() => {
-          const current = this.writable(actorId, value.id, value.revision);
-          this.validateCoverage(current, available.coverages);
+      const confirmed = await this.db
+        .transaction(async () => {
+          const current = await this.writable(
+            actorId,
+            value.id,
+            value.revision,
+          );
+          await this.validateCoverage(current, available.coverages);
+          const constraints = await Promise.all(
+            current.participants.map((id) => this.constraints(id, current.id)),
+          );
           if (
-            !value.participants.every((id, index) =>
-              this.permitted(
-                id,
-                available.coverages[index],
-                selected,
-                value.id,
-              ),
+            !available.coverages.every((coverage, index) =>
+              this.permitted(coverage, selected, constraints[index]),
             )
           )
             throw new MeetingError("availability_changed");
-          return this.save(
+          return await this.save(
             this.withActivity(
               {
                 ...current,
@@ -860,24 +921,24 @@ export class MeetingService {
           );
         })
         .immediate();
-      return this.view(actorId, confirmed);
+      return await this.view(actorId, confirmed);
     } catch (error) {
-      this.recordFailure(actorId, value, error);
+      await this.recordFailure(actorId, value, error);
       throw error;
     }
   }
-  withdraw(
+  async withdraw(
     actorId: string,
     raw: { meetingId: string; revision: number },
-  ): MeetingView {
+  ): Promise<MeetingView> {
     const input = meetingRevisionSchema.parse(raw);
-    const result = this.db
-      .transaction(() => {
-        const value = this.read(actorId, input.meetingId);
+    const result = await this.db
+      .transaction(async () => {
+        const value = await this.read(actorId, input.meetingId);
         if (value.status === "withdrawn") return value;
         if (value.revision !== input.revision)
           throw new MeetingError("meeting_changed");
-        return this.save(
+        return await this.save(
           this.withActivity(
             {
               ...value,
@@ -894,11 +955,16 @@ export class MeetingService {
         );
       })
       .immediate();
-    return this.view(actorId, result);
+    return await this.view(actorId, result);
   }
-  exportICS(actorId: string, meetingId: string): string {
-    const value = this.read(actorId, meetingId);
-    this.current(value);
+  async exportICS(actorId: string, meetingId: string): Promise<string> {
+    const value = await this.db
+      .transaction(async () => {
+        const current = await this.read(actorId, meetingId);
+        await this.current(current);
+        return current;
+      })
+      .immediate();
     if (
       value.status !== "confirmed" ||
       !value.participants.every(

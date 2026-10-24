@@ -18,7 +18,7 @@ export async function GET(request: NextRequest) {
   const target = new URL("/onboarding", config.origin);
   let token: string | undefined;
   try {
-    getStore().requireAccount(
+    await getStore().requireAccount(
       request.cookies.get(SESSION_COOKIE)?.value,
       request.headers.get("x-sidekick-account"),
     );

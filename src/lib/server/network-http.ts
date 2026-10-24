@@ -3,7 +3,7 @@ import { ZodError } from "zod";
 import { getStore, isStoreError } from "./store";
 import { json, readJson, sameOrigin, SESSION_COOKIE } from "./http";
 
-export function networkAccount(request: NextRequest) {
+export async function networkAccount(request: NextRequest) {
   return getStore().requireAccount(
     request.cookies.get(SESSION_COOKIE)?.value,
     request.headers.get("x-sidekick-account"),

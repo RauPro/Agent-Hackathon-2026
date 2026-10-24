@@ -20,14 +20,14 @@ import {
   tokenDataSchema,
 } from "./google-calendar";
 
-export function calendarStatus(
+export async function calendarStatus(
   store: ContextStore,
   token: string | undefined,
   now = Date.now(),
-): CalendarStatus {
-  const { revision, connection } = store.readCalendar(token);
-  const chat = store.readChat(token),
-    context = store.read(token)!;
+): Promise<CalendarStatus> {
+  const { revision, connection } = await store.readCalendar(token);
+  const chat = await store.readChat(token),
+    context = (await store.read(token))!;
   const window = calendarWindow(chat.draft.arrival, chat.draft.departure);
   const configured = !!googleCalendarConfig();
   const availabilityReady = !!(
@@ -64,12 +64,15 @@ export function calendarStatus(
   };
 }
 
-export function beginCalendarConnection(store: ContextStore, token: string) {
-  const owner = store.calendarOwner(token);
+export async function beginCalendarConnection(
+  store: ContextStore,
+  token: string,
+) {
+  const owner = await store.calendarOwner(token);
   const state = randomBytes(32).toString("hex"),
     verifier = randomBytes(32).toString("base64url");
   const url = googleAuthorizationUrl(state, verifier);
-  store.startCalendarOAuth(
+  await store.startCalendarOAuth(
     token,
     state,
     sealCalendarData(verifier, `${owner}:${state}`),
@@ -85,10 +88,10 @@ export async function finishCalendarConnection(
   denied: boolean,
 ) {
   if (!/^[a-f0-9]{64}$/.test(state)) throw new CalendarError("invalid_state");
-  const attempt = store.consumeCalendarOAuth(token, state);
+  const attempt = await store.consumeCalendarOAuth(token, state);
   if (denied) throw new CalendarError("denied");
   if (!code || code.length > 4096) throw new CalendarError("invalid_state");
-  const owner = store.calendarOwner(token);
+  const owner = await store.calendarOwner(token);
   const verifier = openCalendarData<string>(
     attempt.encrypted_verifier,
     `${owner}:${state}`,
@@ -101,30 +104,36 @@ export async function finishCalendarConnection(
   ]);
   const primary = calendars.find((calendar) => calendar.primary);
   if (!primary) throw new CalendarError("calendar_unavailable");
-  return store.connectCalendar(token!, attempt.base_revision, (nextOwner) => ({
-    ...account,
-    encryptedTokens: sealCalendarData(tokens, nextOwner),
-    calendars,
-    selectedIds: [primary.id],
-    snapshot: null,
-    issue: null,
-  }));
+  return await store.connectCalendar(
+    token!,
+    attempt.base_revision,
+    (nextOwner) => ({
+      ...account,
+      encryptedTokens: sealCalendarData(tokens, nextOwner),
+      calendars,
+      selectedIds: [primary.id],
+      snapshot: null,
+      issue: null,
+    }),
+  );
 }
 
-const syncing = new Set<string>();
 export async function syncCalendar(
   store: ContextStore,
   token: string | undefined,
 ) {
-  const owner = store.calendarOwner(token);
+  const owner = await store.calendarOwner(token);
   if (!googleCalendarConfig()) throw new CalendarError("not_configured");
-  if (syncing.has(owner)) throw new CalendarError("busy");
-  let record = store.readCalendar(token);
+  let record = await store.readCalendar(token);
   if (!record.connection) throw new CalendarError("needs_reconnect");
-  const window = calendarStatus(store, token).window;
+  const window = (await calendarStatus(store, token)).window;
   if (!window) throw new CalendarError("missing_dates");
-  syncing.add(owner);
+  const leaseKey = `calendar:${owner}`;
+  const lease = await store.network.db.acquireLease(leaseKey, 35_000);
+  if (!lease) throw new CalendarError("busy");
   try {
+    record = await store.readCalendar(token);
+    if (!record.connection) throw new CalendarError("needs_reconnect");
     let tokens;
     try {
       tokens = tokenDataSchema.parse(
@@ -138,7 +147,7 @@ export async function syncCalendar(
     const signal = AbortSignal.timeout(25000);
     if (tokens.expiresAt < Date.now() + 60000) {
       tokens = await refreshGoogleTokens(tokens, signal);
-      record = store.writeCalendar(token, record.revision, {
+      record = await store.writeCalendar(token, record.revision, {
         ...record.connection,
         encryptedTokens: sealCalendarData(tokens, owner),
       });
@@ -152,7 +161,7 @@ export async function syncCalendar(
       window,
       signal,
     );
-    store.writeCalendar(token, record.revision, {
+    await store.writeCalendar(token, record.revision, {
       ...connection,
       issue: null,
       snapshot: {
@@ -164,7 +173,7 @@ export async function syncCalendar(
     });
     return calendarStatus(store, token);
   } catch (error) {
-    if (error instanceof CalendarError) {
+    if (error instanceof CalendarError && record.connection) {
       const issue = ["needs_reconnect", "missing_permissions"].includes(
         error.code,
       )
@@ -173,7 +182,7 @@ export async function syncCalendar(
           ? "calendar_unavailable"
           : "sync_failed";
       try {
-        store.writeCalendar(token, record.revision, {
+        await store.writeCalendar(token, record.revision, {
           ...record.connection!,
           issue,
         });
@@ -183,17 +192,17 @@ export async function syncCalendar(
     }
     throw error;
   } finally {
-    syncing.delete(owner);
+    await store.network.db.releaseLease(leaseKey, lease);
   }
 }
 
-export function selectCalendars(
+export async function selectCalendars(
   store: ContextStore,
   token: string | undefined,
   revision: number,
   ids: string[],
 ) {
-  const record = store.readCalendar(token),
+  const record = await store.readCalendar(token),
     connection = record.connection;
   if (record.revision !== revision)
     throw new CalendarConflict("calendar_changed");
@@ -207,7 +216,7 @@ export function selectCalendars(
     )
   )
     throw new CalendarError("invalid_selection");
-  store.writeCalendar(token, revision, {
+  await store.writeCalendar(token, revision, {
     ...connection,
     selectedIds,
     snapshot: null,
@@ -221,12 +230,12 @@ export async function disconnectCalendar(
   token: string | undefined,
   revision: number,
 ) {
-  const record = store.readCalendar(token),
-    owner = store.calendarOwner(token);
+  const record = await store.readCalendar(token),
+    owner = await store.calendarOwner(token);
   if (record.revision !== revision)
     throw new CalendarConflict("calendar_changed");
   // Local access ends before any network request, even when Google is unavailable.
-  store.writeCalendar(token, revision, null);
+  await store.writeCalendar(token, revision, null);
   let revoked = true;
   if (record.connection) {
     try {
@@ -239,5 +248,5 @@ export async function disconnectCalendar(
       revoked = false;
     }
   }
-  return { ...calendarStatus(store, token), revoked };
+  return { ...(await calendarStatus(store, token)), revoked };
 }

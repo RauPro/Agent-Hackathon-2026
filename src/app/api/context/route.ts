@@ -1,6 +1,7 @@
 import { isStoreError, getStore } from "@/lib/server/store";
 
-import { NextRequest } from "next/server";
+import { after, NextRequest } from "next/server";
+import { drainNetworkWork } from "@/lib/server/network-worker";
 import { fieldErrors, saveContextSchema } from "@/lib/domain/context";
 
 import { json, readJson, sameOrigin, SESSION_COOKIE } from "@/lib/server/http";
@@ -53,13 +54,22 @@ export async function POST(request: NextRequest) {
       400,
     );
   try {
-    getStore().requireAccount(
+    await getStore().requireAccount(
       request.cookies.get(SESSION_COOKIE)?.value,
       request.headers.get("x-sidekick-account"),
     );
-    return json(
-      getStore().save(request.cookies.get(SESSION_COOKIE)?.value, parsed.data),
+    const saved = await getStore().save(
+      request.cookies.get(SESSION_COOKIE)?.value,
+      parsed.data,
     );
+    after(async () => {
+      try {
+        await drainNetworkWork();
+      } catch {
+        console.error("network_jobs_pending_retry");
+      }
+    });
+    return json(saved);
   } catch (error) {
     if (isStoreError(error, "session_missing"))
       return json(

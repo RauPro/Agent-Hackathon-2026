@@ -11,14 +11,14 @@ import {
 export const runtime = "nodejs";
 export async function POST(request: NextRequest) {
   try {
-    const account = networkAccount(request);
+    const account = await networkAccount(request);
     const input = meetingActionSchema.parse(await networkBody(request));
     const service = new MeetingService(getStore());
     const { action, ...payload } = input;
     let meeting;
     switch (action) {
       case "propose":
-        meeting = service.propose(
+        meeting = await service.propose(
           account.id,
           payload as Extract<typeof input, { action: "propose" }>,
         );
@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
         );
         break;
       case "withdraw":
-        meeting = service.withdraw(
+        meeting = await service.withdraw(
           account.id,
           payload as Extract<typeof input, { action: "withdraw" }>,
         );

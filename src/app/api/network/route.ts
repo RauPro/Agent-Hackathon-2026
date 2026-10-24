@@ -45,26 +45,27 @@ const actionSchema = z.discriminatedUnion("action", [
 ]);
 export async function GET(request: NextRequest) {
   try {
-    const account = networkAccount(request),
+    const account = await networkAccount(request),
       store = getStore();
     const qr = request.nextUrl.searchParams.get("qr");
-    if (qr) return json({ person: store.network.resolveQr(account.id, qr) });
+    if (qr)
+      return json({ person: await store.network.resolveQr(account.id, qr) });
     const discovery = new DiscoveryService(store.network);
-    after(() => {
+    after(async () => {
       try {
-        drainNetworkWork();
+        await drainNetworkWork();
       } catch {
         console.error("network_jobs_pending_retry");
       }
     });
     return json({
       accountId: account.id,
-      settings: store.network.settings(account.id),
-      connections: store.network.connections(account.id),
-      messages: store.network.messages(account.id),
-      opportunities: discovery.opportunities(account.id),
-      events: discovery.events(account.id),
-      meetings: new MeetingService(store).list(account.id),
+      settings: await store.network.settings(account.id),
+      connections: await store.network.connections(account.id),
+      messages: await store.network.messages(account.id),
+      opportunities: await discovery.opportunities(account.id),
+      events: await discovery.events(account.id),
+      meetings: await new MeetingService(store).list(account.id),
       demo: networkDemoEnabled(),
     });
   } catch (error) {
@@ -73,52 +74,56 @@ export async function GET(request: NextRequest) {
 }
 export async function POST(request: NextRequest) {
   try {
-    const account = networkAccount(request);
+    const account = await networkAccount(request);
     const input = actionSchema.parse(await networkBody(request));
     const store = getStore(),
       network = store.network,
       discovery = new DiscoveryService(network);
     switch (input.action) {
       case "settings":
-        network.saveSettings(account.id, input.settings);
+        await network.saveSettings(account.id, input.settings);
         break;
       case "rotate_qr":
-        network.rotateQr(account.id);
+        await network.rotateQr(account.id);
         break;
       case "connect": {
         const { action: _, toUserId, ...payload } = input;
         void _;
-        network.requestConnection(account.id, toUserId, payload);
+        await network.requestConnection(account.id, toUserId, payload);
         break;
       }
       case "connection":
-        network.connectionAction(account.id, input.toUserId, input.decision);
+        await network.connectionAction(
+          account.id,
+          input.toUserId,
+          input.decision,
+        );
         break;
       case "query": {
         const { action: _, ...payload } = input;
         void _;
-        network.requestInformation(account.id, payload);
+        await network.requestInformation(account.id, payload);
         break;
       }
       case "answer": {
         const { action: _, ...payload } = input;
         void _;
-        network.answerInformation(account.id, payload);
+        await network.answerInformation(account.id, payload);
         break;
       }
       case "dismiss":
-        discovery.dismiss(account.id, input.opportunityId);
+        await discovery.dismiss(account.id, input.opportunityId);
         break;
       case "event":
-        discovery.saveEvent(account.id, input.event);
+        await discovery.saveEvent(account.id, input.event);
         break;
       case "remove_event":
-        discovery.removeEvent(account.id, input.eventId);
+        await discovery.removeEvent(account.id, input.eventId);
         break;
     }
-    after(() => {
+    after(async () => {
       try {
-        drainNetworkWork();
+        await drainNetworkWork();
       } catch {
         console.error("network_jobs_pending_retry");
       }

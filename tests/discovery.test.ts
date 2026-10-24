@@ -5,14 +5,20 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContextStore } from "../src/lib/server/store";
+import {
+  enqueueDailyNetworkWork,
+  startNetworkWorker,
+} from "../src/lib/server/network-worker";
 import { DiscoveryService } from "../src/lib/server/discovery-service";
 import type { NetworkStore } from "../src/lib/server/network-store";
 import type { NetworkSettingsInput } from "../src/lib/domain/network";
 import type { NetworkEventInput } from "../src/lib/domain/discovery";
 import type { UserContext } from "../src/lib/domain/context";
 import { validContext } from "./fixtures";
-
-type TestAccount = { id: string; token: string };
+type TestAccount = {
+  id: string;
+  token: string;
+};
 let folder: string,
   path: string,
   store: ContextStore,
@@ -25,9 +31,8 @@ const shared = {
   trip: "network",
   events: "network",
 } as const;
-
-function account(name: string, hiring = false): TestAccount {
-  const registration = store.registerAccount(
+async function account(name: string, hiring = false): Promise<TestAccount> {
+  const registration = await store.registerAccount(
     `${name.toLowerCase()}@example.test`,
     "test-only-password-hash",
   );
@@ -49,20 +54,19 @@ function account(name: string, hiring = false): TestAccount {
   };
   context.trip.start = "2026-10-25";
   context.trip.end = "2026-11-15";
-  store.save(registration.token, {
+  await store.save(registration.token, {
     context,
     baseRevision: 0,
     requestId: randomUUID(),
   });
   return { id: registration.account.id, token: registration.token };
 }
-
-function preferences(
+async function preferences(
   person: TestAccount,
   changes: Partial<NetworkSettingsInput> = {},
 ) {
-  const current = network.settings(person.id);
-  return network.saveSettings(person.id, {
+  const current = await network.settings(person.id);
+  return await network.saveSettings(person.id, {
     discoverable: current.discoverable,
     visibility: current.visibility,
     area: current.area,
@@ -70,31 +74,30 @@ function preferences(
     ...changes,
   });
 }
-
-function discoverable(person: TestAccount) {
-  preferences(person, { discoverable: true, visibility: shared });
+async function discoverable(person: TestAccount) {
+  await preferences(person, { discoverable: true, visibility: shared });
 }
-
-function update(person: TestAccount, edit: (context: UserContext) => void) {
-  const state = store.read(person.token)!;
+async function update(
+  person: TestAccount,
+  edit: (context: UserContext) => void,
+) {
+  const state = (await store.read(person.token))!;
   const context = structuredClone(state.context!);
   edit(context);
-  return store.save(person.token, {
+  return await store.save(person.token, {
     context,
     baseRevision: state.revision,
     requestId: randomUUID(),
   });
 }
-
-function connect() {
-  network.requestConnection(a.id, b.id, {
+async function connect() {
+  await network.requestConnection(a.id, b.id, {
     source: "qr",
-    token: network.settings(b.id).qrToken,
+    token: (await network.settings(b.id)).qrToken,
     context: "Met at a technology event.",
   });
-  network.connectionAction(b.id, a.id, "accept");
+  await network.connectionAction(b.id, a.id, "accept");
 }
-
 function event(changes: Partial<NetworkEventInput> = {}): NetworkEventInput {
   return {
     title: "AI Infrastructure Meetup",
@@ -106,21 +109,30 @@ function event(changes: Partial<NetworkEventInput> = {}): NetworkEventInput {
     ...changes,
   };
 }
-
-function queued() {
-  return network.db
+async function queued() {
+  return (await network.db
     .prepare("SELECT user_id, version FROM network_jobs ORDER BY user_id")
-    .all() as { user_id: string; version: number }[];
+    .all()) as {
+    user_id: string;
+    version: number;
+  }[];
 }
-function opportunityCount() {
+async function opportunityCount() {
   return (
-    network.db
+    (await network.db
       .prepare("SELECT COUNT(*) AS count FROM network_opportunities")
-      .get() as { count: number }
+      .get()) as {
+      count: number;
+    }
   ).count;
 }
-
-beforeEach(() => {
+async function drainAll() {
+  for (let pass = 0; pass < 100; pass++) {
+    if (!(await discovery.drain())) return;
+  }
+  throw new Error("Discovery queue did not settle");
+}
+beforeEach(async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-10-24T17:00:00Z"));
   vi.spyOn(Temporal.Now, "plainDateISO").mockReturnValue(
@@ -132,12 +144,11 @@ beforeEach(() => {
   store = new ContextStore(path);
   network = store.network;
   discovery = new DiscoveryService(network);
-  a = account("Alex");
-  b = account("Blair", true);
-  c = account("Casey");
-  discovery.drain();
+  a = await account("Alex");
+  b = await account("Blair", true);
+  c = await account("Casey");
+  await drainAll();
 });
-
 afterEach(() => {
   store.close();
   rmSync(folder, { recursive: true, force: true });
@@ -145,18 +156,17 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.useRealTimers();
 });
-
 describe("proactive discovery with authorized context", () => {
-  it("creates one reciprocal, evidence-backed opportunity for complementary goals", () => {
-    discoverable(a);
-    discoverable(b);
-    update(b, (context) => {
+  it("creates one reciprocal, evidence-backed opportunity for complementary goals", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await update(b, (context) => {
       context.trip.start = "2026-11-01";
     });
-    expect(discovery.opportunities(a.id)).toHaveLength(0);
-    discovery.drain();
-    const forA = discovery.opportunities(a.id),
-      forB = discovery.opportunities(b.id);
+    expect(await discovery.opportunities(a.id)).toHaveLength(0);
+    await drainAll();
+    const forA = await discovery.opportunities(a.id),
+      forB = await discovery.opportunities(b.id);
     expect(forA).toHaveLength(1);
     expect(forB).toHaveLength(1);
     expect(forA[0]).toMatchObject({
@@ -173,55 +183,52 @@ describe("proactive discovery with authorized context", () => {
     expect(forA[0].benefits.you).toContain("hiring");
     expect(forB[0].benefits.you).toContain("role search");
     expect(forA[0].id).toBe(forB[0].id);
-    expect(opportunityCount()).toBe(1);
+    expect(await opportunityCount()).toBe(1);
     expect(JSON.stringify(forA)).not.toMatch(
       /password|calendar|@example.test|qrToken/,
     );
   });
-
-  it("requires useful evidence in both directions and changes with professional goals", () => {
-    discoverable(a);
-    discoverable(b);
-    update(b, (context) => {
+  it("requires useful evidence in both directions and changes with professional goals", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await update(b, (context) => {
       context.goal.text =
         "Hire a marine biologist specializing in coral conservation.";
     });
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toEqual([]);
-    update(b, (context) => {
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+    await update(b, (context) => {
       context.goal = {
         type: "hiring",
         text: "Hire a founding engineer to build AI agent infrastructure.",
       };
     });
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toHaveLength(1);
-    update(a, (context) => {
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toHaveLength(1);
+    await update(a, (context) => {
       context.goal = {
         type: "customers",
         text: "Find customers for my AI infrastructure consulting service.",
       };
     });
-    expect(discovery.opportunities(a.id)).toEqual([]);
-    discovery.drain();
-    expect(discovery.opportunities(b.id)).toEqual([]);
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+    await drainAll();
+    expect(await discovery.opportunities(b.id)).toEqual([]);
   });
-
-  it("does not recommend contradictory explicitly named roles", () => {
-    discoverable(a);
-    discoverable(b);
-    update(b, (context) => {
+  it("does not recommend contradictory explicitly named roles", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await update(b, (context) => {
       context.goal.text =
         "Hire an AI sales director for my infrastructure startup.";
     });
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toEqual([]);
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toEqual([]);
   });
-
-  it("supports the stated CTO and ICPC opportunity when both goals and profiles supply evidence", () => {
-    discoverable(a);
-    discoverable(b);
-    update(a, (context) => {
+  it("supports the stated CTO and ICPC opportunity when both goals and profiles supply evidence", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await update(a, (context) => {
       context.profile.bio =
         "Engineer with ICPC competitive programming experience and production software projects.";
       context.profile.offers =
@@ -229,7 +236,7 @@ describe("proactive discovery with authorized context", () => {
       context.goal.text =
         "Explore technical leadership and CTO roles at algorithms startups.";
     });
-    update(b, (context) => {
+    await update(b, (context) => {
       context.profile.bio =
         "Founder building an algorithms startup and production optimization systems.";
       context.profile.offers =
@@ -237,80 +244,78 @@ describe("proactive discovery with authorized context", () => {
       context.goal.text =
         "Hire a CTO with ICPC or competitive programming experience for algorithms products.";
     });
-    discovery.drain();
-    expect(discovery.opportunities(a.id)[0].signals).toContain("algorithms");
-    expect(discovery.opportunities(b.id)).toHaveLength(1);
-    update(a, (context) => {
+    await drainAll();
+    expect((await discovery.opportunities(a.id))[0].signals).toContain(
+      "algorithms",
+    );
+    expect(await discovery.opportunities(b.id)).toHaveLength(1);
+    await update(a, (context) => {
       context.goal.text =
         "Find a founding engineer role working on algorithms and optimization.";
     });
-    expect(discovery.opportunities(a.id)).toEqual([]);
+    expect(await discovery.opportunities(a.id)).toEqual([]);
   });
-
-  it("excludes unconfirmed profiles even after an explicit discovery opt-in", () => {
-    discoverable(a);
-    const draftOnly = store.registerAccount(
+  it("excludes unconfirmed profiles even after an explicit discovery opt-in", async () => {
+    await discoverable(a);
+    const draftOnly = await store.registerAccount(
       "draft-only@example.test",
       "test-only-hash",
     );
-    discoverable({ id: draftOnly.account.id, token: draftOnly.token });
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toEqual([]);
-    expect(discovery.opportunities(draftOnly.account.id)).toEqual([]);
+    await discoverable({ id: draftOnly.account.id, token: draftOnly.token });
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+    expect(await discovery.opportunities(draftOnly.account.id)).toEqual([]);
   });
-
-  it("rejects nonoverlapping and fully past stays and clamps current overlap to today", () => {
-    discoverable(a);
-    discoverable(b);
-    update(b, (context) => {
+  it("rejects nonoverlapping and fully past stays and clamps current overlap to today", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await update(b, (context) => {
       context.trip.start = "2026-12-01";
       context.trip.end = "2026-12-15";
     });
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toEqual([]);
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toEqual([]);
     for (const person of [a, b])
-      update(person, (context) => {
+      await update(person, (context) => {
         context.trip.start = "2026-10-01";
         context.trip.end = "2026-10-20";
       });
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toEqual([]);
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toEqual([]);
     for (const person of [a, b])
-      update(person, (context) => {
+      await update(person, (context) => {
         context.trip.end = "2026-10-25";
       });
-    discovery.drain();
-    expect(discovery.opportunities(a.id)[0].overlap).toEqual({
+    await drainAll();
+    expect((await discovery.opportunities(a.id))[0].overlap).toEqual({
       start: "2026-10-24",
       end: "2026-10-25",
     });
   });
-
-  it("excludes opt-outs and private matching fields, including saved recommendations after revocation", () => {
-    discoverable(a);
-    preferences(b, { visibility: shared });
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toEqual([]);
-    discoverable(b);
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toHaveLength(1);
-    preferences(b, { visibility: { ...shared, goal: "private" } });
-    expect(discovery.opportunities(a.id)).toEqual([]);
-    discoverable(b);
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toHaveLength(1);
-    preferences(b, { discoverable: false });
-    expect(discovery.opportunities(a.id)).toEqual([]);
-    expect(() =>
+  it("excludes opt-outs and private matching fields, including saved recommendations after revocation", async () => {
+    await discoverable(a);
+    await preferences(b, { visibility: shared });
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+    await discoverable(b);
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toHaveLength(1);
+    await preferences(b, { visibility: { ...shared, goal: "private" } });
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+    await discoverable(b);
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toHaveLength(1);
+    await preferences(b, { discoverable: false });
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+    await expect(
       network.requestConnection(a.id, b.id, {
         source: "opportunity",
         context: "Discuss a role.",
       }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
-
-  it("allows friends-only matching after acceptance while honoring blocks and per-field privacy", () => {
-    preferences(a, {
+  it("allows friends-only matching after acceptance while honoring blocks and per-field privacy", async () => {
+    await preferences(a, {
       visibility: {
         profile: "friends",
         goal: "friends",
@@ -318,7 +323,7 @@ describe("proactive discovery with authorized context", () => {
         events: "friends",
       },
     });
-    preferences(b, {
+    await preferences(b, {
       visibility: {
         profile: "friends",
         goal: "friends",
@@ -326,50 +331,48 @@ describe("proactive discovery with authorized context", () => {
         events: "friends",
       },
     });
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toEqual([]);
-    connect();
-    discovery.drain();
-    expect(discovery.opportunities(a.id)[0].connected).toBe(true);
-    expect(network.settings(a.id).discoverable).toBe(false);
-    network.connectionAction(b.id, a.id, "block");
-    expect(discovery.opportunities(a.id)).toEqual([]);
-    expect(discovery.opportunities(b.id)).toEqual([]);
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+    await connect();
+    await drainAll();
+    expect((await discovery.opportunities(a.id))[0].connected).toBe(true);
+    expect((await network.settings(a.id)).discoverable).toBe(false);
+    await network.connectionAction(b.id, a.id, "block");
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+    expect(await discovery.opportunities(b.id)).toEqual([]);
   });
-
-  it("suggests a shared-event reunion for connected people with matching interests even without complementary jobs", () => {
-    discoverable(a);
-    discoverable(b);
-    update(b, (context) => {
+  it("suggests a shared-event reunion for connected people with matching interests even without complementary jobs", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await update(b, (context) => {
       context.goal = {
         type: "seeking_role",
         text: "Find an AI infrastructure engineering role.",
       };
     });
-    discovery.saveEvent(a.id, event());
-    const attendance = discovery.saveEvent(b.id, event());
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toEqual([]);
-    connect();
-    discovery.drain();
-    const reunion = discovery.opportunities(a.id)[0];
+    await discovery.saveEvent(a.id, event());
+    const attendance = await discovery.saveEvent(b.id, event());
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+    await connect();
+    await drainAll();
+    const reunion = (await discovery.opportunities(a.id))[0];
     expect(reunion.sharedEvents).toHaveLength(1);
     expect(reunion.benefits.you).toContain("Reconnect");
     expect(reunion.benefits.you).not.toContain("hiring");
-    discovery.saveEvent(b.id, {
+    await discovery.saveEvent(b.id, {
       ...event(),
       id: attendance.id,
       visibility: "private",
     });
-    expect(discovery.opportunities(a.id)).toEqual([]);
+    expect(await discovery.opportunities(a.id)).toEqual([]);
   });
-
-  it("persists one authorized agent query for a connected match and only creates another for changed context", () => {
-    discoverable(a);
-    discoverable(b);
-    connect();
-    discovery.drain();
-    const initial = network.messages(a.id);
+  it("persists one authorized agent query for a connected match and only creates another for changed context", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await connect();
+    await drainAll();
+    const initial = await network.messages(a.id);
     expect(initial).toHaveLength(1);
     expect(initial[0]).toMatchObject({
       fromUserId: b.id,
@@ -378,61 +381,61 @@ describe("proactive discovery with authorized context", () => {
       status: "completed",
     });
     expect(initial[0].response.profile?.source).toBe("confirmed_profile");
-    network.enqueue(a.id);
-    network.enqueue(b.id);
-    discovery.drain();
-    expect(network.messages(a.id)).toHaveLength(1);
-    update(b, (context) => {
+    await network.enqueue(a.id);
+    await network.enqueue(b.id);
+    await drainAll();
+    expect(await network.messages(a.id)).toHaveLength(1);
+    await update(b, (context) => {
       context.goal.text += " The role focuses on Python systems.";
     });
-    discovery.drain();
-    expect(network.messages(a.id)).toHaveLength(2);
-    expect(network.messages(b.id)).toHaveLength(2);
-    expect(network.messages(c.id)).toEqual([]);
+    await drainAll();
+    expect(await network.messages(a.id)).toHaveLength(2);
+    expect(await network.messages(b.id)).toHaveLength(2);
+    expect(await network.messages(c.id)).toEqual([]);
   });
-
-  it("starts authorized collaboration when a previously recommended pair accepts the connection", () => {
-    discoverable(a);
-    discoverable(b);
-    discovery.drain();
-    const recommendation = discovery.opportunities(a.id)[0];
+  it("starts authorized collaboration when a previously recommended pair accepts the connection", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await drainAll();
+    const recommendation = (await discovery.opportunities(a.id))[0];
     expect(recommendation.connected).toBe(false);
-    expect(network.messages(a.id)).toEqual([]);
-    network.requestConnection(a.id, b.id, {
+    expect(await network.messages(a.id)).toEqual([]);
+    await network.requestConnection(a.id, b.id, {
       source: "opportunity",
       context: "Discuss the founding engineer opportunity.",
     });
-    discovery.drain();
-    expect(network.messages(a.id)).toEqual([]);
-    network.connectionAction(b.id, a.id, "accept");
-    discovery.drain();
-    expect(discovery.opportunities(a.id)[0]).toMatchObject({
+    await drainAll();
+    expect(await network.messages(a.id)).toEqual([]);
+    await network.connectionAction(b.id, a.id, "accept");
+    await drainAll();
+    expect((await discovery.opportunities(a.id))[0]).toMatchObject({
       id: recommendation.id,
       connected: true,
     });
-    expect(network.messages(a.id)).toHaveLength(1);
-    expect(network.messages(a.id)[0]).toMatchObject({
+    expect(await network.messages(a.id)).toHaveLength(1);
+    expect((await network.messages(a.id))[0]).toMatchObject({
       type: "PROFILE_QUERY",
       status: "completed",
     });
-    network.enqueue(a.id);
-    discovery.drain();
-    expect(network.messages(a.id)).toHaveLength(1);
+    await network.enqueue(a.id);
+    await drainAll();
+    expect(await network.messages(a.id)).toHaveLength(1);
   });
-
-  it("does not create agent messages or change opportunity signatures when only private commitments change", () => {
-    discoverable(a);
-    discoverable(b);
-    connect();
-    discovery.drain();
-    const initialMessage = network.messages(a.id)[0];
-    const opportunity = discovery.opportunities(a.id)[0];
+  it("does not create agent messages or change opportunity signatures when only private commitments change", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await connect();
+    await drainAll();
+    const initialMessage = (await network.messages(a.id))[0];
+    const opportunity = (await discovery.opportunities(a.id))[0];
     const signature = (
-      network.db
+      (await network.db
         .prepare("SELECT signature FROM network_opportunities WHERE id = ?")
-        .get(opportunity.id) as { signature: string }
+        .get(opportunity.id)) as {
+        signature: string;
+      }
     ).signature;
-    update(a, (context) => {
+    await update(a, (context) => {
       context.commitments = {
         status: "provided",
         items: [
@@ -445,43 +448,43 @@ describe("proactive discovery with authorized context", () => {
         ],
       };
     });
-    expect(queued().map((job) => job.user_id)).toEqual([a.id]);
-    discovery.drain();
-    expect(network.messages(a.id)).toHaveLength(1);
-    expect(network.messages(a.id)[0].id).toBe(initialMessage.id);
+    expect((await queued()).map((job) => job.user_id)).toEqual([a.id]);
+    await drainAll();
+    expect(await network.messages(a.id)).toHaveLength(1);
+    expect((await network.messages(a.id))[0].id).toBe(initialMessage.id);
     expect(
       (
-        network.db
+        (await network.db
           .prepare("SELECT signature FROM network_opportunities WHERE id = ?")
-          .get(opportunity.id) as { signature: string }
+          .get(opportunity.id)) as {
+          signature: string;
+        }
       ).signature,
     ).toBe(signature);
-    expect(JSON.stringify(discovery.opportunities(b.id))).not.toContain(
+    expect(JSON.stringify(await discovery.opportunities(b.id))).not.toContain(
       "Private medical appointment",
     );
-    expect(JSON.stringify(network.messages(b.id))).not.toContain(
+    expect(JSON.stringify(await network.messages(b.id))).not.toContain(
       "Private medical appointment",
     );
   });
-
-  it("never contacts unconnected matches or requests private data automatically", () => {
-    discoverable(a);
-    discoverable(b);
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toHaveLength(1);
-    expect(network.messages(a.id)).toEqual([]);
-    connect();
-    preferences(a, { visibility: { ...shared, profile: "private" } });
-    discovery.drain();
-    expect(network.messages(a.id)).toEqual([]);
-    expect(network.messages(b.id)).toEqual([]);
+  it("never contacts unconnected matches or requests private data automatically", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toHaveLength(1);
+    expect(await network.messages(a.id)).toEqual([]);
+    await connect();
+    await preferences(a, { visibility: { ...shared, profile: "private" } });
+    await drainAll();
+    expect(await network.messages(a.id)).toEqual([]);
+    expect(await network.messages(b.id)).toEqual([]);
   });
-
-  it("applies both global and per-event visibility without exposing private attendance", () => {
-    discoverable(a);
-    discoverable(b);
-    discoverable(c);
-    discovery.saveEvent(
+  it("applies both global and per-event visibility without exposing private attendance", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await discoverable(c);
+    await discovery.saveEvent(
       b.id,
       event({
         title: "Private Dinner",
@@ -489,7 +492,7 @@ describe("proactive discovery with authorized context", () => {
         visibility: "private",
       }),
     );
-    discovery.saveEvent(
+    await discovery.saveEvent(
       b.id,
       event({
         title: "Friends Meetup",
@@ -497,7 +500,7 @@ describe("proactive discovery with authorized context", () => {
         visibility: "friends",
       }),
     );
-    discovery.saveEvent(
+    await discovery.saveEvent(
       b.id,
       event({
         title: "Network Meetup",
@@ -506,150 +509,278 @@ describe("proactive discovery with authorized context", () => {
       }),
     );
     expect(
-      network.project(a.id, b.id).events?.map((item) => item.title),
+      (await network.project(a.id, b.id)).events?.map((item) => item.title),
     ).toEqual(["Network Meetup"]);
-    connect();
+    await connect();
     expect(
-      network
-        .project(a.id, b.id)
-        .events?.map((item) => item.title)
+      (await network.project(a.id, b.id)).events
+        ?.map((item) => item.title)
         .sort(),
     ).toEqual(["Friends Meetup", "Network Meetup"]);
     expect(
-      network.project(c.id, b.id).events?.map((item) => item.title),
+      (await network.project(c.id, b.id)).events?.map((item) => item.title),
     ).toEqual(["Network Meetup"]);
-    preferences(b, { visibility: { ...shared, events: "private" } });
-    expect(network.project(a.id, b.id).events).toBeUndefined();
+    await preferences(b, { visibility: { ...shared, events: "private" } });
+    expect((await network.project(a.id, b.id)).events).toBeUndefined();
   });
-
-  it("uses a shared public event link as evidence and improves a justified match's rank", () => {
-    discoverable(a);
-    discoverable(b);
-    discovery.drain();
-    const baseline = discovery.opportunities(a.id)[0].score;
-    const first = discovery.saveEvent(a.id, event());
-    const second = discovery.saveEvent(b.id, event());
+  it("uses a shared public event link as evidence and improves a justified match's rank", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await drainAll();
+    const baseline = (await discovery.opportunities(a.id))[0].score;
+    const first = await discovery.saveEvent(a.id, event());
+    const second = await discovery.saveEvent(b.id, event());
     expect(first.id).not.toBe(second.id);
-    discovery.drain();
-    const opportunity = discovery.opportunities(a.id)[0];
+    await drainAll();
+    const opportunity = (await discovery.opportunities(a.id))[0];
     expect(opportunity.score).toBeGreaterThan(baseline);
     expect(opportunity.sharedEvents).toHaveLength(1);
     expect(opportunity.reasons).toContain(
       "Both reported plans to attend AI Infrastructure Meetup.",
     );
     expect(opportunity.sharedEvents[0].sourceMode).toBe("user_report");
-    discovery.saveEvent(b.id, {
+    await discovery.saveEvent(b.id, {
       ...event(),
       id: second.id,
       visibility: "private",
     });
-    expect(discovery.opportunities(a.id)[0].sharedEvents).toEqual([]);
+    expect((await discovery.opportunities(a.id))[0].sharedEvents).toEqual([]);
   });
-
-  it("never equates same-named events without a shared link or distinct query-based event IDs", () => {
-    discoverable(a);
-    discoverable(b);
-    discovery.saveEvent(a.id, event({ url: undefined }));
-    discovery.saveEvent(b.id, event({ url: undefined }));
-    discovery.saveEvent(
+  it("never equates same-named events without a shared link or distinct query-based event IDs", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await discovery.saveEvent(a.id, event({ url: undefined }));
+    await discovery.saveEvent(b.id, event({ url: undefined }));
+    await discovery.saveEvent(
       a.id,
       event({ url: "https://events.example.test/event?id=alpha" }),
     );
-    discovery.saveEvent(
+    await discovery.saveEvent(
       b.id,
       event({ url: "https://events.example.test/event?id=beta" }),
     );
-    discovery.drain();
-    expect(discovery.opportunities(a.id)[0].sharedEvents).toEqual([]);
+    await drainAll();
+    expect((await discovery.opportunities(a.id))[0].sharedEvents).toEqual([]);
   });
-
-  it("recognizes identical instants written with different offsets and uses SF event dates", () => {
-    discoverable(a);
-    discoverable(b);
+  it("recognizes identical instants written with different offsets and uses SF event dates", async () => {
+    await discoverable(a);
+    await discoverable(b);
     for (const person of [a, b])
-      update(person, (context) => {
+      await update(person, (context) => {
         context.trip.start = "2026-11-05";
         context.trip.end = "2026-11-05";
       });
-    discovery.saveEvent(a.id, event());
-    discovery.saveEvent(
+    await discovery.saveEvent(a.id, event());
+    await discovery.saveEvent(
       b.id,
       event({ start: "2026-11-06T02:00:00Z", end: "2026-11-06T04:00:00Z" }),
     );
-    discovery.drain();
-    expect(discovery.opportunities(a.id)[0].sharedEvents).toHaveLength(1);
+    await drainAll();
+    expect((await discovery.opportunities(a.id))[0].sharedEvents).toHaveLength(
+      1,
+    );
   });
-
-  it("guards event ownership and labels explicit demo fixtures", () => {
-    const stored = discovery.saveEvent(a.id, event());
-    expect(() =>
+  it("guards event ownership and labels explicit demo fixtures", async () => {
+    const stored = await discovery.saveEvent(a.id, event());
+    await expect(
       discovery.saveEvent(b.id, { ...event(), id: stored.id }),
-    ).toThrow();
-    discovery.removeEvent(b.id, stored.id);
-    expect(discovery.events(a.id)).toHaveLength(1);
+    ).rejects.toThrow();
+    await discovery.removeEvent(b.id, stored.id);
+    expect(await discovery.events(a.id)).toHaveLength(1);
     vi.stubEnv("SIDEKICK_DEMO", "1");
     vi.stubEnv("DATABASE_PATH", join(folder, "test.demo.sqlite"));
-    expect(discovery.saveEvent(c.id, event()).sourceMode).toBe("demo");
+    expect((await discovery.saveEvent(c.id, event())).sourceMode).toBe("demo");
   });
-
-  it("queues confirmed profile changes, coalesces triggers and deduplicates repeated drains", () => {
-    discoverable(a);
-    discoverable(b);
-    discovery.drain();
-    const initial = discovery.opportunities(a.id)[0];
-    expect(queued()).toEqual([]);
-    update(a, (context) => {
+  it("queues confirmed profile changes, coalesces triggers and deduplicates repeated drains", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await drainAll();
+    const initial = (await discovery.opportunities(a.id))[0];
+    expect(await queued()).toEqual([]);
+    await update(a, (context) => {
       context.profile.offers += " I also build Python systems.";
     });
-    expect(queued().map((job) => job.user_id)).toEqual([a.id]);
-    network.enqueue(a.id);
-    network.enqueue(a.id);
-    expect(queued()).toHaveLength(1);
-    expect(queued()[0].version).toBe(3);
-    discovery.drain();
-    discovery.drain();
-    expect(opportunityCount()).toBe(1);
-    expect(discovery.opportunities(a.id)[0].id).toBe(initial.id);
-    expect(discovery.opportunities(a.id)[0].createdAt).toBe(initial.createdAt);
-    expect(queued()).toEqual([]);
+    expect((await queued()).map((job) => job.user_id)).toEqual([a.id]);
+    await network.enqueue(a.id);
+    await network.enqueue(a.id);
+    expect(await queued()).toHaveLength(1);
+    expect((await queued())[0].version).toBe(3);
+    await drainAll();
+    await drainAll();
+    expect(await opportunityCount()).toBe(1);
+    expect((await discovery.opportunities(a.id))[0].id).toBe(initial.id);
+    expect((await discovery.opportunities(a.id))[0].createdAt).toBe(
+      initial.createdAt,
+    );
+    expect(await queued()).toEqual([]);
   });
-
-  it("keeps failed jobs for retry and rolls back a partial matching transaction", () => {
-    discoverable(a);
-    discoverable(b);
+  it("keeps failed jobs for retry and rolls back a partial matching transaction", async () => {
+    await discoverable(a);
+    await discoverable(b);
     const original = network.sharedEvents;
     network.sharedEvents = () => {
       throw new Error("Injected processing failure");
     };
-    expect(() => discovery.drain()).toThrow("Injected processing failure");
-    expect(queued()).toHaveLength(2);
-    expect(opportunityCount()).toBe(0);
+    await expect(drainAll()).rejects.toThrow("Injected processing failure");
+    expect(await queued()).toHaveLength(2);
+    expect(await opportunityCount()).toBe(0);
     network.sharedEvents = original;
-    discovery.drain();
-    expect(queued()).toEqual([]);
-    expect(discovery.opportunities(a.id)).toHaveLength(1);
+    await drainAll();
+    expect(await queued()).toEqual([]);
+    expect(await discovery.opportunities(a.id)).toHaveLength(1);
   });
-
-  it("persists independent dismissals across reprocessing, profile changes and restart", () => {
-    discoverable(a);
-    discoverable(b);
-    discovery.drain();
-    const id = discovery.opportunities(a.id)[0].id;
-    discovery.dismiss(c.id, id);
-    expect(discovery.opportunities(a.id)).toHaveLength(1);
-    discovery.dismiss(a.id, id);
-    expect(discovery.opportunities(a.id)).toEqual([]);
-    expect(discovery.opportunities(b.id)).toHaveLength(1);
-    update(b, (context) => {
+  it("persists independent dismissals across reprocessing, profile changes and restart", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await drainAll();
+    const id = (await discovery.opportunities(a.id))[0].id;
+    await discovery.dismiss(c.id, id);
+    expect(await discovery.opportunities(a.id)).toHaveLength(1);
+    await discovery.dismiss(a.id, id);
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+    expect(await discovery.opportunities(b.id)).toHaveLength(1);
+    await update(b, (context) => {
       context.profile.offers += " We support remote collaboration too.";
     });
-    discovery.drain();
-    expect(discovery.opportunities(a.id)).toEqual([]);
+    await drainAll();
+    expect(await discovery.opportunities(a.id)).toEqual([]);
     store.close();
     store = new ContextStore(path);
     network = store.network;
     discovery = new DiscoveryService(network);
-    expect(discovery.opportunities(a.id)).toEqual([]);
-    expect(discovery.opportunities(b.id)[0].id).toBe(id);
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+    expect((await discovery.opportunities(b.id))[0].id).toBe(id);
+  });
+  it("bounds peer comparisons and resumes a durable cursor after reopening the database", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    for (const name of ["Devon", "Ellis", "Finley", "Gray", "Harper"])
+      await discoverable(await account(name));
+    await network.db.prepare("DELETE FROM network_jobs").run();
+    await network.enqueue(a.id);
+    const peers = (await network.db
+      .prepare(
+        `SELECT u.id FROM users u JOIN network_settings ns ON ns.user_id = u.id
+        WHERE u.id != ? AND json_extract(ns.settings_json, '$.discoverable') = 1 ORDER BY u.id`,
+      )
+      .all(a.id)) as {
+      id: string;
+    }[];
+    expect(await discovery.drain(2)).toBe(2);
+    const partial = (await network.db
+      .prepare("SELECT cursor, version FROM network_jobs WHERE user_id = ?")
+      .get(a.id)) as {
+      cursor: string;
+      version: number;
+    };
+    expect(partial).toEqual({ cursor: peers[1].id, version: 1 });
+    store.close();
+    store = new ContextStore(path);
+    network = store.network;
+    discovery = new DiscoveryService(network);
+    expect(await discovery.drain(1)).toBe(1);
+    expect(
+      await network.db
+        .prepare("SELECT cursor FROM network_jobs WHERE user_id = ?")
+        .get(a.id),
+    ).toEqual({ cursor: peers[2].id });
+    await network.enqueue(a.id);
+    expect(
+      await network.db
+        .prepare("SELECT cursor, version FROM network_jobs WHERE user_id = ?")
+        .get(a.id),
+    ).toEqual({ cursor: "", version: 2 });
+    await drainAll();
+    expect(await queued()).toEqual([]);
+    expect(await discovery.opportunities(a.id)).toHaveLength(1);
+  });
+  it("finds an active pair in a bounded drain despite older inactive and unfinished accounts", async () => {
+    for (let index = 0; index < 30; index++) {
+      const inactive = await account(`Inactive${index}`);
+      await network.enqueue(inactive.id);
+      const unfinished = await store.registerAccount(
+        `unfinished${index}@example.test`,
+        "test-only-hash",
+      );
+      await network.enqueue(unfinished.account.id);
+    }
+    // Make every inactive job older than the active pair's update.
+    await network.db
+      .prepare(
+        "UPDATE network_jobs SET updated_at = '2026-10-23T00:00:00.000Z'",
+      )
+      .run();
+    await discoverable(a);
+    await discoverable(b);
+    expect(await queued()).toHaveLength(62);
+    expect(await discovery.drain()).toBe(2);
+    expect(await discovery.opportunities(a.id)).toHaveLength(1);
+    expect(await queued()).toEqual([]);
+    expect(await network.messages(a.id)).toEqual([]);
+  });
+  it("lets only one client drain at once and deduplicates collaboration across clients", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await connect();
+    const secondStore = new ContextStore(path);
+    const secondDiscovery = new DiscoveryService(secondStore.network);
+    try {
+      await secondStore.network.settings(a.id);
+      const result = await Promise.all([
+        discovery.drain(1),
+        secondDiscovery.drain(1),
+      ]);
+      expect(result.sort()).toEqual([0, 1]);
+      await drainAll();
+      expect(await opportunityCount()).toBe(1);
+      expect(await secondStore.network.messages(a.id)).toHaveLength(1);
+      await secondStore.network.enqueue(b.id);
+      await secondDiscovery.drain();
+      expect(await network.messages(a.id)).toHaveLength(1);
+    } finally {
+      secondStore.close();
+    }
+  });
+  it("retries expired worker leases without an old worker releasing the new lease", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await network.enqueue(a.id);
+    const oldLease = await network.db.acquireLease("network-discovery", 1000);
+    expect(oldLease).toBeTruthy();
+    expect(await discovery.drain(1)).toBe(0);
+    vi.setSystemTime(new Date(Date.now() + 1001));
+    const newLease = await network.db.acquireLease("network-discovery", 1000);
+    expect(newLease).toBeTruthy();
+    await network.db.releaseLease("network-discovery", oldLease!);
+    expect(await discovery.drain(1)).toBe(0);
+    await network.db.releaseLease("network-discovery", newLease!);
+    expect(await discovery.drain(1)).toBe(1);
+  });
+  it("enqueues the daily sweep once across independent cold starts and never starts a Vercel timer", async () => {
+    const secondStore = new ContextStore(path);
+    try {
+      const results = await Promise.all([
+        enqueueDailyNetworkWork(network),
+        enqueueDailyNetworkWork(secondStore.network),
+      ]);
+      expect(results.sort()).toEqual([false, true]);
+      expect(await queued()).toHaveLength(3);
+      expect((await queued()).map((job) => job.version)).toEqual([1, 1, 1]);
+      await drainAll();
+      expect(await enqueueDailyNetworkWork(secondStore.network)).toBe(false);
+      expect(await queued()).toEqual([]);
+      vi.setSystemTime(new Date("2026-10-25T17:00:00Z"));
+      vi.mocked(Temporal.Now.plainDateISO).mockReturnValue(
+        Temporal.PlainDate.from("2026-10-25"),
+      );
+      expect(await enqueueDailyNetworkWork(secondStore.network)).toBe(true);
+      expect(await queued()).toHaveLength(3);
+      vi.stubEnv("VERCEL", "1");
+      const timers = vi.getTimerCount();
+      startNetworkWorker();
+      expect(vi.getTimerCount()).toBe(timers);
+    } finally {
+      secondStore.close();
+    }
   });
 });

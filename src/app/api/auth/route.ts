@@ -12,7 +12,9 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   try {
     return json({
-      account: getStore().account(request.cookies.get(SESSION_COOKIE)?.value),
+      account: await getStore().account(
+        request.cookies.get(SESSION_COOKIE)?.value,
+      ),
     });
   } catch {
     return json({ message: "Could not load your account. Try again." }, 503);
@@ -45,7 +47,7 @@ export async function POST(request: NextRequest) {
       400,
     );
   try {
-    const current = getStore().account(
+    const current = await getStore().account(
       request.cookies.get(SESSION_COOKIE)?.value,
     );
     if (

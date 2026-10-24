@@ -1,35 +1,57 @@
 import { Temporal } from "@js-temporal/polyfill";
 import { DiscoveryService } from "./discovery-service";
 import { getStore } from "./store";
+import type { NetworkStore } from "./network-store";
 
 const globalNetwork = globalThis as typeof globalThis & {
   sidekickNetworkTimer?: ReturnType<typeof setInterval>;
-  sidekickNetworkDay?: string;
 };
-export function drainNetworkWork() {
-  const network = getStore().network;
-  const discovery = new DiscoveryService(network);
+
+export async function enqueueDailyNetworkWork(network: NetworkStore) {
   const day = Temporal.Now.plainDateISO("America/Los_Angeles").toString();
-  if (globalNetwork.sidekickNetworkDay !== day) {
-    // Reevaluate date-sensitive opportunities once per SF day, including after restart.
-    for (const user of network.db.prepare("SELECT id FROM users").all() as {
-      id: string;
-    }[])
-      network.enqueue(user.id);
-    globalNetwork.sidekickNetworkDay = day;
-  }
-  return discovery.drain();
+  return network.db
+    .transaction(async () => {
+      const prior = (await network.db
+        .prepare("SELECT value FROM app_meta WHERE key = ?")
+        .get("network-discovery-day")) as { value: string } | undefined;
+      if (prior?.value === day) return false;
+      // The day and jobs commit together. Cold starts do not enqueue the whole network again.
+      await network.db
+        .prepare(
+          `INSERT INTO network_jobs (user_id, version, updated_at, cursor)
+      SELECT id, 1, ?, '' FROM users WHERE 1
+      ON CONFLICT(user_id) DO UPDATE SET version = version + 1,
+        updated_at = excluded.updated_at, cursor = ''`,
+        )
+        .run(new Date().toISOString());
+      await network.db
+        .prepare(
+          `INSERT INTO app_meta (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        )
+        .run("network-discovery-day", day);
+      return true;
+    })
+    .immediate();
 }
+
+export async function drainNetworkWork() {
+  const network = getStore().network;
+  await enqueueDailyNetworkWork(network);
+  return new DiscoveryService(network).drain();
+}
+
 export function startNetworkWorker() {
-  if (globalNetwork.sidekickNetworkTimer) return;
-  const tick = () => {
+  // Serverless work runs through authenticated cron or Next.js after(), not an unowned timer.
+  if (process.env.VERCEL === "1" || globalNetwork.sidekickNetworkTimer) return;
+  const tick = async () => {
     try {
-      drainNetworkWork();
+      await drainNetworkWork();
     } catch {
       console.error("network_jobs_pending_retry");
     }
   };
-  tick();
-  globalNetwork.sidekickNetworkTimer = setInterval(tick, 30_000);
+  void tick();
+  globalNetwork.sidekickNetworkTimer = setInterval(() => void tick(), 30_000);
   globalNetwork.sidekickNetworkTimer.unref();
 }

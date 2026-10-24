@@ -9,9 +9,12 @@ export async function GET(
   context: { params: Promise<{ id: string }> },
 ) {
   try {
-    const account = networkAccount(request),
+    const account = await networkAccount(request),
       { id } = await context.params;
-    const calendar = new MeetingService(getStore()).exportICS(account.id, id);
+    const calendar = await new MeetingService(getStore()).exportICS(
+      account.id,
+      id,
+    );
     return new Response(calendar, {
       headers: {
         "Content-Type": "text/calendar; charset=utf-8",

@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@js-temporal/polyfill": "0.5.1",
+    "@libsql/client": "0.18.0",
     "better-sqlite3": "13.0.3",
     "jsqr": "1.4.0",
     "next": "16.4.3",

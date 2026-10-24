@@ -8,7 +8,6 @@ import { completeOnboarding } from "./onboarding-model";
 
 export class ChatBusy extends Error {}
 export class ChatLimit extends Error {}
-const active = new Set<string>();
 type Completion = (chat: ChatState, message: string) => Promise<ModelReply>;
 
 export async function handleChat(
@@ -17,19 +16,20 @@ export async function handleChat(
   request: ChatRequest,
   complete: Completion = completeOnboarding,
 ) {
-  const cached = store.cachedChat(token, request);
+  const cached = await store.cachedChat(token, request);
   if (cached) return cached;
-  const current = store.checkChat(token, request);
+  const current = await store.checkChat(token, request);
   if (request.action !== "message") return store.commitChat(token, request);
   if (current.messages.length >= 81) throw new ChatLimit();
-  const owner = store.calendarOwner(token);
-  if (active.has(owner)) throw new ChatBusy();
-  active.add(owner);
+  const owner = await store.calendarOwner(token);
+  const key = `onboarding:${owner}`;
+  const lease = await store.network.db.acquireLease(key, 35_000);
+  if (!lease) throw new ChatBusy();
   try {
     const reply = await complete(current, request.message);
     // Re-check both revisions after the external request, before any mutation.
-    return store.commitChat(token, request, reply);
+    return await store.commitChat(token, request, reply);
   } finally {
-    active.delete(owner);
+    await store.network.db.releaseLease(key, lease);
   }
 }

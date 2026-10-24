@@ -17,7 +17,7 @@ import { ContextStore } from "../src/lib/server/store";
 import { validContext } from "./fixtures";
 
 let store: ContextStore, service: MeetingService;
-let a: ReturnType<ContextStore["registerAccount"]>,
+let a: Awaited<ReturnType<ContextStore["registerAccount"]>>,
   b: typeof a,
   outsider: typeof a;
 let folder: string, dbPath: string;
@@ -28,19 +28,19 @@ const response = (body: unknown, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
-function user(email: string, name: string) {
-  const value = store.registerAccount(email, "unused-test-hash");
+async function user(email: string, name: string) {
+  const value = await store.registerAccount(email, "unused-test-hash");
   const context = validContext();
   context.profile.name = name;
-  store.save(value.token, {
+  await store.save(value.token, {
     context,
     baseRevision: 0,
     requestId: randomUUID(),
   });
   return value;
 }
-function propose(purpose = "Discuss a founding engineer opportunity") {
-  return service.propose(a.account.id, {
+async function propose(purpose = "Discuss a founding engineer opportunity") {
+  return await service.propose(a.account.id, {
     toUserId: b.account.id,
     requestId: randomUUID(),
     purpose,
@@ -48,7 +48,7 @@ function propose(purpose = "Discuss a founding engineer opportunity") {
   });
 }
 async function options() {
-  let value = propose();
+  let value = await propose();
   value = await service.optIn(a.account.id, {
     meetingId: value.id,
     revision: value.revision,
@@ -60,8 +60,8 @@ async function options() {
     manualSlots: manual,
   });
 }
-function connectCalendar(account: typeof a, expired = false) {
-  const owner = store.calendarOwner(account.token);
+async function connectCalendar(account: typeof a, expired = false) {
+  const owner = await store.calendarOwner(account.token);
   const connection: CalendarConnection = {
     subject: `google-${account.account.id}`,
     email: `private-${account.account.id}@example.test`,
@@ -86,7 +86,7 @@ function connectCalendar(account: typeof a, expired = false) {
     snapshot: null,
     issue: null,
   };
-  store.writeCalendar(account.token, 0, connection);
+  await store.writeCalendar(account.token, 0, connection);
 }
 function calendarReply(
   init: RequestInit,
@@ -104,7 +104,7 @@ function calendarReply(
   });
 }
 async function calendarOptions() {
-  let value = propose();
+  let value = await propose();
   value = await service.optIn(a.account.id, {
     meetingId: value.id,
     revision: value.revision,
@@ -127,7 +127,7 @@ async function approveBoth(value: MeetingView, optionId = value.options[0].id) {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-10-24T17:00:00Z"));
   vi.stubEnv("TOKEN_ENCRYPTION_KEY", "a".repeat(64));
@@ -141,16 +141,16 @@ beforeEach(() => {
   dbPath = join(folder, "test.sqlite");
   store = new ContextStore(dbPath);
   service = new MeetingService(store);
-  a = user("alex@example.test", "Alex Rivera");
-  b = user("blair@example.test", "Blair Morgan");
-  outsider = user("casey@example.test", "Casey Hill");
-  const token = store.network.settings(b.account.id).qrToken;
-  store.network.requestConnection(a.account.id, b.account.id, {
+  a = await user("alex@example.test", "Alex Rivera");
+  b = await user("blair@example.test", "Blair Morgan");
+  outsider = await user("casey@example.test", "Casey Hill");
+  const token = (await store.network.settings(b.account.id)).qrToken;
+  await store.network.requestConnection(a.account.id, b.account.id, {
     source: "qr",
     token,
     context: "Met at a test event",
   });
-  store.network.connectionAction(b.account.id, a.account.id, "accept");
+  await store.network.connectionAction(b.account.id, a.account.id, "accept");
 });
 afterEach(() => {
   store.close();
@@ -168,11 +168,13 @@ describe("bilateral meeting agreements", () => {
       purpose: "Discuss technical opportunities",
       location: "Ferry Building, main entrance",
     };
-    let value = service.propose(a.account.id, input);
+    let value = await service.propose(a.account.id, input);
     const createdAt = value.createdAt;
     const initial = value.activity;
     vi.setSystemTime(Date.now() + 1000);
-    expect(service.propose(a.account.id, input).activity).toEqual(initial);
+    expect((await service.propose(a.account.id, input)).activity).toEqual(
+      initial,
+    );
     const consent = {
       meetingId: value.id,
       revision: value.revision,
@@ -241,7 +243,9 @@ describe("bilateral meeting agreements", () => {
     store.close();
     store = new ContextStore(dbPath);
     service = new MeetingService(store);
-    expect(service.list(b.account.id)[0].activity).toEqual(value.activity);
+    expect((await service.list(b.account.id))[0].activity).toEqual(
+      value.activity,
+    );
   });
 
   it("keeps revoked history as action metadata without exposing the old meeting options", async () => {
@@ -252,9 +256,9 @@ describe("bilateral meeting agreements", () => {
       revision: value.revision,
       optionId,
     });
-    store.network.connectionAction(b.account.id, a.account.id, "block");
+    await store.network.connectionAction(b.account.id, a.account.id, "block");
     vi.setSystemTime(Date.now() + 1000);
-    value = service.list(a.account.id)[0];
+    value = (await service.list(a.account.id))[0];
     expect(value.activity.at(-1)).toMatchObject({ kind: "stale" });
     expect(
       value.activity.some((entry) => entry.kind === "option_approved"),
@@ -263,22 +267,48 @@ describe("bilateral meeting agreements", () => {
     expect(JSON.stringify(value.activity)).not.toContain(optionId);
     expect(value.activity.every((entry) => !entry.optionId)).toBe(true);
     vi.setSystemTime(Date.now() + 1000);
-    expect(service.list(a.account.id)[0].activity).toEqual(value.activity);
-    expect(service.list(outsider.account.id)).toEqual([]);
+    expect((await service.list(a.account.id))[0].activity).toEqual(
+      value.activity,
+    );
+    expect(await service.list(outsider.account.id)).toEqual([]);
+  });
+
+  it("normalizes revoked meeting history once when independent clients read it concurrently", async () => {
+    const value = await options();
+    await store.network.connectionAction(a.account.id, b.account.id, "block");
+    const other = new ContextStore(dbPath);
+    try {
+      const secondService = new MeetingService(other);
+      const [first, second] = await Promise.all([
+        service.list(a.account.id),
+        secondService.list(b.account.id),
+      ]);
+      expect(first[0].status).toBe("stale");
+      expect(second[0].status).toBe("stale");
+      expect(first[0].revision).toBe(value.revision + 1);
+      expect(second[0].revision).toBe(first[0].revision);
+      expect(
+        first[0].activity.filter((entry) => entry.kind === "stale"),
+      ).toHaveLength(1);
+      expect(second[0].activity).toEqual(first[0].activity);
+      expect(first[0].options).toEqual([]);
+    } finally {
+      other.close();
+    }
   });
 
   it("does not invent response times for older records without activity", async () => {
     let value = await options();
-    const row = store.network.db
+    const row = (await store.network.db
       .prepare("SELECT state_json FROM meetings WHERE id = ?")
-      .get(value.id) as { state_json: string };
+      .get(value.id)) as { state_json: string };
     const record = JSON.parse(row.state_json);
     delete record.activity;
-    store.network.db
+    await store.network.db
       .prepare("UPDATE meetings SET state_json = ? WHERE id = ?")
       .run(JSON.stringify(record), value.id);
     vi.setSystemTime(Date.now() + 1000);
-    value = service.list(a.account.id)[0];
+    value = (await service.list(a.account.id))[0];
     expect(value.activity).toEqual([
       {
         id: `${value.id}:proposed`,
@@ -288,14 +318,14 @@ describe("bilateral meeting agreements", () => {
       },
     ]);
     const withdrawal = { meetingId: value.id, revision: value.revision };
-    value = service.withdraw(b.account.id, withdrawal);
+    value = await service.withdraw(b.account.id, withdrawal);
     expect(value.activity.map((entry) => entry.kind)).toEqual([
       "proposed",
       "withdrawn",
     ]);
     expect(value.activity[1].at).toBe(new Date().toISOString());
     vi.setSystemTime(Date.now() + 1000);
-    expect(service.withdraw(b.account.id, withdrawal).activity).toEqual(
+    expect((await service.withdraw(b.account.id, withdrawal)).activity).toEqual(
       value.activity,
     );
   });
@@ -303,7 +333,7 @@ describe("bilateral meeting agreements", () => {
   it("requires both availability consents and both approvals; exports without sending an invitation", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
-    let value = propose();
+    let value = await propose();
     expect(value.manualAvailabilityNeeded).toBe(true);
     value = await service.optIn(a.account.id, {
       meetingId: value.id,
@@ -312,7 +342,9 @@ describe("bilateral meeting agreements", () => {
     });
     expect(value.status).toBe("awaiting_permission");
     expect(value.options).toEqual([]);
-    expect(() => service.exportICS(a.account.id, value.id)).toThrowError(
+    await expect(
+      service.exportICS(a.account.id, value.id),
+    ).rejects.toThrowError(
       expect.objectContaining({ code: "approval_required" }),
     );
     value = await service.optIn(b.account.id, {
@@ -338,7 +370,7 @@ describe("bilateral meeting agreements", () => {
     });
     expect(value.status).toBe("confirmed");
     expect(value.calendarStatus).toBe("export_available");
-    const ics = service.exportICS(a.account.id, value.id);
+    const ics = await service.exportICS(a.account.id, value.id);
     expect(ics).toContain(`UID:${value.id}@sidekick.local`);
     expect(ics).toContain("DTSTART:20261026T160000Z");
     expect(ics).toContain("METHOD:PUBLISH");
@@ -353,11 +385,13 @@ describe("bilateral meeting agreements", () => {
       purpose: "Review a technical leadership role",
       location: "Public library entrance",
     };
-    const first = service.propose(a.account.id, input);
-    expect(service.propose(a.account.id, input).id).toBe(first.id);
-    expect(() =>
+    const first = await service.propose(a.account.id, input);
+    expect((await service.propose(a.account.id, input)).id).toBe(first.id);
+    await expect(
       service.propose(a.account.id, { ...input, location: "Changed place" }),
-    ).toThrowError(expect.objectContaining({ code: "request_conflict" }));
+    ).rejects.toThrowError(
+      expect.objectContaining({ code: "request_conflict" }),
+    );
     let value = await options();
     const optionId = value.options[0].id;
     const revision = value.revision;
@@ -389,15 +423,16 @@ describe("bilateral meeting agreements", () => {
         })
       ).revision,
     ).toBe(value.revision);
-    const ics = service.exportICS(b.account.id, value.id);
+    const ics = await service.exportICS(b.account.id, value.id);
     store.close();
     store = new ContextStore(dbPath);
     service = new MeetingService(store);
     expect(
-      service.list(a.account.id).find((meeting) => meeting.id === value.id)
-        ?.status,
+      (await service.list(a.account.id)).find(
+        (meeting) => meeting.id === value.id,
+      )?.status,
     ).toBe("confirmed");
-    expect(service.exportICS(b.account.id, value.id)).toBe(ics);
+    expect(await service.exportICS(b.account.id, value.id)).toBe(ics);
   });
 
   it("rejects outsiders and stops communication after removal or blocking", async () => {
@@ -409,17 +444,17 @@ describe("bilateral meeting agreements", () => {
         optionId: value.options[0].id,
       }),
     ).rejects.toThrowError(expect.objectContaining({ code: "not_found" }));
-    expect(() => service.exportICS(outsider.account.id, value.id)).toThrowError(
-      expect.objectContaining({ code: "not_found" }),
-    );
-    expect(() =>
+    await expect(
+      service.exportICS(outsider.account.id, value.id),
+    ).rejects.toThrowError(expect.objectContaining({ code: "not_found" }));
+    await expect(
       service.propose(a.account.id, {
         toUserId: outsider.account.id,
         requestId: randomUUID(),
         purpose: "Try an unauthorized meeting",
       }),
-    ).toThrowError(expect.objectContaining({ code: "not_connected" }));
-    store.network.connectionAction(b.account.id, a.account.id, "block");
+    ).rejects.toThrowError(expect.objectContaining({ code: "not_connected" }));
+    await store.network.connectionAction(b.account.id, a.account.id, "block");
     await expect(
       service.approve(a.account.id, {
         meetingId: value.id,
@@ -427,21 +462,21 @@ describe("bilateral meeting agreements", () => {
         optionId: value.options[0].id,
       }),
     ).rejects.toThrowError(expect.objectContaining({ code: "not_connected" }));
-    value = service.list(a.account.id)[0];
+    value = (await service.list(a.account.id))[0];
     expect(value.status).toBe("stale");
     expect(value.options).toEqual([]);
   });
 
   it("keeps prior meeting consent revoked after removing and reconnecting before any meeting read", async () => {
     const value = await options();
-    store.network.connectionAction(a.account.id, b.account.id, "remove");
-    const token = store.network.settings(b.account.id).qrToken;
-    store.network.requestConnection(a.account.id, b.account.id, {
+    await store.network.connectionAction(a.account.id, b.account.id, "remove");
+    const token = (await store.network.settings(b.account.id)).qrToken;
+    await store.network.requestConnection(a.account.id, b.account.id, {
       source: "qr",
       token,
       context: "Met again at a test event",
     });
-    store.network.connectionAction(b.account.id, a.account.id, "accept");
+    await store.network.connectionAction(b.account.id, a.account.id, "accept");
     await expect(
       service.approve(a.account.id, {
         meetingId: value.id,
@@ -449,15 +484,15 @@ describe("bilateral meeting agreements", () => {
         optionId: value.options[0].id,
       }),
     ).rejects.toMatchObject({ code: "meeting_changed" });
-    expect(service.list(a.account.id)[0].status).toBe("stale");
-    expect(propose().status).toBe("awaiting_permission");
+    expect((await service.list(a.account.id))[0].status).toBe("stale");
+    expect((await propose()).status).toBe("awaiting_permission");
   });
 
-  it("bounds proposal spam and provides useful English error messages", () => {
+  it("bounds proposal spam and provides useful English error messages", async () => {
     for (let index = 0; index < 10; index++)
-      propose(`Discuss technical project number ${index}`);
+      await propose(`Discuss technical project number ${index}`);
     try {
-      propose();
+      await propose();
       throw new Error("Expected the daily proposal limit");
     } catch (error) {
       expect(error).toMatchObject({
@@ -473,11 +508,19 @@ describe("bilateral meeting agreements", () => {
     const context = validContext();
     context.profile.name = "Alex Rivera";
     context.trip.end = "2026-10-25";
-    store.save(a.token, { context, baseRevision: 1, requestId: randomUUID() });
-    expect(() => service.exportICS(a.account.id, value.id)).toThrowError(
+    await store.save(a.token, {
+      context,
+      baseRevision: 1,
+      requestId: randomUUID(),
+    });
+    await expect(
+      service.exportICS(a.account.id, value.id),
+    ).rejects.toThrowError(
       expect.objectContaining({ code: "meeting_changed" }),
     );
-    expect(service.list(a.account.id)[0].calendarStatus).toBe("not_ready");
+    expect((await service.list(a.account.id))[0].calendarStatus).toBe(
+      "not_ready",
+    );
   });
 
   it("invalidates stale profile revisions and expires proposals", async () => {
@@ -485,7 +528,11 @@ describe("bilateral meeting agreements", () => {
     const context = validContext();
     context.profile.name = "Alex Rivera";
     context.goal.text = "Explore a different confirmed opportunity";
-    store.save(a.token, { context, baseRevision: 1, requestId: randomUUID() });
+    await store.save(a.token, {
+      context,
+      baseRevision: 1,
+      requestId: randomUUID(),
+    });
     await expect(
       service.approve(a.account.id, {
         meetingId: value.id,
@@ -495,12 +542,12 @@ describe("bilateral meeting agreements", () => {
     ).rejects.toThrowError(
       expect.objectContaining({ code: "meeting_changed" }),
     );
-    expect(service.list(a.account.id)[0].status).toBe("stale");
-    const fresh = propose();
+    expect((await service.list(a.account.id))[0].status).toBe("stale");
+    const fresh = await propose();
     vi.setSystemTime(Date.now() + 48 * 3600000 + 1);
-    const expired = service
-      .list(a.account.id)
-      .find((meeting) => meeting.id === fresh.id)!;
+    const expired = (await service.list(a.account.id)).find(
+      (meeting) => meeting.id === fresh.id,
+    )!;
     expect(expired.status).toBe("expired");
     expect(expired.activity.map((entry) => entry.kind)).toEqual([
       "proposed",
@@ -508,8 +555,9 @@ describe("bilateral meeting agreements", () => {
     ]);
     expect(expired.activity.at(-1)?.at).toBe(new Date().toISOString());
     expect(
-      service.list(a.account.id).find((meeting) => meeting.id === fresh.id)
-        ?.activity,
+      (await service.list(a.account.id)).find(
+        (meeting) => meeting.id === fresh.id,
+      )?.activity,
     ).toEqual(expired.activity);
   });
 
@@ -531,8 +579,12 @@ describe("bilateral meeting agreements", () => {
         },
       ],
     };
-    store.save(a.token, { context, baseRevision: 1, requestId: randomUUID() });
-    const pending = propose();
+    await store.save(a.token, {
+      context,
+      baseRevision: 1,
+      requestId: randomUUID(),
+    });
+    const pending = await propose();
     await expect(
       service.optIn(a.account.id, {
         meetingId: pending.id,
@@ -560,19 +612,21 @@ describe("bilateral meeting agreements", () => {
     });
     expect(value.approvedUserIds).toEqual([b.account.id]);
     expect(value.status).toBe("options_ready");
-    value = service.withdraw(a.account.id, {
+    value = await service.withdraw(a.account.id, {
       meetingId: value.id,
       revision: value.revision,
     });
     expect(value.status).toBe("withdrawn");
     expect(value.approvedUserIds).toEqual([]);
-    expect(() => service.exportICS(b.account.id, value.id)).toThrowError(
+    await expect(
+      service.exportICS(b.account.id, value.id),
+    ).rejects.toThrowError(
       expect.objectContaining({ code: "approval_required" }),
     );
   });
 
   it("escapes ICS content so user text cannot inject properties", async () => {
-    let value = propose(
+    let value = await propose(
       "Discuss engineering\nATTENDEE:mailto:outsider@example.test",
     );
     value = await service.optIn(a.account.id, {
@@ -586,7 +640,7 @@ describe("bilateral meeting agreements", () => {
       manualSlots: manual,
     });
     value = await approveBoth(value);
-    const ics = service.exportICS(a.account.id, value.id);
+    const ics = await service.exportICS(a.account.id, value.id);
     expect(ics.split("\r\n").some((line) => line.startsWith("ATTENDEE:"))).toBe(
       false,
     );
@@ -597,7 +651,7 @@ describe("bilateral meeting agreements", () => {
   });
 
   it("uses SF time after daylight saving and returns no options for incompatible manual availability", async () => {
-    let value = propose();
+    let value = await propose();
     const later = [manualMeetingSlot("2026-11-02", "09:00", "10:00")];
     value = await service.optIn(a.account.id, {
       meetingId: value.id,
@@ -611,7 +665,7 @@ describe("bilateral meeting agreements", () => {
     });
     expect(value.options[0].start).toBe("2026-11-02T17:00:00.000Z");
     expect(() => manualMeetingSlot("2026-11-01", "01:00", "02:00")).toThrow();
-    let other = propose();
+    let other = await propose();
     other = await service.optIn(a.account.id, {
       meetingId: other.id,
       revision: other.revision,
@@ -656,16 +710,62 @@ describe("bilateral meeting agreements", () => {
       expect.objectContaining({ code: "availability_changed" }),
     );
     expect(
-      service.list(a.account.id).find((meeting) => meeting.id === second.id)
-        ?.status,
+      (await service.list(a.account.id)).find(
+        (meeting) => meeting.id === second.id,
+      )?.status,
     ).toBe("awaiting_permission");
+  });
+  it("serializes final approvals from independent clients so overlapping meetings cannot both confirm", async () => {
+    let first = await options();
+    let second = await options();
+    first = await service.approve(a.account.id, {
+      meetingId: first.id,
+      revision: first.revision,
+      optionId: first.options[0].id,
+    });
+    second = await service.approve(a.account.id, {
+      meetingId: second.id,
+      revision: second.revision,
+      optionId: second.options[0].id,
+    });
+    const other = new ContextStore(dbPath);
+    const otherService = new MeetingService(other);
+    try {
+      const outcomes = await Promise.allSettled([
+        service.approve(b.account.id, {
+          meetingId: first.id,
+          revision: first.revision,
+          optionId: first.options[0].id,
+        }),
+        otherService.approve(b.account.id, {
+          meetingId: second.id,
+          revision: second.revision,
+          optionId: second.options[0].id,
+        }),
+      ]);
+      expect(
+        outcomes.filter((result) => result.status === "fulfilled"),
+      ).toHaveLength(1);
+      expect(
+        outcomes.find((result) => result.status === "rejected"),
+      ).toMatchObject({
+        status: "rejected",
+        reason: { code: "availability_changed" },
+      });
+      const meetings = await service.list(a.account.id);
+      expect(
+        meetings.filter((meeting) => meeting.status === "confirmed"),
+      ).toHaveLength(1);
+    } finally {
+      other.close();
+    }
   });
 });
 
 describe("fresh calendar coordination", () => {
   it("resumes the final fresh check after a restart between saving both approvals and confirmation", async () => {
-    connectCalendar(a);
-    connectCalendar(b);
+    await connectCalendar(a);
+    await connectCalendar(b);
     const fetch = vi.fn(async (_url: string, init: RequestInit) =>
       calendarReply(init),
     );
@@ -678,13 +778,13 @@ describe("fresh calendar coordination", () => {
       optionId,
     });
     // Recreate the durable checkpoint immediately after the second approval was saved.
-    const row = store.network.db
+    const row = (await store.network.db
       .prepare("SELECT state_json FROM meetings WHERE id = ?")
-      .get(value.id) as { state_json: string };
+      .get(value.id)) as { state_json: string };
     const saved = JSON.parse(row.state_json);
     saved.approvals[b.account.id] = optionId;
     saved.revision++;
-    store.network.db
+    await store.network.db
       .prepare("UPDATE meetings SET revision = ?, state_json = ? WHERE id = ?")
       .run(saved.revision, JSON.stringify(saved), value.id);
     store.close();
@@ -697,14 +797,14 @@ describe("fresh calendar coordination", () => {
     });
     expect(value.status).toBe("confirmed");
     expect(fetch).toHaveBeenCalledTimes(4);
-    expect(service.exportICS(a.account.id, value.id)).toContain(
+    expect(await service.exportICS(a.account.id, value.id)).toContain(
       `UID:${value.id}@sidekick.local`,
     );
   });
 
   it("reads both connected calendars, hides busy intervals, and rechecks before confirmation", async () => {
-    connectCalendar(a, true);
-    connectCalendar(b);
+    await connectCalendar(a, true);
+    await connectCalendar(b);
     const busy = [manualMeetingSlot("2026-10-26", "09:00", "10:00")];
     const fetch = vi.fn(async (url: string, init: RequestInit) =>
       url.includes("/token")
@@ -726,17 +826,17 @@ describe("fresh calendar coordination", () => {
     value = await approveBoth(value);
     expect(value.status).toBe("confirmed");
     expect(fetch).toHaveBeenCalledTimes(5);
-    expect(store.readCalendar(a.token).revision).toBe(2);
+    expect((await store.readCalendar(a.token)).revision).toBe(2);
   });
 
   it("fails closed on provider errors and prohibits silently replacing a connected calendar with manual times", async () => {
-    connectCalendar(a);
-    connectCalendar(b);
+    await connectCalendar(a);
+    await connectCalendar(b);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => response({ error: "provider_failed" }, 503)),
     );
-    let value = propose();
+    let value = await propose();
     await expect(
       service.optIn(a.account.id, {
         meetingId: value.id,
@@ -758,7 +858,7 @@ describe("fresh calendar coordination", () => {
     ).rejects.toThrowError(
       expect.objectContaining({ code: "calendar_unavailable" }),
     );
-    value = service.list(a.account.id)[0];
+    value = (await service.list(a.account.id))[0];
     expect(value.options).toEqual([]);
     expect(value.calendarStatus).toBe("not_ready");
     expect(value.error).toContain("could not be checked");
@@ -776,24 +876,22 @@ describe("fresh calendar coordination", () => {
         revision: value.revision,
       }),
     ).rejects.toMatchObject({ code: "calendar_unavailable" });
-    expect(service.list(a.account.id)[0].activity).toEqual(history);
+    expect((await service.list(a.account.id))[0].activity).toEqual(history);
   });
 
   it("rejects a calendar disconnected during an in-flight check", async () => {
-    connectCalendar(a);
-    connectCalendar(b);
+    await connectCalendar(a);
+    await connectCalendar(b);
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url: string, init: RequestInit) => {
-        await gate;
-        return calendarReply(init);
-      }),
-    );
-    let value = propose();
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      await gate;
+      return calendarReply(init);
+    });
+    vi.stubGlobal("fetch", fetch);
+    let value = await propose();
     value = await service.optIn(a.account.id, {
       meetingId: value.id,
       revision: value.revision,
@@ -802,17 +900,54 @@ describe("fresh calendar coordination", () => {
       meetingId: value.id,
       revision: value.revision,
     });
-    store.writeCalendar(a.token, 1, null);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    await store.writeCalendar(a.token, 1, null);
     release();
     await expect(pending).rejects.toThrowError(
       expect.objectContaining({ code: "availability_changed" }),
     );
-    expect(service.list(a.account.id)[0].options).toEqual([]);
+    expect((await service.list(a.account.id))[0].options).toEqual([]);
+  });
+
+  it("rejects a relationship revoked by another client while calendars are being checked", async () => {
+    await connectCalendar(a);
+    await connectCalendar(b);
+    const other = new ContextStore(dbPath);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      await gate;
+      return calendarReply(init);
+    });
+    vi.stubGlobal("fetch", fetch);
+    try {
+      let value = await propose();
+      value = await service.optIn(a.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      });
+      const pending = service.optIn(b.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      });
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+      await other.network.connectionAction(b.account.id, a.account.id, "block");
+      release();
+      await expect(pending).rejects.toMatchObject({ code: "not_connected" });
+      const saved = (await service.list(a.account.id))[0];
+      expect(saved.status).toBe("stale");
+      expect(saved.options).toEqual([]);
+    } finally {
+      release();
+      other.close();
+    }
   });
 
   it("rejects a newly occupied slot before the second approval takes effect", async () => {
-    connectCalendar(a);
-    connectCalendar(b);
+    await connectCalendar(a);
+    await connectCalendar(b);
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: string, init: RequestInit) => calendarReply(init)),
@@ -839,7 +974,7 @@ describe("fresh calendar coordination", () => {
     ).rejects.toThrowError(
       expect.objectContaining({ code: "availability_changed" }),
     );
-    value = service.list(a.account.id)[0];
+    value = (await service.list(a.account.id))[0];
     expect(value.approvedUserIds).toEqual([]);
     expect(value.status).toBe("awaiting_permission");
   });
