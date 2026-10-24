@@ -22,6 +22,7 @@ import {
 import {
   googleBusy,
   googleCalendarConfig,
+  googleCalendars,
   type GoogleTokens,
 } from "../src/lib/server/google-calendar";
 import { ContextStore } from "../src/lib/server/store";
@@ -106,6 +107,44 @@ afterEach(() => {
 });
 
 describe("calendar credentials and OAuth", () => {
+  it.each([
+    { errors: [{ reason: "accessNotConfigured" }] },
+    {
+      details: [
+        {
+          "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+          reason: "SERVICE_DISABLED",
+        },
+      ],
+    },
+  ])(
+    "distinguishes a disabled Calendar API from missing user permissions: %j",
+    async (error) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => reply({ error }, 403)),
+      );
+      await expect(
+        googleCalendars("test-access", AbortSignal.timeout(1000)),
+      ).rejects.toThrow("api_disabled");
+    },
+  );
+
+  it("still requires reconnection when Google denies calendar permission", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        reply(
+          { error: { errors: [{ reason: "insufficientPermissions" }] } },
+          403,
+        ),
+      ),
+    );
+    await expect(
+      googleCalendars("test-access", AbortSignal.timeout(1000)),
+    ).rejects.toThrow("missing_permissions");
+  });
+
   it("encrypts tokens for one owner and rejects tampering", () => {
     const encrypted = sealCalendarData(tokens, "owner");
     expect(encrypted).not.toContain(tokens.refreshToken);

@@ -64,11 +64,15 @@ All personal API routes require an authenticated account, independently of page 
 4. Set `TOKEN_ENCRYPTION_KEY` once to 32 random bytes encoded as 64 hexadecimal characters. For example: `node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))'`. Keep it private and stable; losing or changing it requires reconnection.
 5. Restart the server, open onboarding, and choose **Connect Google Calendar**. Complete Google's consent screen yourself. The account appears first; availability is checked when valid trip dates are present.
 
+If Google blocks sign-in while the app is in testing, add the selected Google account under **Google Auth Platform → Audience → Test users**. If consent succeeds but the Calendar API is disabled, enable `calendar-json.googleapis.com` in the same project as the OAuth client. The app distinguishes this setup error from missing user-granted permissions.
+
 Requested scopes are `openid`, `email`, `calendar.events.freebusy`, and `calendar.calendarlist.readonly` (calendar scopes use the `https://www.googleapis.com/auth/` prefix). Calendar names and occupied intervals are read; event titles, descriptions, and attendees are not fetched or sent to OpenAI. See Google's [web OAuth flow](https://developers.google.com/identity/protocols/oauth2/web-server), [Calendar scopes](https://developers.google.com/workspace/calendar/api/auth), and [free/busy contract](https://developers.google.com/workspace/calendar/api/v3/reference/freebusy/query).
 
 Access/refresh tokens and temporary PKCE verifiers are encrypted with AES-256-GCM, bound to the session owner. OAuth state is session-bound, single-use, and expires after ten minutes. Successful connection rotates the browser session and preserves its profile and chat. Refresh tokens renew expired access; revoked access requires reconnection. Disconnect immediately deletes local tokens and availability, then attempts Google revocation. If that cannot be verified, the UI says so. Personal responses are never shared-cacheable.
 
-For deployment, use HTTPS, update the registered redirect and environment value, retain the encryption key and SQLite disk, and complete any Google consent-screen verification required for your audience and scopes. Google authorization and real-account availability remain unverified until the user completes a live connection; automated checks use labeled fixtures.
+For deployment, use HTTPS, update the registered redirect and environment value, retain the encryption key and SQLite disk, and complete any Google consent-screen verification required for your audience and scopes. While the OAuth app is in testing, Google authorizations and refresh tokens expire after seven days; see [Google's audience rules](https://support.google.com/cloud/answer/15549945?hl=en).
+
+Live Google authorization and availability retrieval were verified with one account on October 24, 2026. The app's primary-calendar result matched an independent Google free/busy check, including the SF daylight-saving boundary, and survived manual refresh and reload. That live date range had no busy blocks; occupied intervals and provider failures remain covered by the automated fixtures. Private account details and calendar results are kept out of the repository.
 
 ## Verification
 

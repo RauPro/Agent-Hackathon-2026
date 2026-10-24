@@ -16,6 +16,7 @@ export class CalendarError extends Error {
       | "invalid_state"
       | "denied"
       | "missing_permissions"
+      | "api_disabled"
       | "needs_reconnect"
       | "sync_failed"
       | "calendar_unavailable"
@@ -146,7 +147,27 @@ async function googleJson(url: string, init: RequestInit, signal: AbortSignal) {
     const code = (body as { error?: unknown })?.error;
     if (response.status === 401 || code === "invalid_grant")
       throw new CalendarError("needs_reconnect");
-    if (response.status === 403) throw new CalendarError("missing_permissions");
+    if (response.status === 403) {
+      const details = z
+        .object({
+          errors: z.array(z.object({ reason: z.string() })).optional(),
+          details: z
+            .array(z.object({ reason: z.string().optional() }).passthrough())
+            .optional(),
+        })
+        .safeParse(code);
+      if (
+        details.success &&
+        (details.data.errors?.some(
+          (item) => item.reason === "accessNotConfigured",
+        ) ||
+          details.data.details?.some(
+            (item) => item.reason === "SERVICE_DISABLED",
+          ))
+      )
+        throw new CalendarError("api_disabled");
+      throw new CalendarError("missing_permissions");
+    }
     throw new CalendarError("sync_failed");
   }
   return body;
