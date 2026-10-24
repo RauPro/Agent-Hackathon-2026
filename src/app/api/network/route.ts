@@ -1,0 +1,130 @@
+import { after, NextRequest } from "next/server";
+import { z } from "zod";
+import {
+  networkSettingsSchema,
+  connectionRequestSchema,
+  informationRequestSchema,
+  informationAnswerSchema,
+} from "@/lib/domain/network";
+import { networkEventSchema } from "@/lib/domain/discovery";
+import { DiscoveryService } from "@/lib/server/discovery-service";
+import { MeetingService } from "@/lib/server/meeting-service";
+import { getStore } from "@/lib/server/store";
+import { json } from "@/lib/server/http";
+import {
+  networkAccount,
+  networkBody,
+  networkFailure,
+} from "@/lib/server/network-http";
+import { drainNetworkWork } from "@/lib/server/network-worker";
+import { networkDemoEnabled } from "@/lib/server/demo-mode";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+const actionSchema = z.discriminatedUnion("action", [
+  z
+    .object({ action: z.literal("settings"), settings: networkSettingsSchema })
+    .strict(),
+  z.object({ action: z.literal("rotate_qr") }).strict(),
+  connectionRequestSchema.extend({
+    action: z.literal("connect"),
+    toUserId: z.uuid(),
+  }),
+  z
+    .object({
+      action: z.literal("connection"),
+      toUserId: z.uuid(),
+      decision: z.enum(["accept", "decline", "remove", "block", "unblock"]),
+    })
+    .strict(),
+  informationRequestSchema.extend({ action: z.literal("query") }),
+  informationAnswerSchema.safeExtend({ action: z.literal("answer") }),
+  z.object({ action: z.literal("dismiss"), opportunityId: z.uuid() }).strict(),
+  z.object({ action: z.literal("event"), event: networkEventSchema }).strict(),
+  z.object({ action: z.literal("remove_event"), eventId: z.uuid() }).strict(),
+]);
+export async function GET(request: NextRequest) {
+  try {
+    const account = networkAccount(request),
+      store = getStore();
+    const qr = request.nextUrl.searchParams.get("qr");
+    if (qr) return json({ person: store.network.resolveQr(account.id, qr) });
+    const discovery = new DiscoveryService(store.network);
+    after(() => {
+      try {
+        drainNetworkWork();
+      } catch {
+        console.error("network_jobs_pending_retry");
+      }
+    });
+    return json({
+      accountId: account.id,
+      settings: store.network.settings(account.id),
+      connections: store.network.connections(account.id),
+      messages: store.network.messages(account.id),
+      opportunities: discovery.opportunities(account.id),
+      events: discovery.events(account.id),
+      meetings: new MeetingService(store).list(account.id),
+      demo: networkDemoEnabled(),
+    });
+  } catch (error) {
+    return networkFailure(error);
+  }
+}
+export async function POST(request: NextRequest) {
+  try {
+    const account = networkAccount(request);
+    const input = actionSchema.parse(await networkBody(request));
+    const store = getStore(),
+      network = store.network,
+      discovery = new DiscoveryService(network);
+    switch (input.action) {
+      case "settings":
+        network.saveSettings(account.id, input.settings);
+        break;
+      case "rotate_qr":
+        network.rotateQr(account.id);
+        break;
+      case "connect": {
+        const { action: _, toUserId, ...payload } = input;
+        void _;
+        network.requestConnection(account.id, toUserId, payload);
+        break;
+      }
+      case "connection":
+        network.connectionAction(account.id, input.toUserId, input.decision);
+        break;
+      case "query": {
+        const { action: _, ...payload } = input;
+        void _;
+        network.requestInformation(account.id, payload);
+        break;
+      }
+      case "answer": {
+        const { action: _, ...payload } = input;
+        void _;
+        network.answerInformation(account.id, payload);
+        break;
+      }
+      case "dismiss":
+        discovery.dismiss(account.id, input.opportunityId);
+        break;
+      case "event":
+        discovery.saveEvent(account.id, input.event);
+        break;
+      case "remove_event":
+        discovery.removeEvent(account.id, input.eventId);
+        break;
+    }
+    after(() => {
+      try {
+        drainNetworkWork();
+      } catch {
+        console.error("network_jobs_pending_retry");
+      }
+    });
+    return json({ ok: true });
+  } catch (error) {
+    return networkFailure(error);
+  }
+}
