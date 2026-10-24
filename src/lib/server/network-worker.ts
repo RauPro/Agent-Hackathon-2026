@@ -2,6 +2,7 @@ import { Temporal } from "@js-temporal/polyfill";
 import { DiscoveryService } from "./discovery-service";
 import { getStore } from "./store";
 import type { NetworkStore } from "./network-store";
+import { AgentDialogueService } from "./agent-dialogue-service";
 
 const globalNetwork = globalThis as typeof globalThis & {
   sidekickNetworkTimer?: ReturnType<typeof setInterval>;
@@ -38,7 +39,11 @@ export async function enqueueDailyNetworkWork(network: NetworkStore) {
 export async function drainNetworkWork() {
   const network = getStore().network;
   await enqueueDailyNetworkWork(network);
-  return new DiscoveryService(network).drain();
+  const comparisons = await new DiscoveryService(network).drain();
+  // Two bounded model turns fit alongside discovery inside the function budget.
+  // The persisted pair state and leases resume the conversation on later ticks.
+  const turns = await new AgentDialogueService(network).drain(2);
+  return comparisons + turns;
 }
 
 export function startNetworkWorker() {

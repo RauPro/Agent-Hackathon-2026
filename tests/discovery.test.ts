@@ -10,6 +10,7 @@ import {
   startNetworkWorker,
 } from "../src/lib/server/network-worker";
 import { DiscoveryService } from "../src/lib/server/discovery-service";
+import { AgentDialogueService } from "../src/lib/server/agent-dialogue-service";
 import type { NetworkStore } from "../src/lib/server/network-store";
 import type { NetworkSettingsInput } from "../src/lib/domain/network";
 import type { NetworkEventInput } from "../src/lib/domain/discovery";
@@ -367,31 +368,34 @@ describe("proactive discovery with authorized context", () => {
     });
     expect(await discovery.opportunities(a.id)).toEqual([]);
   });
-  it("persists one authorized agent query for a connected match and only creates another for changed context", async () => {
+  it("queues one connected dialogue round and reconciles changed shared context without sending discovery messages", async () => {
     await discoverable(a);
     await discoverable(b);
     await connect();
     await drainAll();
-    const initial = await network.messages(a.id);
+    const dialogues = new AgentDialogueService(network);
+    const initial = await dialogues.list(a.id);
     expect(initial).toHaveLength(1);
     expect(initial[0]).toMatchObject({
-      fromUserId: b.id,
-      toUserId: a.id,
-      fields: ["profile", "goal"],
-      status: "completed",
+      userId: b.id,
+      status: "queued",
+      turns: [],
     });
-    expect(initial[0].response.profile?.source).toBe("confirmed_profile");
+    expect(await network.messages(a.id)).toEqual([]);
     await network.enqueue(a.id);
     await network.enqueue(b.id);
     await drainAll();
-    expect(await network.messages(a.id)).toHaveLength(1);
+    expect(await dialogues.list(a.id)).toEqual(initial);
     await update(b, (context) => {
       context.goal.text += " The role focuses on Python systems.";
     });
     await drainAll();
-    expect(await network.messages(a.id)).toHaveLength(2);
-    expect(await network.messages(b.id)).toHaveLength(2);
-    expect(await network.messages(c.id)).toEqual([]);
+    const changed = await dialogues.list(a.id);
+    expect(changed).toHaveLength(1);
+    expect(changed[0].id).toBe(initial[0].id);
+    expect(changed[0].revision).toBeGreaterThan(initial[0].revision);
+    expect(await dialogues.list(b.id)).toHaveLength(1);
+    expect(await dialogues.list(c.id)).toEqual([]);
   });
   it("starts authorized collaboration when a previously recommended pair accepts the connection", async () => {
     await discoverable(a);
@@ -400,33 +404,37 @@ describe("proactive discovery with authorized context", () => {
     const recommendation = (await discovery.opportunities(a.id))[0];
     expect(recommendation.connected).toBe(false);
     expect(await network.messages(a.id)).toEqual([]);
+    const dialogues = new AgentDialogueService(network);
+    expect(await dialogues.list(a.id)).toEqual([]);
     await network.requestConnection(a.id, b.id, {
       source: "opportunity",
       context: "Discuss the founding engineer opportunity.",
     });
     await drainAll();
     expect(await network.messages(a.id)).toEqual([]);
+    expect(await dialogues.list(a.id)).toEqual([]);
     await network.connectionAction(b.id, a.id, "accept");
     await drainAll();
     expect((await discovery.opportunities(a.id))[0]).toMatchObject({
       id: recommendation.id,
       connected: true,
     });
-    expect(await network.messages(a.id)).toHaveLength(1);
-    expect((await network.messages(a.id))[0]).toMatchObject({
-      type: "PROFILE_QUERY",
-      status: "completed",
+    expect(await network.messages(a.id)).toEqual([]);
+    expect((await dialogues.list(a.id))[0]).toMatchObject({
+      status: "queued",
+      turns: [],
     });
     await network.enqueue(a.id);
     await drainAll();
-    expect(await network.messages(a.id)).toHaveLength(1);
+    expect(await dialogues.list(a.id)).toHaveLength(1);
   });
   it("does not create agent messages or change opportunity signatures when only private commitments change", async () => {
     await discoverable(a);
     await discoverable(b);
     await connect();
     await drainAll();
-    const initialMessage = (await network.messages(a.id))[0];
+    const dialogues = new AgentDialogueService(network);
+    const initialRound = (await dialogues.list(a.id))[0];
     const opportunity = (await discovery.opportunities(a.id))[0];
     const signature = (
       (await network.db
@@ -450,8 +458,8 @@ describe("proactive discovery with authorized context", () => {
     });
     expect((await queued()).map((job) => job.user_id)).toEqual([a.id]);
     await drainAll();
-    expect(await network.messages(a.id)).toHaveLength(1);
-    expect((await network.messages(a.id))[0].id).toBe(initialMessage.id);
+    expect(await network.messages(a.id)).toEqual([]);
+    expect((await dialogues.list(a.id))[0]).toEqual(initialRound);
     expect(
       (
         (await network.db
@@ -733,10 +741,10 @@ describe("proactive discovery with authorized context", () => {
       expect(result.sort()).toEqual([0, 1]);
       await drainAll();
       expect(await opportunityCount()).toBe(1);
-      expect(await secondStore.network.messages(a.id)).toHaveLength(1);
+      expect(await new AgentDialogueService(secondStore.network).list(a.id)).toHaveLength(1);
       await secondStore.network.enqueue(b.id);
       await secondDiscovery.drain();
-      expect(await network.messages(a.id)).toHaveLength(1);
+      expect(await new AgentDialogueService(network).list(a.id)).toHaveLength(1);
     } finally {
       secondStore.close();
     }

@@ -10,6 +10,7 @@ import {
 import type { SharedEvent } from "../domain/network";
 import { NetworkError, NetworkStore } from "./network-store";
 import { networkDemoEnabled } from "./demo-mode";
+import { AgentDialogueService } from "./agent-dialogue-service";
 const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function canonicalEventUrl(value: string) {
@@ -162,6 +163,10 @@ export class DiscoveryService {
   }
   private async processPair(ownerId: string, peerId: string) {
     const [a, b] = [ownerId, peerId].sort();
+    // Conversation belongs to accepted connections, independently of ranking.
+    // Discovery before acceptance produces proposals only.
+    if (await this.network.isConnected(a, b))
+      await new AgentDialogueService(this.network).syncPair(a, b);
     const match = await this.match(a, b);
     if (!match) return; // Reads revalidate current eligibility, so stale records never leak.
     const signature = hash([
@@ -169,11 +174,6 @@ export class DiscoveryService {
       { ...match.personB, revision: undefined },
       await this.network.relationshipRevision(a, b),
     ]);
-    const prior = (await this.network.db
-      .prepare(
-        "SELECT * FROM network_opportunities WHERE user_a=? AND user_b=?",
-      )
-      .get(a, b)) as OpportunityRow | undefined;
     const now = new Date().toISOString();
     await this.network.db
       .prepare(
@@ -182,35 +182,6 @@ export class DiscoveryService {
             signature=excluded.signature, updated_at=CASE WHEN signature != excluded.signature THEN excluded.updated_at ELSE updated_at END`,
       )
       .run(randomUUID(), a, b, signature, now, now);
-    if (
-      match.connected &&
-      prior?.signature !== signature &&
-      !prior?.dismissed_a &&
-      !prior?.dismissed_b
-    ) {
-      // A connection and field visibility authorize this bounded collaboration.
-      // No new contact or scheduling action is performed by the worker.
-      const sender = match.personB.goal?.type === "hiring" ? b : a;
-      const recipient = sender === a ? b : a;
-      const digest = hash([a, b, signature]);
-      const requestId = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-      try {
-        await this.network.requestInformation(
-          sender,
-          {
-            toUserId: recipient,
-            requestId,
-            fields: ["profile", "goal"],
-            purpose:
-              "Sidekick found a relevant opportunity between your connected profiles. Check the shared professional context.",
-          },
-          { trigger: "discovery" },
-        );
-      } catch (error) {
-        if (!(error instanceof NetworkError) || error.code !== "rate_limit")
-          throw error;
-      }
-    }
   }
 
   /** Resume a few peer comparisons per invocation. Only one pair occupies a transaction. */
