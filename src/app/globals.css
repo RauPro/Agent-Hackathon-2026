@@ -240,6 +240,7 @@ h1 {
   padding: 24px 0 calc(22px + env(safe-area-inset-bottom));
 }
 .composer-wrap.reviewing,
+.composer-wrap.voice-active,
 .conversation-column:has(.event-section) .composer-wrap,
 .conversation-column:has(.calendar-options[open]) .composer-wrap,
 .mobile-profile[open] + .composer-wrap {
@@ -293,6 +294,46 @@ h1 {
 .send-button:disabled {
   opacity: 0.45;
 }
+.voice-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-right: auto;
+  min-width: 0;
+}
+.voice-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+}
+.voice-button:disabled { opacity: 0.45; }
+.voice-button.recording { border-color: var(--ink); }
+.recording-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: currentColor;
+}
+.voice-feedback {
+  margin: 10px 2px 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.voice-feedback p { margin: 0; }
+.voice-feedback.error { color: var(--danger); }
+.voice-recovery { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .composer-hint {
   display: flex;
   justify-content: space-between;

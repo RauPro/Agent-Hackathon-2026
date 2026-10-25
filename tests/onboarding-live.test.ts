@@ -112,6 +112,17 @@ describe.skipIf(!enabled)("live onboarding conversation regressions", () => {
     chat.draft = first.draft;
     chat.profileGaps = first.profileGaps;
     chat.messages.push({ id: "follow-up", role: "assistant", content: first.reply });
+    const repeated = await completeOnboarding(chat, "I'm not sure. Anything in tech, I guess.");
+    expect(repeated.profileGaps.length).toBeGreaterThan(0);
+    expect(validateDraft(repeated.draft, repeated.profileGaps).success).toBe(false);
+    expect(repeated.reply).toContain("?");
+    expect(repeated.reply).not.toBe(first.reply);
+    chat.draft = repeated.draft;
+    chat.profileGaps = repeated.profileGaps;
+    chat.messages.push(
+      { id: "still-vague", role: "user", content: "I'm not sure. Anything in tech, I guess." },
+      { id: "narrower-follow-up", role: "assistant", content: repeated.reply },
+    );
     await check("specific follow-up after generic profile", chat,
       "I build BIM coordination tools for architects. I can review Revit plugins. I want to meet architecture firm owners to find two pilot customers for my clash detection tool. No additional commitments.",
       (result) => {

@@ -8,7 +8,7 @@ const server = createServer(async (request, response) => {
     response.end("{}");
     return;
   }
-  if (request.url !== "/v1/responses" || request.method !== "POST") {
+  if (!["/v1/responses", "/v1/audio/transcriptions"].includes(request.url) || request.method !== "POST") {
     response.writeHead(404);
     response.end("{}");
     return;
@@ -18,8 +18,20 @@ const server = createServer(async (request, response) => {
     response.end("{}");
     return;
   }
-  let data = "";
-  for await (const chunk of request) data += chunk;
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  const data = Buffer.concat(chunks);
+  if (request.url === "/v1/audio/transcriptions") {
+    const form = await new Response(data, { headers: { "Content-Type": request.headers["content-type"] } }).formData();
+    const audio = form.get("file");
+    if (!(audio instanceof File) || !audio.size || form.get("model") !== "gpt-transcribe") {
+      response.writeHead(400);
+      response.end(JSON.stringify({ error: { message: "Invalid transcription request fixture" } }));
+    } else {
+      response.end(JSON.stringify({ text: "I'm Alex Rivera, a product engineer building TypeScript agents in production. I'm in SF from October 24 to November 5, 2026, looking for a founding engineer role on a small team. I can review TypeScript agent evaluation pipelines." }));
+    }
+    return;
+  }
   const body = JSON.parse(data);
   if (body.text?.format?.name === "agent_dialogue_reply") {
     const input = JSON.parse(body.input[0].content);

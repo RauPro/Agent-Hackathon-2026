@@ -19,6 +19,7 @@ import { AppHeader } from "./app-header";
 import { ChatAgentPanel, useAgentPanel } from "./chat-agent-panel";
 import "@/app/chat-workspace.css";
 import { EventRecommendations } from "./event-recommendations";
+import { useVoiceInput } from "./use-voice-input";
 import type { Account } from "@/lib/domain/auth";
 
 export function Onboarding({ account }: { account: Account }) {
@@ -38,6 +39,19 @@ export function Onboarding({ account }: { account: Account }) {
   const lastMessage = useRef<HTMLDivElement>(null);
   const inFlight = useRef(false);
   const retry = useRef<{ signature: string; requestId: string } | null>(null);
+  const voice = useVoiceInput(account.id, (transcript) => {
+    const previous = composer.current?.value ?? input;
+    const value = previous ? `${previous.trimEnd()}\n${transcript}` : transcript;
+    setInput(value);
+    preserveInput(value);
+    requestAnimationFrame(() => composer.current?.focus());
+  });
+
+  useEffect(() => {
+    if (!composer.current) return;
+    composer.current.style.height = "auto";
+    composer.current.style.height = `${Math.min(composer.current.scrollHeight, 160)}px`;
+  }, [input]);
 
   const acceptState = useCallback(
     (state: { chat: ChatState; configured: boolean; account: Account }) => {
@@ -121,8 +135,9 @@ export function Onboarding({ account }: { account: Account }) {
     if (
       !chat ||
       inFlight.current ||
+      voice.busy ||
       (action === "message" &&
-        (!input.trim() || !configured || problem === "chat_limit"))
+        (!input.trim() || input.length > 3000 || !configured || problem === "chat_limit"))
     )
       return;
     const payload =
@@ -168,6 +183,7 @@ export function Onboarding({ account }: { account: Account }) {
       if (action === "message") {
         setInput("");
         preserveInput("");
+        voice.reset();
         if (composer.current) composer.current.style.height = "auto";
       }
       if (action === "confirm") setShowReview(false);
@@ -200,7 +216,7 @@ export function Onboarding({ account }: { account: Account }) {
       <a className="skip-link" href="#conversation">
         Skip to conversation
       </a>
-      <AppHeader account={account} active="chat" disabled={!!busy} />
+      <AppHeader account={account} active="chat" disabled={!!busy || voice.busy} />
       <main className="chat-layout chat-workspace" data-agents-open={agents.open}>
         <section
           className="conversation-column"
@@ -241,7 +257,7 @@ export function Onboarding({ account }: { account: Account }) {
               <CalendarConnect
                 accountId={account.id}
                 chatRevision={chat.revision}
-                disabled={!!busy}
+                disabled={!!busy || voice.busy}
                 beforeConnect={() => preserveInput(input)}
               />
               <div
@@ -326,7 +342,7 @@ export function Onboarding({ account }: { account: Account }) {
                       <ProfilePreview chat={chat} />
                       <button
                         className="primary-button"
-                        disabled={!!busy || blocked}
+                        disabled={!!busy || voice.busy || blocked}
                         type="button"
                         onClick={() => void act("confirm")}
                       >
@@ -382,7 +398,7 @@ export function Onboarding({ account }: { account: Account }) {
                   <ProfilePreview chat={chat} />
                 </div>
               </details>
-              <div className={`composer-wrap${showReview ? " reviewing" : ""}`}>
+              <div className={`composer-wrap${showReview ? " reviewing" : ""}${voice.busy || voice.error || voice.status ? " voice-active" : ""}`}>
                 {!configured && (
                   <div className="connection-note">
                     <span className="connection-indicator" />
@@ -436,16 +452,44 @@ export function Onboarding({ account }: { account: Account }) {
                           event.currentTarget.form?.requestSubmit();
                       }
                     }}
-                    aria-describedby="composer-hint"
+                    aria-describedby={`composer-hint${input.length > 3000 ? " message-length-error" : ""}`}
                   />
                   <div className="composer-bottom">
+                    <div className="voice-controls">
+                      {voice.phase === "idle" && (
+                        <button
+                          className="voice-button"
+                          type="button"
+                          disabled={!configured || !!busy || blocked || problem === "chat_limit"}
+                          onClick={() => void voice.start()}
+                          aria-label="Record a voice message"
+                        >
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                            <rect x="9" y="2" width="6" height="12" rx="3" />
+                            <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
+                          </svg>
+                          Use voice
+                        </button>
+                      )}
+                      {voice.phase === "recording" && (
+                        <button className="voice-button recording" type="button" onClick={voice.stop} aria-label="Stop recording and transcribe">
+                          <span className="recording-dot" aria-hidden="true" />
+                          Stop <span aria-hidden="true">{voice.seconds}s / 60s</span>
+                        </button>
+                      )}
+                      {voice.busy && (
+                        <button className="text-button" type="button" onClick={voice.cancel} aria-label="Discard recording">Cancel</button>
+                      )}
+                    </div>
                     <button
                       className="send-button"
                       type="submit"
                       disabled={
                         !configured ||
                         !input.trim() ||
+                        input.length > 3000 ||
                         !!busy ||
+                        voice.busy ||
                         blocked ||
                         problem === "chat_limit"
                       }
@@ -467,8 +511,22 @@ export function Onboarding({ account }: { account: Account }) {
                     </button>
                   </div>
                 </form>
+                {input.length > 3000 && (
+                  <p id="message-length-error" className="voice-feedback error" role="alert">Your message is {input.length.toLocaleString()} characters. Shorten it to 3,000 before sending.</p>
+                )}
+                {(voice.error || voice.status) && (
+                  <div className={`voice-feedback${voice.error ? " error" : ""}`}>
+                    <p role={voice.error ? "alert" : "status"}>{voice.error || voice.status}</p>
+                    {voice.canRetry && (
+                      <div className="voice-recovery">
+                        <button className="text-button" type="button" disabled={!!busy || blocked} onClick={voice.retry}>Retry transcription</button>
+                        <button className="text-button" type="button" onClick={voice.cancel}>Discard recording</button>
+                      </div>
+                    )}
+                  </div>
+                )}
                 <p id="composer-hint" className="composer-hint">
-                  {configured && <span>Messages are processed by OpenAI.</span>}
+                  {configured && <span>Messages and voice recordings are processed by OpenAI.</span>}
                   <span className="keyboard-hint">
                     Shift + Enter for a new line.
                   </span>
