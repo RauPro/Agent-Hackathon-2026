@@ -58,7 +58,7 @@ describe("context persistence and ownership", () => {
         revision: 0,
         requestId: crypto.randomUUID(),
       },
-      { reply: "Let's review this.", draft: draftFromContext(validContext()) },
+      { reply: "Let's review this.", profileGaps: [], draft: draftFromContext(validContext()) },
     );
     store.close();
     store = new ContextStore(join(folder, "context.sqlite"));

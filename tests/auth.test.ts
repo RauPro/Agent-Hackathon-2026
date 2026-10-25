@@ -72,7 +72,7 @@ describe("email accounts", () => {
         message: "My profile",
         requestId: randomUUID(),
       },
-      { reply: "Ready to review.", draft: draftFromContext(validContext()) },
+      { reply: "Ready to review.", profileGaps: [], draft: draftFromContext(validContext()) },
     );
     await store.commitChat(previous, {
       action: "confirm",

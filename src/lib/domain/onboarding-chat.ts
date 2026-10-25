@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { basicProfileGaps, PROFILE_FIELDS, PROFILE_QUESTIONS, type ProfileField } from "./profile-quality";
 import {
   contextSchema,
   emptyContext,
@@ -64,12 +65,15 @@ export const modelReplySchema = z
   // Extract the latest facts before composing the next question.
   .object({
     draft: draftSchema,
+    profileGaps: z.array(z.enum(PROFILE_FIELDS)).max(3).describe(
+      "Fields still missing useful specifics, evaluated from the updated draft and user-stated facts. bio needs a concrete skill, project, domain or responsibility; offers needs a specific contribution grounded in experience; goalText needs a target person/team/problem and desired outcome. Generic or uncertain answers remain gaps even when long. Empty array only when all three are specific enough."
+    ),
     reply: z
       .string()
       .min(1)
       .max(1200)
       .describe(
-        "A short English reply based on the updated draft. Ask only for missing information: if name is populated, do not ask for the name again. Never request technical date formats or manual availability. If required fields and commitments are answered, invite profile review without another question.",
+        "A short English reply based on the updated draft. Ask one focused question about missing or vague information, using the user's context. If name is populated, do not ask for it again. Never request technical date formats or manual availability. Invite review only when required fields are valid and profileGaps is empty.",
       ),
   })
   .strict();
@@ -85,6 +89,8 @@ export type ChatState = {
   baseRevision: number;
   confirmed: boolean;
   draft: ProfileDraft;
+  // Optional for conversations saved before profile quality checks were introduced.
+  profileGaps?: ProfileField[];
   messages: ChatMessage[];
 };
 
@@ -118,8 +124,33 @@ export function draftFromContext(context: UserContext | null): ProfileDraft {
   };
 }
 
-export function validateDraft(draft: ProfileDraft) {
-  return contextSchema.safeParse({
+export function profileGaps(draft: ProfileDraft, assessed: ProfileField[] = []) {
+  return [...new Set([...basicProfileGaps(draft), ...assessed])];
+}
+
+export function guardProfileReply(reply: ModelReply): ModelReply {
+  const gaps = profileGaps(reply.draft, reply.profileGaps);
+  const needsName = !reply.draft.name.trim() && reply.draft.goalType && !gaps.includes("goalText");
+  return {
+    ...reply,
+    profileGaps: gaps,
+    // A provider cannot invite confirmation while a required detail is vague.
+    reply: needsName ? "What's your full name?" : gaps.length && !reply.reply.includes("?")
+      ? PROFILE_QUESTIONS[gaps[0]]
+      : reply.reply,
+  };
+}
+
+export function validateDraft(draft: ProfileDraft, assessed: ProfileField[] = []) {
+  return contextSchema.superRefine((_value, ctx) => {
+    for (const field of profileGaps(draft, assessed)) {
+      ctx.addIssue({
+        code: "custom",
+        path: field === "goalText" ? ["goal", "text"] : ["profile", field],
+        message: PROFILE_QUESTIONS[field],
+      });
+    }
+  }).safeParse({
     profile: { name: draft.name, bio: draft.bio, offers: draft.offers },
     goal: { type: draft.goalType, text: draft.goalText },
     trip: {
@@ -134,8 +165,8 @@ export function validateDraft(draft: ProfileDraft) {
   });
 }
 
-export function draftIssues(draft: ProfileDraft): string[] {
-  const result = validateDraft(draft);
+export function draftIssues(draft: ProfileDraft, assessed: ProfileField[] = []): string[] {
+  const result = validateDraft(draft, assessed);
   if (result.success) return [];
   return [
     ...new Set(

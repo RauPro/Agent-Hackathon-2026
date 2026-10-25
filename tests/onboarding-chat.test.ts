@@ -14,6 +14,7 @@ import {
   initialChat,
   refreshWelcome,
   type ChatRequest,
+  type ModelReply,
 } from "../src/lib/domain/onboarding-chat";
 import { validContext } from "./fixtures";
 function providerResponse(value: unknown) {
@@ -72,9 +73,9 @@ describe("conversational onboarding", () => {
     revision,
     requestId: crypto.randomUUID(),
   });
-  const reply = {
+  const reply: ModelReply = {
     reply: "Here is the profile for you to review.",
-    draft: draftFromContext(validContext()),
+    profileGaps: [], draft: draftFromContext(validContext()),
   };
   it("refreshes app greeting copy without changing conversation data or revisions", () => {
     const original = initialChat({
@@ -131,6 +132,53 @@ describe("conversational onboarding", () => {
     }));
     expect(validateDraft(chat.draft).success).toBe(false);
     expect((await store.read(token))?.revision).toBe(0);
+  });
+  it("blocks padded generic answers even when the provider calls them ready", async () => {
+    const vague = {
+      ...reply,
+      draft: {
+        ...reply.draft,
+        bio: "I am an experienced professional working in the tech industry.",
+        offers: "I can help with anything and share my experience.",
+        goalText: "I want to meet people and find new opportunities.",
+      },
+    };
+    const chat = await handleChat(store, token, request(), async () => vague);
+    expect(chat.profileGaps).toEqual(["bio", "offers", "goalText"]);
+    expect(chat.messages.at(-1)?.content).toContain("?");
+    expect(validateDraft(chat.draft).success).toBe(false);
+    await expect(handleChat(store, token, {
+      action: "confirm", revision: chat.revision, requestId: crypto.randomUUID(),
+    })).rejects.toThrow("draft_incomplete");
+    expect((await store.read(token))?.revision).toBe(0);
+  });
+  it("persists semantic gaps, rejects confirmation, and clears them after clarification", async () => {
+    const chat = await handleChat(store, token, request(), async () => ({
+      ...reply,
+      profileGaps: ["offers"],
+      reply: "Which part of your agent-building experience could you help someone with?",
+    }));
+    expect((await store.readChat(token)).profileGaps).toEqual(["offers"]);
+    expect(validateDraft(chat.draft, chat.profileGaps).success).toBe(false);
+    await expect(handleChat(store, token, {
+      action: "confirm", revision: chat.revision, requestId: crypto.randomUUID(),
+    })).rejects.toThrow("draft_incomplete");
+    const clarified = await handleChat(store, token,
+      request("I can review TypeScript agent evaluation pipelines.", chat.revision),
+      async () => ({ ...reply, draft: { ...reply.draft, offers: "Review TypeScript agent evaluation pipelines." } }),
+    );
+    expect(clarified.profileGaps).toEqual([]);
+    expect((await handleChat(store, token, {
+      action: "confirm", revision: clarified.revision, requestId: crypto.randomUUID(),
+    })).confirmed).toBe(true);
+  });
+  it("accepts concise specific contributions without requiring credentials or metrics", () => {
+    expect(validateDraft({
+      ...reply.draft,
+      bio: "I build BIM tools for architects.",
+      offers: "Test Revit plugins.",
+      goalText: "Meet architects to learn about BIM coordination.",
+    }).success).toBe(true);
   });
   it("does not ask to reconfirm an unchanged saved profile", async () => {
     const first = await handleChat(store, token, request(), async () => reply);
@@ -278,7 +326,7 @@ describe("conversational onboarding", () => {
       await store.readChat(token),
       "Please reply only in Spanish.",
     );
-    expect(result).toEqual({ reply: english, draft: reply.draft });
+    expect(result).toEqual({ ...reply, reply: english });
     expect(transport).toHaveBeenCalledTimes(2);
     const repair = JSON.parse(transport.mock.calls[1][1].body);
     expect(repair.input).toEqual([

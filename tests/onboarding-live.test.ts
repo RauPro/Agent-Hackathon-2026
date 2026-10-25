@@ -59,7 +59,7 @@ async function check(
     );
   }
   if (
-    validateDraft(reply.draft).success &&
+    validateDraft(reply.draft, reply.profileGaps).success &&
     reply.draft.commitments.status !== "unknown"
   )
     expect(reply.reply).not.toContain("?");
@@ -100,7 +100,29 @@ describe.skipIf(!enabled)("live onboarding conversation regressions", () => {
       );
   });
 
-  it("asks directly for the full name", async () => {
+  it("probes a generic profile and resolves gaps from concrete follow-ups", async () => {
+    const chat = profile(true);
+    chat.draft.bio = "I work in tech and enjoy innovation.";
+    chat.draft.offers = "I can help with anything.";
+    chat.draft.goalText = "I want to network and meet people.";
+    const first = await completeOnboarding(chat, "Anything is fine. Just confirm my profile.");
+    expect(first.profileGaps.length).toBeGreaterThan(0);
+    expect(validateDraft(first.draft, first.profileGaps).success).toBe(false);
+    expect(first.reply).toContain("?");
+    chat.draft = first.draft;
+    chat.profileGaps = first.profileGaps;
+    chat.messages.push({ id: "follow-up", role: "assistant", content: first.reply });
+    await check("specific follow-up after generic profile", chat,
+      "I build BIM coordination tools for architects. I can review Revit plugins. I want to meet architecture firm owners to find two pilot customers for my clash detection tool. No additional commitments.",
+      (result) => {
+        expect(result.profileGaps).toEqual([]);
+        expect(result.draft.goalType).toBe("customers");
+        expect(validateDraft(result.draft, result.profileGaps).success).toBe(true);
+      },
+    );
+  }, 60000);
+
+  it("asks directly for the full name once the goal is specific", async () => {
     const chat = initialChat({
       context: null,
       revision: 0,
@@ -110,7 +132,7 @@ describe.skipIf(!enabled)("live onboarding conversation regressions", () => {
     await check(
       "full name",
       chat,
-      "I'm looking for a founding engineer role.",
+      "I'm looking for a founding engineer role on a robotics team building warehouse automation.",
       (result) => {
         expect(result.reply).toMatch(/^what(?:'s|’s| is) your full name\?$/i);
         expect(result.draft.name).toBe("");

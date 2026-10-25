@@ -125,10 +125,10 @@ it("passes fresh cached profiles in the same invocation to reach the next user n
 it("only selects confirmed registered users with future SF trips and no unsaved draft", async () => {
   const a = await account();
   const context = validContext();
-  context.goal.text = "Explore a different engineering opportunity";
+  context.goal.text = "Meet robotics teams to explore a founding engineer role";
   const chat = await store.readChat(a.token);
   await store.commitChat(a.token, { action: "message", revision: chat.revision, requestId: crypto.randomUUID(), message: "Change my goal" }, {
-    reply: "Review your updated goal.", draft: draftFromContext(context),
+    reply: "Review your updated goal.", profileGaps: [], draft: draftFromContext(context),
   });
   const anonymous = await store.ensureSession();
   await store.save(anonymous.token, { context: validContext(), baseRevision: 0, requestId: crypto.randomUUID() });
@@ -199,7 +199,7 @@ it("does not promote stale, expired or newly private draft context", async () =>
   context.goal.text = "Find collaborators for a new private project";
   const chat = await store.readChat(user.token);
   await store.commitChat(user.token, { action: "message", revision: chat.revision, requestId: crypto.randomUUID(), message: "Change my goal" }, {
-    reply: "Review the change.", draft: draftFromContext(context),
+    reply: "Review the change.", profileGaps: [], draft: draftFromContext(context),
   });
   expect(await store.eventSuggestion(user.owner, now, true)).toBeNull();
   const draft = await store.readChat(user.token);

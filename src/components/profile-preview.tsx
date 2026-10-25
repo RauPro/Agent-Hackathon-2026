@@ -1,5 +1,5 @@
 import { GOALS } from "@/lib/domain/context";
-import type { ChatState } from "@/lib/domain/onboarding-chat";
+import { profileGaps, type ChatState } from "@/lib/domain/onboarding-chat";
 
 function dateLabel(value: string) {
   if (!value) return "Not set";
@@ -16,6 +16,7 @@ function dateLabel(value: string) {
 
 export function ProfilePreview({ chat }: { chat: ChatState }) {
   const draft = chat.draft;
+  const gaps = profileGaps(draft, chat.profileGaps);
   return (
     <>
       <div className="profile-heading">
@@ -28,6 +29,7 @@ export function ProfilePreview({ chat }: { chat: ChatState }) {
       <dl className="profile-facts">
         <div>
           <dt>Goal</dt>
+          {!chat.confirmed && draft.goalText && gaps.includes("goalText") && <dd className="unknown">Needs more detail</dd>}
           <dd>
             {draft.goalText || <span className="unknown">Not provided</span>}
           </dd>
@@ -39,10 +41,12 @@ export function ProfilePreview({ chat }: { chat: ChatState }) {
         </div>
         <div>
           <dt>Experience</dt>
+          {!chat.confirmed && draft.bio && gaps.includes("bio") && <dd className="unknown">Needs more detail</dd>}
           <dd>{draft.bio || <span className="unknown">Not provided</span>}</dd>
         </div>
         <div>
           <dt>What you can offer</dt>
+          {!chat.confirmed && draft.offers && gaps.includes("offers") && <dd className="unknown">Needs more detail</dd>}
           <dd>
             {draft.offers || <span className="unknown">Not provided</span>}
           </dd>

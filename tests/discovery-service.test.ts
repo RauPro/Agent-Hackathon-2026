@@ -31,7 +31,7 @@ async function confirmed(target = token, context = validContext()) {
       message: "Synthetic profile",
       requestId: crypto.randomUUID(),
     },
-    { reply: "Review your profile.", draft: draftFromContext(context) },
+    { reply: "Review your profile.", profileGaps: [], draft: draftFromContext(context) },
   );
   return await store.commitChat(target, {
     action: "confirm",
@@ -253,7 +253,7 @@ describe("claims and durable results", () => {
         revision: chat.revision,
         requestId: crypto.randomUUID(),
       },
-      { reply: "Review the change.", draft: draftFromContext(context) },
+      { reply: "Review the change.", profileGaps: [], draft: draftFromContext(context) },
     );
     expect(
       (await discoveryStatus(store, token, discoveryNow())).draftChanged,

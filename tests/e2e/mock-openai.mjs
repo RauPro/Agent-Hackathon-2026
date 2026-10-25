@@ -151,7 +151,18 @@ const server = createServer(async (request, response) => {
     );
     return;
   }
-  if (message.includes("I'm Alex")) {
+  if (message.includes("GENERIC_PROFILE")) {
+    Object.assign(draft, {
+      name: "Alex Rivera",
+      bio: "I am an experienced professional working in the tech industry.",
+      offers: "I can help with anything and share my experience.",
+      goalType: "collaborators",
+      goalText: "I want to meet people and find new opportunities.",
+      arrival: "2026-10-24",
+      departure: "2026-11-05",
+    });
+    reply = "Your profile is ready to review.";
+  } else if (message.includes("I'm Alex")) {
     Object.assign(draft, {
       name: "Alex Rivera",
       bio: "Product engineer building TypeScript agents in production.",
@@ -199,7 +210,7 @@ const server = createServer(async (request, response) => {
           content: [
             {
               type: "output_text",
-              text: JSON.stringify({ reply, draft }),
+              text: JSON.stringify({ reply, draft, profileGaps: [] }),
               annotations: [],
             },
           ],

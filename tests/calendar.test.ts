@@ -78,7 +78,7 @@ async function draft() {
       requestId: randomUUID(),
       message: "My profile",
     },
-    { reply: "Ready to review.", draft: draftFromContext(validContext()) },
+    { reply: "Ready to review.", profileGaps: [], draft: draftFromContext(validContext()) },
   );
 }
 async function attached() {
@@ -328,7 +328,7 @@ describe("availability and completion", () => {
         requestId: randomUUID(),
         message: "Stay one more day",
       },
-      { reply: "Updated your draft.", draft: next },
+      { reply: "Updated your draft.", draft: next, profileGaps: [] },
     );
     expect((await calendarStatus(store, token)).availabilityReady).toBe(false);
   });

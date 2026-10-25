@@ -30,6 +30,23 @@ async function noOverflow(page: Page) {
   ).toBe(true);
 }
 
+test("generic profiles require clarification before review or API confirmation", async ({ page }) => {
+  await page.goto("/");
+  await send(page, "GENERIC_PROFILE: I work in tech and want to network. I can help with anything.");
+  await expect(page.getByText("What is one project or problem you have worked on, and what was your part in it?", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review profile" })).toHaveCount(0);
+  await page.reload();
+  const chat = (await (await page.request.get("/api/onboarding")).json()).chat;
+  expect(chat.profileGaps).toEqual(["bio", "offers", "goalText"]);
+  const confirm = await page.request.post("/api/onboarding", {
+    headers: { origin },
+    data: { action: "confirm", revision: chat.revision, requestId: crypto.randomUUID() },
+  });
+  expect(confirm.status()).toBe(400);
+  await send(page, intro);
+  await expect(page.getByRole("button", { name: "Review profile" })).toBeVisible();
+});
+
 test("a paragraph builds a reviewable profile; corrections remain drafts until confirmed", async ({
   page,
 }) => {

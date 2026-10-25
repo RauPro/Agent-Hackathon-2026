@@ -28,6 +28,7 @@ import {
   initialChat,
   refreshWelcome,
   modelReplySchema,
+  guardProfileReply,
   validateDraft,
   type ChatRequest,
   type ChatState,
@@ -439,14 +440,16 @@ export class ContextStore {
         const current = await this.checkChat(token, request);
         let next: ChatState;
         if (request.action === "message") {
-          const parsed = modelReplySchema.parse(reply);
+          const parsed = guardProfileReply(modelReplySchema.parse(reply));
           next = {
             ...current,
             revision: current.revision + 1,
             confirmed:
               current.confirmed &&
+              !parsed.profileGaps.length &&
               JSON.stringify(parsed.draft) === JSON.stringify(current.draft),
             draft: parsed.draft,
+            profileGaps: parsed.profileGaps,
             messages: [
               ...current.messages,
               { id: request.requestId, role: "user", content: request.message },
@@ -454,7 +457,7 @@ export class ContextStore {
             ],
           };
         } else if (request.action === "confirm") {
-          const profile = validateDraft(current.draft);
+          const profile = validateDraft(current.draft, current.profileGaps);
           if (!profile.success) throw new Error("draft_incomplete");
           const saved = await this.save(token, {
             context: profile.data,

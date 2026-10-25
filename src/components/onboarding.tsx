@@ -193,7 +193,7 @@ export function Onboarding({ account }: { account: Account }) {
     "session_missing",
     "request_reused",
   ].includes(problem);
-  const ready = chat ? validateDraft(chat.draft).success : false;
+  const ready = chat ? validateDraft(chat.draft, chat.profileGaps).success : false;
 
   return (
     <>
