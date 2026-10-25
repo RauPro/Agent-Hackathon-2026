@@ -32,7 +32,7 @@ Conversation drafts and confirmed profiles are stored separately in the database
 
 The calendar card starts a real Google OAuth flow, shows the connected account, and checks busy times. The primary calendar is included by default; users can include other calendars containing their commitments. Each selected calendar must return a successful free/busy result. Checks cover inclusive trip dates in San Francisco time and expire after five minutes. The open page rechecks on date/profile changes, focus, reconnecting to the network, and once a minute when visible. This is a foreground availability check, not background event mirroring.
 
-Personalized external event discovery runs after profile confirmation. Event registration, email introductions, and Google Calendar writes remain future work. Network matching uses registered users and explicitly shared event plans. Meeting coordination checks both participants' availability after their permission and again before the final agreement, applies their meeting preferences and additional commitments, and requires both approvals. A calendar without busy events does not establish willingness to meet.
+Personalized external event discovery runs after profile confirmation. External event registration, email introductions, and Google Calendar writes remain outside this release. Users can now explicitly record a registration they completed on the event site. Network matching uses registered users and explicitly shared event plans. Meeting coordination checks both participants' availability after their permission and again before the final agreement, applies their meeting preferences and additional commitments, and requires both approvals. A calendar without busy events does not establish willingness to meet.
 
 ## Network and agent collaboration
 
@@ -60,7 +60,7 @@ Meeting requests appear inside the relevant conversation in **Agents**. Each per
 
 After both people approve the same time and place, each can download an `.ics` file. **The file needs importing; Sidekick has not sent an invitation or written to Google Calendar.** The current Google OAuth scopes are read-only, and registration emails are unverified. No new API keys are needed for these networking phases. Live calendar creation would require an additional write grant, verified invitation addresses, retry reconciliation and cancellation support.
 
-Events added in Network are user-reported plans, not verified registrations. Exa powers the separate onboarding event recommendations; those recommendations do not automatically become shared Network plans. No places provider is integrated. Meeting locations are proposed by a participant; venue quality, travel time and hotel proximity are not inferred.
+Events added in Network are user-reported plans. Exa recommendations offer **I registered**, which saves a self-reported registration after an explicit audience choice; opening the external link alone saves nothing. Neither action verifies admission with the event provider. No places provider is integrated. Meeting locations are proposed by a participant; venue quality, travel time and hotel proximity are not inferred.
 
 ### Isolated demo
 
@@ -85,9 +85,9 @@ The production server and development server share `.next`; stop the extra demo 
 
 ### Personalized event discovery
 
-Set the server-only `EXA_API_KEY` alongside `OPENAI_API_KEY`. `GET /api/discovery` reports configuration, the confirmed revision, stale flags, and the latest attempt. `POST /api/discovery` accepts only `{action: "start" | "refresh", revision, requestId}` and requires the account session, expected-account check and same Origin. Profile inputs come from the confirmed server context, never the draft or request body. A short immediate transaction claims work, then a Route Handler `after()` callback continues independently of the client connection. No database transaction spans provider calls.
+Set the server-only `EXA_API_KEY` alongside `OPENAI_API_KEY`. `GET /api/discovery` reports configuration, the confirmed revision, stale flags, and the latest attempt. `POST /api/discovery` accepts `{action: "start" | "refresh", revision, requestId}` or `{action: "dismiss", revision, suggestionId}` and requires the account session, expected-account check and same Origin. Profile inputs come from the confirmed server context, never the draft or request body. A short immediate transaction claims work, then a Route Handler `after()` callback continues independently of the client connection. No database transaction spans provider calls.
 
-The fixed pipeline has a 55-second deadline and a 90-second lease: one structured OpenAI planner call; four separate Exa searches (10 results each, up to 4,000 text characters plus highlights); at most one contents call for six incomplete candidates (8,000 characters, cache age 24 hours); one or two extraction calls for up to 16 candidates; and one ranking call over at most 10 validated candidates. The code limits each extraction candidate to 3,000 characters split between retrieved text windows. Every cached/search/highlight/enrichment text is retained during the run: a fresh crawl never replaces cached date evidence. The broad web search requests links but does not follow listing-page leads in this slice. Search failures receive at most one transient retry, respecting Retry-After and the total deadline; enrichment has no retry. Up to six Exa requests can be in flight, with at most ten search starts per second and three active pipelines across the shared database (also bounded in each process).
+The fixed pipeline has a 50-second deadline and a 90-second lease: one structured OpenAI planner call; four separate Exa searches (10 results each, up to 4,000 text characters plus highlights); at most one contents call for six incomplete candidates (8,000 characters, cache age 24 hours); one or two extraction calls for up to 16 candidates; and one ranking call over at most 10 validated candidates. The code limits each extraction candidate to 3,000 characters split between retrieved text windows. Every cached/search/highlight/enrichment text is retained during the run: a fresh crawl never replaces cached date evidence. The broad web search requests links but does not follow listing-page leads in this slice. Search failures receive at most one transient retry, respecting Retry-After and the total deadline; enrichment has no retry. Up to six Exa requests can be in flight, with at most ten search starts per second and three active pipelines across the shared database (also bounded in each process).
 
 Planner topics (52) and audiences (13) are fixed enum vocabularies. Exa queries/objectives contain only code-owned labels, formats, San Francisco and the date window. Names, companies, products, raw profile text, email, transcripts, calendar data, coordinates and user identifiers are never sent to Exa. OpenAI receives the confirmed goal, bio, offers and meeting-format preference for planning/ranking; extraction receives public retrieved text as untrusted data. The adapters use structured output with `store:false` and no SDK retries. All event retrieval goes through Exa; the server never fetches event-platform pages directly.
 
@@ -97,7 +97,18 @@ Canonical URLs deduplicate source variants (including lu.ma/luma.com and Eventbr
 
 Results belong to a stable profile owner and confirmed revision. The latest attempt is `running`, `ready`, `partial`, `empty` or `failed`; zero picks with source failures is failed, never a successful empty search. Search/enrichment failures with picks produce partial coverage. Failed refreshes retain the last successful cards and their original checked time. Expired running leases read as failed/interrupted and can be retried. Revision/run/status guards discard stale completions. Draft edits and checks older than 24 hours mark cards stale; ended events are removed on read. Missing keys create no run, and ended trips make no paid calls. Each source reports `{platform,status,results,verified}`; verified counts are before cross-platform merging. This is bounded source coverage, not a complete SF event catalog.
 
-There are at most five attempts per owner/revision and fifteen per owner in a rolling 24 hours. `DISCOVERY_DAILY_RUN_LIMIT` defaults to 100 started pipelines across all accounts, persisted in SQLite/Turso and reset at midnight in America/Los_Angeles; set it to 0 to pause discovery. Reaching it returns `429 daily_limit` and an explicit paused message. Idempotent requests and existing running/finished results do not consume another attempt. The store prunes discovery snapshots to the current and latest older revision while retaining the operation ledger for spend caps. Every terminal events state offers **Continue to Google Calendar**, which focuses the unchanged calendar card.
+There are at most five attempts per owner/revision and fifteen per owner in a rolling 24 hours. `DISCOVERY_DAILY_RUN_LIMIT` defaults to 100 started pipelines across all accounts, persisted in SQLite/Turso and reset at midnight in America/Los_Angeles; set it to 0 to pause discovery. Reaching it returns `429 daily_limit` and an explicit paused message. Idempotent requests and existing running/finished results do not consume another attempt. The store prunes discovery snapshots to the current and latest older revision while retaining the operation ledger for spend caps.
+
+
+### Quiet suggestions and reported registrations
+
+A separate authenticated `/api/cron/events` check runs every 15 minutes in Vercel. Each invocation checks up to 20 due profiles within an eight-second metadata budget and starts at most one paid pipeline. Cached results are reused; automatic source refresh is no more frequent than six hours and still respects all spend caps. Profiles rotate fairly, so larger queues take multiple ticks. Automatic checks run during 8 AM–9 PM San Francisco time. Local hosting still supports confirmation/manual discovery; the periodic event check requires a scheduler calling this endpoint with `CRON_SECRET`.
+
+The chat shows one contextual **One to consider** suggestion, with other results under **Browse events**. It does not append periodic messages to the conversation. Suggestions have a six-hour cooldown and a maximum of two per SF day. Canonical source/date identities prevent repeated suggestions across result reordering, refreshes and cross-listed platforms. Dismissal persists, registered events are excluded, and missing sources or failed calls never create a fabricated suggestion. The browser polls saved state; polling does not start paid searches.
+
+**I registered** saves only an explicit user report. The server resolves the recommendation from that account's current profile revision and exact discovery snapshot. Existing `network_events` JSON holds the canonical event identity and trusted aliases, date and uncertainty, optional exact times, `attendance: registered`, report timestamp, source reference and chosen visibility. Missing times and uncertain years remain unknown. Opening an event page is not registration, admission or a calendar booking.
+
+Visibility defaults to private. Both the event's audience and the account's global event-sharing permission must allow access; saving a registration never broadens global permissions. **Edit sharing** or removal revokes future access through the existing sharing rules. A shared registration enqueues people matching. Two discoverable users with common professional interests, overlapping stays and a confirmed shared event can receive a proposal, even when both seek roles. Their agents can converse only after an accepted connection, using permitted event facts labeled as user reports.
 
 ## Run locally
 
@@ -160,7 +171,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-Playwright starts the app on `127.0.0.1:3100`, a temporary SQLite database, an OpenAI fixture on `127.0.0.1:3101`, and a Google fixture on `127.0.0.1:3102`. Test credentials, `OPENAI_BASE_URL`, and `GOOGLE_TEST_BASE_URL` apply only to that process. The Google override accepts only HTTP loopback endpoints outside production. The SDK, OAuth routes, PKCE verification, encryption, persistence, and browser are real; provider responses and consent are simulated. No paid API calls or real Google grants occur in this suite.
+Playwright starts the app on `127.0.0.1:3100`, a temporary SQLite database, an OpenAI fixture on `127.0.0.1:3101`, a Google fixture on `127.0.0.1:3102`, and an Exa fixture on `127.0.0.1:3103`. Test credentials, `OPENAI_BASE_URL`, `GOOGLE_TEST_BASE_URL`, and `EXA_TEST_BASE_URL` apply only to that process. The Google override accepts only HTTP loopback endpoints outside production. The SDK, OAuth routes, PKCE verification, encryption, persistence, and browser are real; provider responses and consent are simulated. No paid API calls or real Google grants occur in this suite.
 
 Stop any existing `next dev` process for this repository before running browser checks. Set `PREVIEW_DIR` to an absolute directory to save screenshots. The flow has been inspected at 320, 390, and 1280 px in Chromium; a physical phone's keyboard and safe areas remain untested.
 
@@ -174,6 +185,12 @@ The opt-in conversation regression suite calls OpenAI with fictional profiles an
 
 ```bash
 LIVE_ONBOARDING_EVAL=1 npm test -- --run tests/onboarding-live.test.ts
+```
+
+The opt-in event check runs one bounded real Exa/OpenAI pipeline with a fictional profile and a disposable database. It checks evidence quotes, date constraints, honest uncertainty and persistence without registering for an event:
+
+```bash
+LIVE_EVENT_DISCOVERY_EVAL=1 npm test -- --run tests/event-discovery-live.test.ts
 ```
 
 The opt-in agent conversation check calls real OpenAI with two fictional connected job seekers, disjoint travel dates and a disposable local database. It checks alternating turns, a concrete peer question, permission-filtered inputs and persistence; it never contacts real accounts or calendar providers:

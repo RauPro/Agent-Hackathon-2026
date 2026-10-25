@@ -24,6 +24,13 @@ async function scenario(
 }
 const section = (page: Page) =>
   page.getByRole("region", { name: "Events for your goal" });
+async function showEvent(page: Page, title: string) {
+  const heading = section(page).locator("h3").filter({ hasText: title });
+  await expect(heading).toHaveCount(1);
+  if (!(await heading.isVisible()))
+    await section(page).getByText("Browse events", { exact: false }).click();
+  await expect(heading).toBeVisible();
+}
 async function confirm(page: Page) {
   await page.getByRole("button", { name: "Review profile" }).click();
   await page
@@ -63,24 +70,14 @@ test("confirmation starts background discovery before Calendar; cards show suppo
   await expect(section(page).getByRole("status")).toContainText(
     "Finding events",
   );
-  await expect(
-    section(page).getByRole("heading", { name: "Early Team Demos" }),
-  ).toBeVisible();
+  await showEvent(page, "Early Team Demos");
   await expect(section(page)).toContainText("5:00 PM–9:00 PM PT");
   await expect(section(page)).toContainText("Fixture Hall · San Francisco");
-  await expect(section(page).getByText("Free", { exact: true })).toBeVisible();
+  await expect(section(page)).toContainText("Free");
   await expect(section(page)).toContainText("Registration approval required.");
-  await expect(section(page)).toContainText("Also listed on Partiful");
-  await expect(section(page)).toContainText(
-    "Opening an event page doesn't register you.",
-  );
   await expect(
     page.getByRole("button", { name: "Connect Google Calendar", exact: true }),
   ).toBeVisible();
-  await section(page)
-    .getByRole("link", { name: "Continue to Google Calendar" })
-    .click();
-  await expect(page.locator("#calendar-title")).toBeFocused();
   const onboarding = await (await page.request.get("/api/onboarding")).json();
   expect(onboarding.calendar.onboardingComplete).toBe(false);
   const wrongRevision = await page.request.post("/api/discovery", {
@@ -102,11 +99,16 @@ test("confirmation starts background discovery before Calendar; cards show suppo
       body: "<p>Synthetic registration page. No registration action.</p>",
     }),
   );
+  const before = await (await page.request.get("/api/events/attendance")).json();
+  expect(before.events).toEqual([]);
   const popup = page.waitForEvent("popup");
   await link.click();
   const opened = await popup;
   await opened.close();
+  expect((await (await page.request.get("/api/events/attendance")).json()).events).toEqual([]);
+  await expect(section(page).getByRole("button", { name: "I registered", exact: true })).toBeVisible();
   await section(page).getByText("Source details", { exact: true }).click();
+  await expect(section(page)).toContainText("Also listed on Partiful");
   await expect(section(page)).toContainText(
     "Small engineering teams demonstrate their early-stage agent products.",
   );
@@ -118,20 +120,14 @@ test("reload and a second tab reuse the same paid search result", async ({
   page,
 }) => {
   await intro(page);
-  await expect(
-    section(page).getByRole("heading", { name: "Early Team Demos" }),
-  ).toBeVisible();
+  await showEvent(page, "Early Team Demos");
   const stats = await (await page.request.get(`${fixture}/stats`)).json();
   expect(stats.search).toBe(4);
   await page.reload();
-  await expect(
-    section(page).getByRole("heading", { name: "Early Team Demos" }),
-  ).toBeVisible();
+  await showEvent(page, "Early Team Demos");
   const second = await page.context().newPage();
   await second.goto("/onboarding");
-  await expect(
-    section(second).getByRole("heading", { name: "Early Team Demos" }),
-  ).toBeVisible();
+  await showEvent(second, "Early Team Demos");
   expect(
     (await (await page.request.get(`${fixture}/stats`)).json()).search,
   ).toBe(4);
@@ -141,9 +137,7 @@ test("unconfirmed changes mark saved cards stale; confirming a new goal replaces
   page,
 }) => {
   await intro(page);
-  await expect(
-    section(page).getByRole("heading", { name: "Early Team Demos" }),
-  ).toBeVisible();
+  await showEvent(page, "Early Team Demos");
   await message(
     page,
     "Actually, I'm hiring a founding engineer for my agent startup.",
@@ -155,9 +149,7 @@ test("unconfirmed changes mark saved cards stale; confirming a new goal replaces
     (await (await page.request.get(`${fixture}/stats`)).json()).search,
   ).toBe(4);
   await confirm(page);
-  await expect(
-    section(page).getByRole("heading", { name: "TypeScript Builders Lab" }),
-  ).toBeVisible();
+  await showEvent(page, "TypeScript Builders Lab");
   await expect(
     section(page).getByRole("heading", { name: "Early Team Demos" }),
   ).toHaveCount(0);
@@ -176,7 +168,7 @@ test("all-source outage is failed, Calendar stays usable, and retry succeeds", a
   await scenario(request, "failed");
   await intro(page);
   await expect(section(page)).toContainText(
-    "Couldn't check event sources. You can still connect Google Calendar.",
+    "Couldn't check event sources.",
   );
   await expect(
     page.getByRole("button", { name: "Connect Google Calendar", exact: true }),
@@ -184,9 +176,7 @@ test("all-source outage is failed, Calendar stays usable, and retry succeeds", a
   expect((await (await request.get(`${fixture}/stats`)).json()).search).toBe(8);
   await scenario(request, "ready", false);
   await section(page).getByRole("button", { name: "Try again" }).click();
-  await expect(
-    section(page).getByRole("heading", { name: "Early Team Demos" }),
-  ).toBeVisible();
+  await showEvent(page, "Early Team Demos");
 });
 test("one source failure is partial, while only past events are empty", async ({
   page,
@@ -197,9 +187,8 @@ test("one source failure is partial, while only past events are empty", async ({
   await expect(section(page)).toContainText(
     "Some sources couldn't be checked.",
   );
-  await expect(
-    section(page).getByRole("heading", { name: "Early Team Demos" }),
-  ).toBeVisible();
+  await showEvent(page, "Early Team Demos");
+  await section(page).getByText("Search details", { exact: true }).click();
   await expect(section(page)).toContainText("Partiful: not checked");
   await scenario(request, "past", false);
   await section(page).getByRole("button", { name: "Try again" }).click();
@@ -213,9 +202,7 @@ test("cards reflow at 320, 390 and desktop widths and are reachable from the key
   page,
 }) => {
   await intro(page);
-  await expect(
-    section(page).getByRole("heading", { name: "Early Team Demos" }),
-  ).toBeVisible();
+  await showEvent(page, "Early Team Demos");
   for (const width of [320, 390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     expect(
@@ -234,9 +221,7 @@ test("cards reflow at 320, 390 and desktop widths and are reachable from the key
       });
   }
   await page.reload();
-  await expect(
-    section(page).getByRole("heading", { name: "Early Team Demos" }),
-  ).toBeVisible();
+  await showEvent(page, "Early Team Demos");
   let reached = false;
   for (let i = 0; i < 30; i++) {
     await page.keyboard.press("Tab");
@@ -294,13 +279,11 @@ test("discovery API enforces origin, account identity, strict inputs and profile
   expect(status.headers()["cache-control"]).toContain("no-store");
   expect((await status.json()).discovery).toBeNull();
 });
-test("daily limit, not configured, trip ended and network errors keep a focusable path to Calendar", async ({
+test("daily limit, not configured, trip ended and network errors leave Calendar usable", async ({
   page,
 }) => {
   await intro(page);
-  await expect(
-    section(page).getByRole("heading", { name: "Early Team Demos" }),
-  ).toBeVisible();
+  await showEvent(page, "Early Team Demos");
   const saved = await (await page.request.get("/api/discovery")).json();
   for (const state of [
     { ...saved, dailyLimitReached: true },
@@ -321,10 +304,7 @@ test("daily limit, not configured, trip ended and network errors keep a focusabl
       route.fulfill({ json: state }),
     );
     await page.reload();
-    await section(page)
-      .getByRole("link", { name: "Continue to Google Calendar" })
-      .click();
-    await expect(page.locator("#calendar-title")).toBeFocused();
+    await expect(page.getByRole("button", { name: "Connect Google Calendar", exact: true })).toBeEnabled();
     if (state.dailyLimitReached)
       await expect(section(page)).toContainText(
         "Event discovery is paused for today.",
@@ -340,8 +320,55 @@ test("daily limit, not configured, trip ended and network errors keep a focusabl
   await page.reload();
   await expect(section(page).getByRole("alert")).toBeVisible();
   await expect(section(page)).toHaveAttribute("aria-busy", "false");
-  await section(page)
-    .getByRole("link", { name: "Continue to Google Calendar" })
-    .click();
-  await expect(page.locator("#calendar-title")).toBeFocused();
+  await expect(page.getByRole("button", { name: "Connect Google Calendar", exact: true })).toBeEnabled();
+});
+
+
+test("registration is an explicit self-report, persists, and preserves global sharing", async ({ page }) => {
+  await intro(page);
+  await showEvent(page, "Early Team Demos");
+  await section(page).getByRole("button", { name: "I registered", exact: true }).click();
+  const audience = section(page).getByLabel("Who can see this registration?");
+  await expect(audience).toHaveValue("private");
+  await audience.selectOption("friends");
+  await expect(section(page)).toContainText("Your event sharing is set to Only me.");
+  await section(page).getByRole("button", { name: "Save registration", exact: true }).click();
+  await expect(section(page).getByText("Registration saved", { exact: true })).toBeVisible();
+  const saved = await (await page.request.get("/api/events/attendance")).json();
+  expect(saved.eventVisibility).toBe("private");
+  expect(saved.events).toHaveLength(1);
+  expect(saved.events[0]).toMatchObject({ attendance: "registered", visibility: "friends", sourceMode: "user_report", title: "Early Team Demos" });
+  await page.reload();
+  await section(page).getByText("Browse events", { exact: false }).click();
+  await expect(section(page).getByText("Registration saved", { exact: true })).toBeVisible();
+  await expect(section(page)).toContainText("Reported by you; admission isn't verified.");
+  await section(page).getByRole("button", { name: "Edit sharing", exact: true }).click();
+  await expect(audience).toHaveValue("friends");
+  await audience.selectOption("private");
+  await section(page).getByRole("button", { name: "Save sharing", exact: true }).click();
+  await expect(section(page).getByText("Registration saved", { exact: true })).toBeVisible();
+  const updated = await (await page.request.get("/api/events/attendance")).json();
+  expect(updated.eventVisibility).toBe("private");
+  expect(updated.events).toHaveLength(1);
+  expect(updated.events[0]).toMatchObject({ id: saved.events[0].id, attendance: "registered", visibility: "private" });
+  await section(page).getByRole("link", { name: "Your events", exact: true }).click();
+  await expect(page.locator("#my-events")).toContainText("Early Team Demos");
+  await expect(page.locator("#my-events")).toContainText("Registered");
+  await page.getByRole("button", { name: "Remove event", exact: true }).click();
+  expect((await (await page.request.get("/api/events/attendance")).json()).events).toEqual([]);
+});
+
+test("dismissing a suggestion survives reload without removing browsable events or adding chat messages", async ({ page }) => {
+  await intro(page);
+  await showEvent(page, "Early Team Demos");
+  const before = await (await page.request.get("/api/onboarding")).json();
+  await section(page).getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(section(page).getByRole("heading", { name: "Early Team Demos" })).not.toBeVisible();
+  await page.reload();
+  await expect(section(page).getByRole("button", { name: "Dismiss", exact: true })).toHaveCount(0);
+  await section(page).getByText("Browse events", { exact: false }).click();
+  await showEvent(page, "Early Team Demos");
+  expect((await (await page.request.get("/api/discovery")).json()).suggestion).toBeNull();
+  const after = await (await page.request.get("/api/onboarding")).json();
+  expect(after.chat.messages).toEqual(before.chat.messages);
 });
