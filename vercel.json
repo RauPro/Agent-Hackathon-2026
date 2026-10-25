@@ -4,5 +4,8 @@
   "functions": {
     "src/app/api/**/route.ts": { "maxDuration": 60 }
   },
-  "crons": [{ "path": "/api/cron/network", "schedule": "* * * * *" }]
+  "crons": [
+    { "path": "/api/cron/network", "schedule": "* * * * *" },
+    { "path": "/api/cron/events", "schedule": "*/15 * * * *" }
+  ]
 }

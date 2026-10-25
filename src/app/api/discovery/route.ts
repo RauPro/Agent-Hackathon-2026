@@ -2,6 +2,7 @@ import { after, NextRequest } from "next/server";
 import {
   isDiscoveryError,
   discoveryRequestSchema,
+  dismissSuggestionSchema,
 } from "@/lib/domain/event-discovery";
 import {
   discoveryStatus,
@@ -92,7 +93,7 @@ export async function POST(request: NextRequest) {
       400,
     );
   }
-  const parsed = discoveryRequestSchema.safeParse(body);
+  const parsed = discoveryRequestSchema.or(dismissSuggestionSchema).safeParse(body);
   if (!parsed.success)
     return json(
       {
@@ -108,6 +109,10 @@ export async function POST(request: NextRequest) {
       token,
       request.headers.get("x-sidekick-account"),
     );
+    if (parsed.data.action === "dismiss") {
+      await store.dismissEventSuggestion(token, parsed.data.revision, parsed.data.suggestionId, new Date());
+      return json(await discoveryStatus(store, token));
+    }
     const started = await startDiscovery(store, token, parsed.data);
     if (started.run) after(started.run);
     return json(

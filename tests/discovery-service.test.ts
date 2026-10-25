@@ -297,7 +297,7 @@ describe("claims and durable results", () => {
     deps.plan = () => new Promise(() => {});
     const pending = (await startDiscovery(store, token, request(), deps))
       .run!();
-    await vi.advanceTimersByTimeAsync(55001);
+    await vi.advanceTimersByTimeAsync(DISCOVERY_LIMITS.deadlineMs + 1);
     await pending;
     expect(
       (await discoveryStatus(store, token, discoveryNow())).discovery,
