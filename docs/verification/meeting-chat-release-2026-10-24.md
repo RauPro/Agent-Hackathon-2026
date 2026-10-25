@@ -8,12 +8,14 @@ Both people approve the same time and place or online format before a separate i
 
 ## Verification
 
+- Final unit/service run: 409 passed, 17 opt-in live tests skipped. Repository lint, typecheck, and the production build passed. A cached local compiler sandbox error required resetting only generated Turbopack cache before the successful build.
 - Seven deterministic interpretation-boundary tests cover SF offsets, ambiguity, invalid windows, and rejecting extra model actions.
 - Three opt-in live OpenAI checks passed using fictional dates and no accounts: a complete preference, a vague preference requiring clarification, and a follow-up time retaining the previously supplied date.
 - Browser verification covers both accounts, shared-event timing, one versus two approvals, manual fallback in the main chat, pending Meet recovery without duplicate insertion, and private stay/discovery controls. See [calendar publishing verification](meeting-calendar-publishing.md).
 - Background discovery is exercised without browser polling with 30 existing accounts and a newcomer. See [private stay and matching verification](private-stay-and-background-matching-2026-10-24.md).
 - A read-only inspection of the user's two named test profiles found confirmed overlapping trips, an accepted QR connection, four completed agent turns, and a meeting waiting for availability. Both profiles had discovery turned off; the account proposing the meeting had no calendar connected.
 - Enabling discovery for the role-seeking test account immediately produced visible proposals for three existing fictional demo profiles. They remain unaccepted. This verifies a real recommendation result, not an external employment or hiring outcome.
+- After enabling discovery for the collaborating test account, two fictional demo proposals appeared without a manual discovery request. Its prior visibility settings were preserved and no connection requests were sent.
 
 ## Limits
 
