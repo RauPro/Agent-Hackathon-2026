@@ -1,0 +1,154 @@
+.app-header {
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.app-header .app-header-inner {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  max-width: 1280px;
+  min-height: 72px;
+  margin: 0 auto;
+  padding: 10px max(16px, env(safe-area-inset-right)) 10px
+    max(16px, env(safe-area-inset-left));
+}
+
+.app-header .app-header-brand {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 10px;
+  min-width: 44px;
+  min-height: 44px;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.app-header .app-header-brand svg {
+  flex-shrink: 0;
+}
+
+.app-header .app-header-brand span {
+  display: none;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.6px;
+}
+
+.app-header nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.app-header nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 14px;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.app-header nav a:hover {
+  color: var(--ink);
+  background: var(--surface-muted);
+}
+
+.app-header nav a[aria-current="page"] {
+  border-bottom-color: var(--ink);
+  color: var(--ink);
+  background: transparent;
+  font-weight: 600;
+}
+
+.app-header .app-header-account {
+  position: relative;
+  justify-self: end;
+}
+
+.app-header .app-header-account > summary {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface-muted);
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.app-header .app-header-account > summary::-webkit-details-marker {
+  display: none;
+}
+
+.app-header .account-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: min(280px, calc(100vw - 32px));
+  max-width: none;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-overlay);
+}
+
+.app-header .account-identity {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.app-header .account-identity small {
+  font-size: 12px;
+}
+
+.app-header .account-menu > button {
+  align-self: flex-start;
+  min-width: 44px;
+  min-height: 44px;
+  font-size: 14px;
+}
+
+.app-header .account-menu > p {
+  font-size: 14px;
+}
+
+@media (min-width: 480px) {
+  .app-header .app-header-brand span {
+    display: inline;
+  }
+}
+
+@media (min-width: 768px) {
+  .app-header .app-header-inner {
+    padding-right: max(24px, env(safe-area-inset-right));
+    padding-left: max(24px, env(safe-area-inset-left));
+  }
+
+  .app-header nav a {
+    padding-right: 20px;
+    padding-left: 20px;
+    font-size: 15px;
+  }
+}

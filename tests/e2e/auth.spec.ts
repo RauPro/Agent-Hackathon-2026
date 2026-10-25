@@ -1,11 +1,10 @@
 import { test, expect, type Page } from "@playwright/test";
 import { join } from "node:path";
-import { register, testPassword } from "./auth-helper";
+import { register } from "./auth-helper";
 
 const origin = "http://127.0.0.1:3100";
-async function fill(page: Page, email: string, password = testPassword) {
+async function fill(page: Page, email: string) {
   await page.getByRole("textbox", { name: "Email", exact: true }).fill(email);
-  await page.getByLabel("Password", { exact: true }).fill(password);
 }
 async function shot(page: Page, name: string) {
   if (process.env.PREVIEW_DIR)
@@ -15,7 +14,7 @@ async function shot(page: Page, name: string) {
     });
 }
 
-test("registration comes first, including old URLs, and private APIs require sign-in", async ({
+test("email entry comes first, including old URLs, and private APIs require a session", async ({
   page,
   request,
 }) => {
@@ -23,8 +22,9 @@ test("registration comes first, including old URLs, and private APIs require sig
     await page.goto(path);
     await expect(page).toHaveURL(/\/register$/);
     await expect(
-      page.getByRole("heading", { name: "Create your account" }),
+      page.getByRole("heading", { name: "Welcome to Sidekick" }),
     ).toBeVisible();
+    await expect(page.getByLabel("Password", { exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Your message", { exact: true })).toHaveCount(
       0,
     );
@@ -59,20 +59,20 @@ test("registration comes first, including old URLs, and private APIs require sig
   ).toBe(401);
 });
 
-test("email registration leads to chat and signing back in restores the saved profile", async ({
+test("email entry leads to chat and returning by email restores the saved profile", async ({
   page,
 }) => {
   const email = `alex-${crypto.randomUUID()}@example.test`;
   await page.goto("/");
   await fill(page, email);
-  await page
-    .getByRole("button", { name: "Create account", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page).toHaveURL(/\/onboarding$/);
+  await page.getByLabel("Account menu", { exact: true }).click();
   await expect(page.getByText(email, { exact: true })).toBeVisible();
   await expect(
     page.getByText("Email unverified", { exact: true }),
   ).toBeVisible();
+  await page.getByLabel("Account menu", { exact: true }).click();
   await page
     .getByLabel("Your message", { exact: true })
     .fill(
@@ -85,11 +85,12 @@ test("email registration leads to chat and signing back in restores the saved pr
     .click();
   await expect(page.getByText("Profile saved", { exact: true })).toBeVisible();
   const account = (await (await page.request.get("/api/auth")).json()).account;
+  await page.getByLabel("Account menu", { exact: true }).click();
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/login$/);
   expect((await page.request.get("/api/onboarding")).status()).toBe(401);
   await fill(page, email.toUpperCase());
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(page).toHaveURL(/\/onboarding$/);
   await expect(page.getByText("Profile saved", { exact: true })).toBeVisible();
   expect((await (await page.request.get("/api/auth")).json()).account.id).toBe(
@@ -98,7 +99,7 @@ test("email registration leads to chat and signing back in restores the saved pr
   await shot(page, "registered-onboarding-simulated-profile");
 });
 
-test("account and calendar persist across browsers without sharing data with another user", async ({
+test("profile and calendar persist across browsers while different emails have separate data", async ({
   browser,
   page,
 }) => {
@@ -117,13 +118,14 @@ test("account and calendar persist across browsers without sharing data with ano
   const second = await other.newPage();
   await second.goto(origin + "/login");
   await fill(second, email);
-  await second.getByRole("button", { name: "Sign in", exact: true }).click();
+  await second.getByRole("button", { name: "Continue", exact: true }).click();
   await expect(
     second.getByText("alex.calendar@example.test", { exact: true }),
   ).toBeVisible();
   expect(
     (await (await second.request.get(origin + "/api/auth")).json()).account.id,
   ).toBe(account.id);
+  await second.getByLabel("Account menu", { exact: true }).click();
   await second.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(second).toHaveURL(/\/login$/);
   const separate = await register(second.request);
@@ -144,36 +146,65 @@ test("account and calendar persist across browsers without sharing data with ano
   await other.close();
 });
 
-test("invalid and duplicate registration and wrong credentials never expose a profile", async ({
+test("invalid email creates no session and normalized email reopens the same profile", async ({
   page,
   request,
 }) => {
-  const { email } = await register(request);
-  await page.goto("/register");
-  await fill(page, email.toUpperCase());
-  await page
-    .getByRole("button", { name: "Create account", exact: true })
-    .click();
-  await expect(page.getByRole("form").getByRole("alert")).toContainText(
-    "Could not create this account",
-  );
-  await expect(page).toHaveURL(/\/register$/);
-  await page.getByRole("link", { name: "Sign in", exact: true }).click();
-  await fill(page, email, "a wrong password");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await expect(page.getByRole("form").getByRole("alert")).toHaveText(
-    "Email or password is incorrect.",
-  );
-  expect(
-    (await (await page.request.get("/api/auth")).json()).account,
-  ).toBeNull();
+  const { email, account } = await register(request);
   const bad = await page.request.post("/api/auth", {
     headers: { origin },
-    data: { action: "register", email: "bad-address", password: "short" },
+    data: { action: "continue", email: "bad-address" },
   });
   expect(bad.status()).toBe(400);
   expect((await bad.json()).errors).toHaveProperty("email");
-  await shot(page, "login-error");
+  expect(
+    (await (await page.request.get("/api/auth")).json()).account,
+  ).toBeNull();
+  await page.goto("/register");
+  await fill(page, `  ${email.toUpperCase()}  `);
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page).toHaveURL(/\/onboarding$/);
+  const restored = (await (await page.request.get("/api/auth")).json()).account;
+  expect(restored.id).toBe(account.id);
+  expect(restored.email).toBe(email);
+});
+
+test("email input survives a failed request and retry prevents duplicate submission", async ({
+  page,
+}) => {
+  const email = `retry-${crypto.randomUUID()}@example.test`;
+  let attempts = 0;
+  let release: () => void = () => {};
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/auth", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    attempts += 1;
+    if (attempts === 1) return route.abort("failed");
+    await pending;
+    return route.continue();
+  });
+  await page.goto("/login?next=https://untrusted.example");
+  await fill(page, email);
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(
+    page.getByRole("form", { name: "Continue with email" }).getByRole("alert"),
+  ).toHaveText(
+    "Could not reach SF Sidekick. Try again.",
+  );
+  await expect(page.getByLabel("Email", { exact: true })).toHaveValue(email);
+  await shot(page, "email-retry");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  try {
+    await expect(page.getByRole("button", { name: "Please wait…" })).toBeDisabled();
+    await expect(page.getByLabel("Email", { exact: true })).toBeDisabled();
+    await page.keyboard.press("Enter");
+    expect(attempts).toBe(2);
+  } finally {
+    release();
+  }
+  await expect(page).toHaveURL(/\/onboarding$/);
 });
 
 test("stale account headers cannot write into a different signed-in account", async ({
@@ -215,7 +246,7 @@ test("stale account headers cannot write into a different signed-in account", as
   ).toHaveLength(1);
 });
 
-test("registration reflows at mobile and desktop widths and supports password managers and keyboard", async ({
+test("email entry reflows at mobile and desktop widths and supports autofill and keyboard", async ({
   page,
 }) => {
   for (const width of [320, 390, 1280]) {
@@ -223,32 +254,29 @@ test("registration reflows at mobile and desktop widths and supports password ma
     await page.goto("/register");
     await expect(page.getByLabel("Email", { exact: true })).toHaveAttribute(
       "autocomplete",
-      "username",
+      "email",
     );
-    await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute(
-      "autocomplete",
-      "new-password",
-    );
+    await expect(page.getByRole("textbox")).toHaveCount(1);
     await page.keyboard.press("Tab");
     await expect(page.getByLabel("Email", { exact: true })).toBeFocused();
-    await page.getByLabel("Password", { exact: true }).fill(testPassword);
-    await page.getByRole("button", { name: "Show password" }).click();
-    await expect(page.getByLabel("Password", { exact: true })).toHaveAttribute(
-      "type",
-      "text",
+    await fill(
+      page,
+      "a.long.email.address.for.a.networking.participant@example.test",
     );
-    await page.getByRole("button", { name: "Hide password" }).click();
+    await page.keyboard.press("Tab");
+    await expect(
+      page.getByRole("button", { name: "Continue", exact: true }),
+    ).toBeFocused();
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
     ).toBe(true);
-    await page.getByLabel("Password", { exact: true }).fill("");
     await shot(page, `registration-${width}`);
   }
 });
 
-test("account API rejects cross-origin and forged payloads and rate limits guessing", async ({
+test("account API rejects cross-origin and forged payloads and rate limits repeated entry", async ({
   request,
 }) => {
   const email = `rate-${crypto.randomUUID()}@example.test`;
@@ -256,7 +284,7 @@ test("account API rejects cross-origin and forged payloads and rate limits guess
     (
       await request.post("/api/auth", {
         headers: { origin: "https://untrusted.example" },
-        data: { action: "register", email, password: testPassword },
+        data: { action: "continue", email },
       })
     ).status(),
   ).toBe(403);
@@ -265,26 +293,32 @@ test("account API rejects cross-origin and forged payloads and rate limits guess
       await request.post("/api/auth", {
         headers: { origin },
         data: {
-          action: "register",
+          action: "continue",
           email,
-          password: testPassword,
           userId: "forged",
         },
       })
     ).status(),
   ).toBe(400);
-  for (let n = 0; n < 10; n++)
+  for (let n = 0; n < 10; n++) {
     expect(
       (
         await request.post("/api/auth", {
           headers: { origin },
-          data: { action: "login", email, password: "wrong" },
+          data: { action: "continue", email },
         })
       ).status(),
-    ).toBe(401);
+    ).toBe(200);
+    expect(
+      (await request.post("/api/auth", {
+        headers: { origin },
+        data: { action: "logout" },
+      })).status(),
+    ).toBe(200);
+  }
   const blocked = await request.post("/api/auth", {
     headers: { origin },
-    data: { action: "login", email, password: "wrong" },
+    data: { action: "continue", email: email.toUpperCase() },
   });
   expect(blocked.status()).toBe(429);
   expect(blocked.headers()["retry-after"]).toBe("900");

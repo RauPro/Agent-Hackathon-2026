@@ -18,9 +18,12 @@ import {
 } from "@/lib/server/network-http";
 import { drainNetworkWork } from "@/lib/server/network-worker";
 import { networkDemoEnabled } from "@/lib/server/demo-mode";
+import { dialogueActionSchema } from "@/lib/domain/agent-dialogue";
+import { AgentDialogueService } from "@/lib/server/agent-dialogue-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 const actionSchema = z.discriminatedUnion("action", [
   z
     .object({ action: z.literal("settings"), settings: networkSettingsSchema })
@@ -42,6 +45,7 @@ const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("dismiss"), opportunityId: z.uuid() }).strict(),
   z.object({ action: z.literal("event"), event: networkEventSchema }).strict(),
   z.object({ action: z.literal("remove_event"), eventId: z.uuid() }).strict(),
+  dialogueActionSchema,
 ]);
 export async function GET(request: NextRequest) {
   try {
@@ -51,6 +55,7 @@ export async function GET(request: NextRequest) {
     if (qr)
       return json({ person: await store.network.resolveQr(account.id, qr) });
     const discovery = new DiscoveryService(store.network);
+    const dialogue = new AgentDialogueService(store.network);
     after(async () => {
       try {
         await drainNetworkWork();
@@ -63,6 +68,8 @@ export async function GET(request: NextRequest) {
       settings: await store.network.settings(account.id),
       connections: await store.network.connections(account.id),
       messages: await store.network.messages(account.id),
+      // Reconciles existing accepted connections without invoking the model.
+      dialogues: await dialogue.list(account.id),
       opportunities: await discovery.opportunities(account.id),
       events: await discovery.events(account.id),
       meetings: await new MeetingService(store).list(account.id),
@@ -119,6 +126,9 @@ export async function POST(request: NextRequest) {
         break;
       case "remove_event":
         await discovery.removeEvent(account.id, input.eventId);
+        break;
+      case "dialogue":
+        await new AgentDialogueService(network).act(account.id, input);
         break;
     }
     after(async () => {

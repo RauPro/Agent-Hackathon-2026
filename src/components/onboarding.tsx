@@ -14,13 +14,17 @@ import {
 } from "@/lib/domain/onboarding-chat";
 import { ProfilePreview } from "./profile-preview";
 import { CalendarConnect } from "./calendar-connect";
+import { Mark } from "./brand";
+import { AppHeader } from "./app-header";
+import { ChatAgentPanel, useAgentPanel } from "./chat-agent-panel";
+import "@/app/chat-workspace.css";
 import { EventRecommendations } from "./event-recommendations";
-import { Brand, Mark } from "./brand";
-import { AccountMenu } from "./account-menu";
 import type { Account } from "@/lib/domain/auth";
 
 export function Onboarding({ account }: { account: Account }) {
   const inputKey = `onboarding-unsent-${account.id}`;
+  const agents = useAgentPanel();
+  const agentTrigger = useRef<HTMLButtonElement>(null);
   const [chat, setChat] = useState<ChatState | null>(null);
   const [configured, setConfigured] = useState(false);
   const [input, setInput] = useState("");
@@ -51,6 +55,14 @@ export function Onboarding({ account }: { account: Account }) {
   );
   useEffect(() => {
     const controller = new AbortController();
+    queueMicrotask(() => {
+      if (controller.signal.aborted) return;
+      try {
+        setInput(sessionStorage.getItem(inputKey) || "");
+      } catch {
+        // The conversation remains usable when browser storage is unavailable.
+      }
+    });
     fetch("/api/onboarding", {
       cache: "no-store",
       signal: controller.signal,
@@ -62,13 +74,6 @@ export function Onboarding({ account }: { account: Account }) {
         return response.json();
       })
       .then(acceptState)
-      .then(() => {
-        const savedInput = sessionStorage.getItem(inputKey);
-        if (savedInput) {
-          setInput(savedInput);
-          sessionStorage.removeItem(inputKey);
-        }
-      })
       .catch((error: unknown) => {
         if (error instanceof Error && error.name === "AbortError") return;
         setLoading(false);
@@ -76,6 +81,15 @@ export function Onboarding({ account }: { account: Account }) {
       });
     return () => controller.abort();
   }, [account.id, inputKey, acceptState]);
+
+  function preserveInput(value: string) {
+    try {
+      if (value) sessionStorage.setItem(inputKey, value);
+      else sessionStorage.removeItem(inputKey);
+    } catch {
+      // Keep the current draft in memory if storage is disabled or full.
+    }
+  }
 
   async function reconnect() {
     try {
@@ -153,6 +167,7 @@ export function Onboarding({ account }: { account: Account }) {
       retry.current = null;
       if (action === "message") {
         setInput("");
+        preserveInput("");
         if (composer.current) composer.current.style.height = "auto";
       }
       if (action === "confirm") setShowReview(false);
@@ -185,14 +200,8 @@ export function Onboarding({ account }: { account: Account }) {
       <a className="skip-link" href="#conversation">
         Skip to conversation
       </a>
-      <header className="site-header">
-        <Brand />
-        <a className="text-button" href="/network">
-          Network
-        </a>
-        <AccountMenu account={account} disabled={!!busy} />
-      </header>
-      <main className="chat-layout">
+      <AppHeader account={account} active="chat" disabled={!!busy} />
+      <main className="chat-layout chat-workspace" data-agents-open={agents.open}>
         <section
           className="conversation-column"
           aria-labelledby="chat-title"
@@ -200,6 +209,21 @@ export function Onboarding({ account }: { account: Account }) {
         >
           <div className="conversation-heading">
             <h1 id="chat-title">Your plans in SF</h1>
+            <button
+              ref={agentTrigger}
+              className="secondary-button agent-panel-trigger"
+              type="button"
+              aria-controls="chat-agent-panel"
+              aria-expanded={agents.open}
+              aria-haspopup={agents.desktop ? undefined : "dialog"}
+              onClick={() => agents.setOpen(!agents.open)}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="16" rx="3" />
+                <path d="M14 4v16" />
+              </svg>
+              Agent conversations
+            </button>
           </div>
           {loading ? (
             <div className="loading-state" role="status">
@@ -218,7 +242,7 @@ export function Onboarding({ account }: { account: Account }) {
                 accountId={account.id}
                 chatRevision={chat.revision}
                 disabled={!!busy}
-                beforeConnect={() => sessionStorage.setItem(inputKey, input)}
+                beforeConnect={() => preserveInput(input)}
               />
               <div
                 className="chat-messages"
@@ -347,12 +371,11 @@ export function Onboarding({ account }: { account: Account }) {
                 </div>
               )}
 
-              <details className="mobile-profile">
+              <details className="mobile-profile workspace-profile">
                 <summary>
                   Profile{" "}
                   <span>
-                    {chat.confirmed ? "Confirmed" : "Draft"}{" "}
-                    <span aria-hidden="true">↗</span>
+                    {chat.confirmed ? "Confirmed" : "Draft"}
                   </span>
                 </summary>
                 <div>
@@ -397,6 +420,7 @@ export function Onboarding({ account }: { account: Account }) {
                     placeholder="Message Sidekick…"
                     onChange={(event) => {
                       setInput(event.target.value);
+                      preserveInput(event.target.value);
                       event.target.style.height = "auto";
                       event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`;
                     }}
@@ -453,11 +477,13 @@ export function Onboarding({ account }: { account: Account }) {
             </>
           )}
         </section>
-        {chat && (
-          <aside className="desktop-profile" aria-label="Profile preview">
-            <ProfilePreview chat={chat} />
-          </aside>
-        )}
+        <ChatAgentPanel
+          account={account}
+          open={agents.open}
+          desktop={agents.desktop}
+          onClose={() => agents.setOpen(false)}
+          triggerRef={agentTrigger}
+        />
       </main>
     </>
   );

@@ -4,7 +4,7 @@ import { SF_TIMEZONE, type GoalType, type UserContext } from "./context";
 
 // Fixed stages, not an agent loop. These are product budgets, not provider limits.
 export const DISCOVERY_LIMITS = {
-  deadlineMs: 55_000,
+  deadlineMs: 50_000,
   leaseMs: 90_000,
   searchTimeoutMs: 12_000,
   candidates: 16,
@@ -109,6 +109,24 @@ export type DiscoveryResult = {
   coverage: Coverage;
   checkedAt: string;
 };
+export type EventSuggestion = {
+  id: string;
+  eventId: string;
+  message: string;
+  createdAt: string;
+};
+export const dismissSuggestionSchema = z.object({
+  action: z.literal("dismiss"),
+  suggestionId: z.uuid(),
+  revision: z.number().int().positive(),
+}).strict();
+export const PROACTIVE_EVENT_LIMITS = {
+  checkMs: 15 * 60 * 1000,
+  checksPerRun: 20,
+  refreshMs: 6 * 60 * 60 * 1000,
+  suggestionMs: 6 * 60 * 60 * 1000,
+  suggestionsPerDay: 2,
+} as const;
 export type DiscoveryView = {
   configured: boolean;
   profileRevision: number | null;
@@ -118,6 +136,7 @@ export type DiscoveryView = {
   tripPast: boolean;
   dailyLimitReached: boolean;
   window: { start: string; end: string } | null;
+  suggestion: EventSuggestion | null;
   discovery: null | {
     revision: number;
     status: DiscoveryStatus;

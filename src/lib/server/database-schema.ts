@@ -67,6 +67,13 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   answer_revision INTEGER, created_at TEXT NOT NULL, UNIQUE(from_user_id, request_key)
 );
 CREATE INDEX IF NOT EXISTS agent_messages_recipient ON agent_messages(to_user_id, created_at);
+CREATE TABLE IF NOT EXISTS agent_dialogues (
+  id TEXT PRIMARY KEY, user_a TEXT NOT NULL REFERENCES users(id), user_b TEXT NOT NULL REFERENCES users(id),
+  fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL,
+  state_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  UNIQUE(user_a, user_b), CHECK(user_a < user_b)
+);
+CREATE INDEX IF NOT EXISTS agent_dialogues_queue ON agent_dialogues(status, updated_at);
 CREATE TABLE IF NOT EXISTS network_jobs (
   user_id TEXT PRIMARY KEY REFERENCES users(id), version INTEGER NOT NULL,
   updated_at TEXT NOT NULL, cursor TEXT NOT NULL DEFAULT ''

@@ -21,6 +21,44 @@ const server = createServer(async (request, response) => {
   let data = "";
   for await (const chunk of request) data += chunk;
   const body = JSON.parse(data);
+  if (body.text?.format?.name === "agent_dialogue_reply") {
+    const input = JSON.parse(body.input[0].content);
+    const turn = input.turnNumber;
+    const dialogue = turn === 1 ? {
+      message: "We both build AI agents in production. Would comparing our approaches to reliable deployments be useful?",
+      next: "continue",
+      questionForUser: null,
+      suggestedNextStep: null,
+    } : turn === 2 ? {
+      message: "Comparing production experience could help both people. I will ask my user which project they would like to discuss.",
+      next: "ask_user",
+      questionForUser: "Which project would you like to discuss with your connection?",
+      suggestedNextStep: null,
+    } : turn === 3 ? {
+      message: "Thank you for the additional context. A short conversation about reliable AI deployments could be useful to both people.",
+      next: "continue",
+      questionForUser: null,
+      suggestedNextStep: null,
+    } : {
+      message: "Agreed. Comparing the evaluation pipeline with our deployment experience gives both people a concrete topic to explore.",
+      next: "complete",
+      questionForUser: null,
+      suggestedNextStep: "Consider a short conversation about production AI projects. Both people still need to approve any meeting time.",
+    };
+    response.end(JSON.stringify({
+      id: "resp_dialogue_fixture",
+      object: "response",
+      status: "completed",
+      output: [{
+        id: "msg_dialogue_fixture",
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: JSON.stringify(dialogue), annotations: [] }],
+      }],
+    }));
+    return;
+  }
   const format = body.text?.format?.name;
   if (format?.startsWith("discovery_")) {
     const input = JSON.parse(body.input[0].content);

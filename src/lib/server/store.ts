@@ -1,14 +1,19 @@
 import { Temporal } from "@js-temporal/polyfill";
 import {
   DISCOVERY_LIMITS,
+  PROACTIVE_EVENT_LIMITS,
   DiscoveryError,
   discoveryWindow,
+  eventHasEnded,
   type Coverage,
+  type EventSuggestion,
+  type Recommendation,
   type DiscoveryRequest,
   type DiscoveryResult,
   type DiscoveryRow,
   type DiscoveryStatus,
 } from "@/lib/domain/event-discovery";
+import { canonicalEventUrl } from "@/lib/domain/discovery";
 import { AsyncDatabase, type RemoteDatabaseOptions } from "./database";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { NetworkStore } from "./network-store";
@@ -34,6 +39,20 @@ type SessionRow = {
   context_json: string | null;
   confirmed_at: string | null;
 };
+type EventSuggestionState = {
+  lastCheckedAt: string | null;
+  revision: number;
+  active: (EventSuggestion & { keys: string[]; revision: number }) | null;
+  seen: string[];
+  lastSuggestedAt: string | null;
+  day: string;
+  dayCount: number;
+};
+const eventSuggestionKeys = (event: Recommendation) =>
+  [event.url, ...event.alsoListed.map((source) => source.url)]
+    .map((url) => `${canonicalEventUrl(url)}|${event.date}`);
+const suggestionDay = (now: Date) => Temporal.Instant.from(now.toISOString())
+  .toZonedDateTimeISO("America/Los_Angeles");
 export class ContextConflict extends Error {
   readonly kind = "context_conflict";
   constructor(
@@ -132,13 +151,12 @@ export class ContextStore {
       throw new SessionMissing();
     return account;
   }
-  async credentials(email: string) {
+  private async userForEmail(email: string) {
     return (await this.db
-      .prepare("SELECT id, password_hash FROM users WHERE email = ?")
+      .prepare("SELECT id FROM users WHERE email = ?")
       .get(emailSchema.parse(email))) as
       | {
           id: string;
-          password_hash: string;
         }
       | undefined;
   }
@@ -154,6 +172,21 @@ export class ContextStore {
       .run(hash(token), userId, now + LOGIN_MAX_AGE * 1000);
     return token;
   }
+  async continueAccount(email: string, previousToken?: string) {
+    email = emailSchema.parse(email);
+    return await this.db
+      .transaction(async () => {
+        if (await this.account(previousToken)) throw new AccountConflict();
+        const existing = await this.userForEmail(email);
+        if (existing) {
+          const token = await this.createLogin(existing.id);
+          return { token, account: await this.requireAccount(token) };
+        }
+        // Retain the legacy column without storing a usable password credential.
+        return this.registerAccount(email, "email-only", previousToken);
+      })
+      .immediate();
+  }
   async registerAccount(
     email: string,
     passwordHash: string,
@@ -163,7 +196,7 @@ export class ContextStore {
     return await this.db
       .transaction(async () => {
         if (
-          (await this.credentials(email)) ||
+          (await this.userForEmail(email)) ||
           (await this.account(previousToken))
         )
           throw new AccountConflict();
@@ -226,11 +259,6 @@ export class ContextStore {
             .run(limit.key, now + 15 * 60 * 1000);
       })
       .immediate();
-  }
-  async clearAuthAttempts(email: string) {
-    await this.db
-      .prepare("DELETE FROM auth_limits WHERE key = ?")
-      .run(`email:${hash(emailSchema.parse(email))}`);
   }
   private state(row: SessionRow): ContextState {
     return {
@@ -518,20 +546,36 @@ export class ContextStore {
     token: string | undefined,
     now: Date,
   ): Promise<DiscoveryRow | null> {
-    const session = await this.session(token);
-    if (!session) throw new SessionMissing();
+    return this.readDiscoveryForOwner(await this.calendarOwner(token), now);
+  }
+
+  // Trusted server jobs use a persisted profile owner, never a fabricated login.
+  async discoveryProfile(owner: string) {
+    const row = (await this.db.prepare(
+      `SELECT s.*, c.state_json FROM sessions s
+       LEFT JOIN onboarding_chats c ON c.session_id = s.token_hash
+       WHERE s.token_hash = ?`,
+    ).get(owner)) as (SessionRow & { state_json: string | null }) | undefined;
+    if (!row) throw new SessionMissing();
+    const state = this.state(row);
+    const chat = row.state_json ? JSON.parse(row.state_json) as ChatState : initialChat(state);
+    return { state, confirmed: !!row.confirmed_at && chat.confirmed && chat.baseRevision === row.revision };
+  }
+
+  async readDiscoveryForOwner(owner: string, now: Date): Promise<DiscoveryRow | null> {
+    const { state } = await this.discoveryProfile(owner);
     await this.db
       .prepare(
         `UPDATE event_discoveries SET status = 'failed', error_code = 'interrupted', finished_at = ?, lease_expires_at = NULL
       WHERE owner_id = ? AND status = 'running' AND lease_expires_at <= ?`,
       )
-      .run(now.toISOString(), session.token_hash, now.getTime());
+      .run(now.toISOString(), owner, now.getTime());
     return (
       ((await this.db
         .prepare(
           "SELECT * FROM event_discoveries WHERE owner_id = ? AND profile_revision = ?",
         )
-        .get(session.token_hash, session.revision)) as
+        .get(owner, state.revision)) as
         | DiscoveryRow
         | undefined) ?? null
     );
@@ -559,18 +603,26 @@ export class ContextStore {
     now: Date,
     capacity: boolean,
   ) {
+    return this.claimDiscoveryForOwner(await this.calendarOwner(token), request, now, capacity);
+  }
+
+  async claimDiscoveryForOwner(
+    owner: string,
+    request: DiscoveryRequest,
+    now: Date,
+    capacity: boolean,
+    requireConfirmed = false,
+  ) {
     return await this.db
       .transaction(async () => {
-        const session = await this.session(token);
-        if (!session) throw new SessionMissing();
-        const state = this.state(session);
+        const { state, confirmed } = await this.discoveryProfile(owner);
         if (!state.context) throw new DiscoveryError("profile_missing");
+        if (requireConfirmed && !confirmed) throw new DiscoveryError("profile_changed");
         if (request.revision !== state.revision)
           throw new DiscoveryError("profile_changed");
         if (!discoveryWindow(state.context, now))
           throw new DiscoveryError("trip_past");
-        const owner = session.token_hash;
-        const existing = await this.readDiscovery(token, now);
+        const existing = await this.readDiscoveryForOwner(owner, now);
         const repeated = await this.db
           .prepare(
             "SELECT id FROM runs WHERE session_id = ? AND operation_key = ?",
@@ -658,6 +710,142 @@ export class ContextStore {
         return { claimed: true as const, row, owner, context: state.context };
       })
       .immediate();
+  }
+
+  private async eventSuggestionState(owner: string): Promise<EventSuggestionState> {
+    const row = await this.db.prepare(
+      "SELECT result_json FROM runs WHERE session_id = ? AND operation_key = 'event-suggestions'",
+    ).get(owner);
+    return row ? JSON.parse(String(row.result_json)) as EventSuggestionState : {
+      lastCheckedAt: null, revision: 0, active: null, seen: [],
+      lastSuggestedAt: null, day: "", dayCount: 0,
+    };
+  }
+
+  private async saveEventSuggestionState(owner: string, state: EventSuggestionState, now: Date) {
+    await this.db.prepare(
+      `INSERT INTO runs (id, session_id, operation_key, payload_hash, result_json, created_at)
+       VALUES (?, ?, 'event-suggestions', '', ?, ?)
+       ON CONFLICT(session_id, operation_key) DO UPDATE SET result_json = excluded.result_json`,
+    ).run(randomUUID(), owner, JSON.stringify(state), now.toISOString());
+  }
+
+  // Claim the oldest due profile atomically across instances. The operation ledger
+  // owns the check state, so deleting a profile cannot leave detached job data.
+  async claimProactiveDiscoveryCheck(now: Date) {
+    return this.db.transaction(async () => {
+      const due = (await this.db.prepare(
+        `SELECT s.token_hash AS owner, s.revision FROM sessions s
+         JOIN users u ON u.profile_id = s.token_hash
+         LEFT JOIN onboarding_chats c ON c.session_id = s.token_hash
+         LEFT JOIN runs r ON r.session_id = s.token_hash AND r.operation_key = 'event-suggestions'
+         WHERE s.context_json IS NOT NULL AND s.confirmed_at IS NOT NULL
+           AND json_extract(s.context_json, '$.trip.city') = 'San Francisco'
+           AND json_extract(s.context_json, '$.trip.end') >= ?
+           AND (c.state_json IS NULL OR (
+             json_extract(c.state_json, '$.confirmed') = 1
+             AND json_extract(c.state_json, '$.baseRevision') = s.revision))
+           AND (r.id IS NULL OR json_extract(r.result_json, '$.revision') != s.revision
+             OR COALESCE(json_extract(r.result_json, '$.lastCheckedAt'), '') <= ?)
+         ORDER BY COALESCE(json_extract(r.result_json, '$.lastCheckedAt'), ''), s.token_hash
+         LIMIT 1`,
+      ).get(
+        suggestionDay(now).toPlainDate().toString(),
+        new Date(now.getTime() - PROACTIVE_EVENT_LIMITS.checkMs).toISOString(),
+      )) as { owner: string; revision: number } | undefined;
+      if (!due) return null;
+      const state = await this.eventSuggestionState(due.owner);
+      state.lastCheckedAt = now.toISOString();
+      state.revision = due.revision;
+      await this.saveEventSuggestionState(due.owner, state, now);
+      return due;
+    }).immediate();
+  }
+
+  async eventSuggestion(
+    owner: string,
+    now: Date,
+    create = false,
+    explicitlyRequested = false,
+    expectedRunId?: string | null,
+  ): Promise<EventSuggestion | null> {
+    return this.db.transaction(async () => {
+      const { state: profile, confirmed } = await this.discoveryProfile(owner);
+      const state = await this.eventSuggestionState(owner);
+      const previous = JSON.stringify(state);
+      const row = await this.readDiscoveryForOwner(owner, now);
+      // A concurrent refresh must not attach a suggestion to an older HTTP snapshot
+      // whose positional event IDs refer to different candidates.
+      if (expectedRunId !== undefined && expectedRunId !== (row?.run_id ?? null)) return null;
+      const result = row?.result_json ? JSON.parse(row.result_json) as DiscoveryResult : null;
+      const ready = row?.status === "ready" || row?.status === "partial";
+      const usable = confirmed && profile.context && discoveryWindow(profile.context, now)
+        && result && (ready || row?.status === "running")
+        && now.getTime() - Date.parse(result.checkedAt) < PROACTIVE_EVENT_LIMITS.refreshMs;
+      const registrations = await this.db.prepare(
+        `SELECT e.event_json FROM network_events e JOIN users u ON u.id = e.user_id
+         WHERE u.profile_id = ? AND json_extract(e.event_json, '$.attendance') = 'registered'`,
+      ).all(owner);
+      const registered = (event: Recommendation) => registrations.some((row) => {
+        const entry = JSON.parse(String(row.event_json)) as {
+          url?: string; aliasUrls?: string[]; date?: string; start?: string | null;
+        };
+        let date = entry.date;
+        if (!date && entry.start) {
+          try { date = Temporal.Instant.from(entry.start).toZonedDateTimeISO("America/Los_Angeles").toPlainDate().toString(); }
+          catch { return false; }
+        }
+        return [entry.url, ...(entry.aliasUrls ?? [])].some((url) =>
+          !!url && eventSuggestionKeys(event).includes(`${canonicalEventUrl(url)}|${date}`),
+        );
+      });
+      const candidates = usable ? result.recommendations.filter((event) =>
+        !eventHasEnded(event, now) && !registered(event),
+      ) : [];
+      const activeEvent = state.active?.revision === profile.revision
+        ? candidates.find((event) => eventSuggestionKeys(event).some((key) => state.active!.keys.includes(key)))
+        : undefined;
+      if (state.active && !activeEvent) state.active = null;
+      if (state.active && activeEvent) state.active.eventId = activeEvent.id;
+      const local = suggestionDay(now), day = local.toPlainDate().toString();
+      const allowedHour = explicitlyRequested || (local.hour >= 8 && local.hour < 21);
+      const cooldown = !state.lastSuggestedAt || now.getTime() - Date.parse(state.lastSuggestedAt) >= PROACTIVE_EVENT_LIMITS.suggestionMs;
+      const dailyCount = state.day === day ? state.dayCount : 0;
+      if (create && ready && !state.active && allowedHour && cooldown && dailyCount < PROACTIVE_EVENT_LIMITS.suggestionsPerDay) {
+        const next = candidates.find((event) => event.reason.trim()
+          && !eventSuggestionKeys(event).some((key) => state.seen.includes(key)));
+        if (next) {
+          const keys = eventSuggestionKeys(next);
+          state.active = {
+            id: randomUUID(), eventId: next.id, revision: profile.revision, keys,
+            message: next.reason,
+            createdAt: now.toISOString(),
+          };
+          state.seen = [...new Set([...state.seen, ...keys])];
+          state.lastSuggestedAt = now.toISOString();
+          state.day = day;
+          state.dayCount = dailyCount + 1;
+        }
+      }
+      if (JSON.stringify(state) !== previous) await this.saveEventSuggestionState(owner, state, now);
+      if (!state.active) return null;
+      const { id, eventId, message, createdAt } = state.active;
+      return { id, eventId, message, createdAt };
+    }).immediate();
+  }
+
+  async dismissEventSuggestion(token: string | undefined, revision: number, suggestionId: string, now: Date) {
+    const owner = await this.calendarOwner(token);
+    await this.db.transaction(async () => {
+      if ((await this.discoveryProfile(owner)).state.revision !== revision)
+        throw new DiscoveryError("profile_changed");
+      const state = await this.eventSuggestionState(owner);
+      // A repeated dismissal cannot dismiss a newer suggestion or another owner.
+      if (state.active?.id === suggestionId) {
+        state.active = null;
+        await this.saveEventSuggestionState(owner, state, now);
+      }
+    }).immediate();
   }
 
   async finishDiscovery(

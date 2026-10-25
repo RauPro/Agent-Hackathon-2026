@@ -26,8 +26,13 @@ export type NetworkSettings = NetworkSettingsInput & { qrToken: string };
 export type SharedEvent = {
   id: string;
   title: string;
-  start: string;
-  end: string;
+  start: string | null;
+  end: string | null;
+  date?: string;
+  dateStatus?: "confirmed" | "unconfirmed_year";
+  attendance?: "planned" | "registered";
+  reportedAt?: string;
+  canonicalKeys?: string[];
   area?: string | null;
   sourceMode: "user_report" | "demo";
 };

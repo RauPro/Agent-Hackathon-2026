@@ -1,6 +1,6 @@
 # Vercel deployment
 
-Live application: **[sf-sidekick-raupro.vercel.app](https://sf-sidekick-raupro.vercel.app)**. The Vercel project `sf-sidekick-raupro` tracks `feat/vercel-deployment` in `RauPro/Agent-Hackathon-2026`; pushes to that branch deploy to production. The first verified production deployment used commit `4b87832`.
+Live application: **[sf-sidekick-raupro.vercel.app](https://sf-sidekick-raupro.vercel.app)**. The Vercel project `sf-sidekick-raupro` tracks `main` in `RauPro/Agent-Hackathon-2026`; pushes to that branch deploy to production. The first verified production deployment used commit `4b87832`.
 
 Sidekick keeps one Next.js application. Vercel hosts the UI and route handlers; a remote SQLite-compatible libSQL database stores accounts, context, relationships, agent exchanges, meeting approvals and queued work. Local SQLite remains available for development. A writable local database is deliberately rejected when `VERCEL=1` because Vercel functions do not share persistent local storage. [Vercel guidance](https://vercel.com/kb/guide/is-sqlite-supported-in-vercel)
 
@@ -27,6 +27,8 @@ The production-only Turso integration uses `sf-sidekick-production` in Virginia 
 
 Google OAuth remains in **Testing**, so only configured Google test users can connect their calendars. Publishing the consent screen for a broader audience is a separate Google configuration and verification step.
 
+The controlled MVP uses email-only profile access: Continue creates a new account or reopens an existing email's account without a password or email verification. Existing profiles and calendar connections remain attached to their account. Knowing the email is sufficient to access that account, so this configuration assumes a trusted cohort rather than verified identity.
+
 Vercel supports Node 24 and 22; the current package engine range selects supported Node 24 there. Local development remains compatible with the existing Node installation. [Vercel Node versions](https://vercel.com/docs/functions/runtimes/node-js/node-js-versions)
 
 ## Persistence and work execution
@@ -35,11 +37,13 @@ The async database adapter supports the existing local SQLite files and remote `
 
 Onboarding and calendar operations use database leases instead of process-local in-flight sets. Meeting approvals still recheck the relationship, profile revision, calendar revision and conflicts in a transaction after external reads. Google/OpenAI requests never run inside a database transaction.
 
-Event discovery uses separate `event-discovery` domain/service modules so it does not replace the people matcher. Its claims, results, daily budget and three-run concurrency cap persist in the same database. The route schedules the provider pipeline with `after()`, bounded to 55 seconds within the configured 60-second function duration. Interrupted runs expire after a 90-second lease and can be retried. Verify live Exa/OpenAI recommendation quality and the deployed background run before release; local provider fixtures do not establish those results.
+`agent_dialogues` adds one durable row per accepted connection for the current AI conversation round. Existing connections are reconciled on network reads and worker triggers. Each worker invocation advances at most two model turns after bounded discovery; each model attempt has a 12-second deadline, and each pair has a 45-second fenced lease. All replies recheck current confirmed context, sharing and relationship before committing. Six agent turns per round and 24 completion attempts per pair per SF day prevent unbounded iteration. No new environment variables or provider credentials are needed. These limits do not authorize a meeting or a calendar write.
+
+Event discovery uses separate `event-discovery` domain/service modules so it does not replace the people matcher. Its claims, results, daily budget and three-run concurrency cap persist in the same database. The route schedules the provider pipeline with `after()`, bounded to 50 seconds within the configured 60-second function duration. Interrupted runs expire after a 90-second lease and can be retried. Verify live Exa/OpenAI recommendation quality and the deployed background run before release; local provider fixtures do not establish those results.
 
 Vercel skips the process timer. Confirmed onboarding/profile changes and network mutations use `after()` to process bounded queued work. `GET /api/cron/network` requires `Authorization: Bearer <CRON_SECRET>`. The queue persists a cursor and source version, skips ineligible profiles, rotates progress fairly and uses a lease to prevent competing workers. Each pair commits separately, keeping transactions short for remote libSQL. [Turso transaction reference](https://docs.turso.tech/sdk/ts/reference)
 
-The verified Vercel team is Pro, so `vercel.json` schedules one check per minute. Hobby deployments must change the schedule to a daily expression such as `0 8 * * *`; their event-triggered work still runs after mutations. Cron failures leave durable work queued for retry. [Vercel cron limits](https://vercel.com/docs/cron-jobs/usage-and-pricing)
+The verified Vercel team is Pro. `vercel.json` schedules `/api/cron/network` every minute for people matching and connected dialogue, and `/api/cron/events` every 15 minutes for quiet event discovery. Both require the existing `CRON_SECRET`. The event worker checks up to 20 due profiles within an eight-second metadata budget and starts at most one paid pipeline; it subtracts elapsed metadata time from the pipeline deadline to leave time for final database writes. Source refresh has a six-hour interval, while visible suggestions have a six-hour cooldown and a maximum of two per SF day during 8 AM–9 PM. Larger queues rotate across ticks. No periodic messages are added to chat. Hobby deployments must change the schedule to a daily expression such as `0 8 * * *`; their event-triggered work still runs after mutations. Cron failures leave durable work queued for retry. [Vercel cron limits](https://vercel.com/docs/cron-jobs/usage-and-pricing)
 
 ## Release verification
 
@@ -66,3 +70,9 @@ Calendar writing remains outside the current feature set. Bilaterally approved m
 - Cron rejected an unauthenticated request with 401 and accepted the configured bearer secret with 200 (`processed: 0` on the empty queue).
 - Synthetic accounts stayed undiscoverable and were removed by their exact recorded IDs. No local accounts, private calendars or demo community were copied into production.
 - The Google production callback was saved and verified after reopening the client. Live Google authorization and availability remain verified only locally; the deployed app still needs a user-completed Google connection test.
+
+### Connected dialogue verification
+
+The iterative conversation release (`dac6d88`) passed 182 unit/service checks, 30 browser checks, lint and the production build. Ten paid-provider tests are opt-in; the new dialogue live evaluation was run separately and passed with four actual OpenAI turns between fictional peers with the same goal and non-overlapping trips.
+
+The [deployed verification](verification/deployed-agent-dialogue-2026-10-24.json) used the two existing fictional connected accounts. Their conversation automatically started, completed four alternating turns, and returned identical persisted text and message IDs in both sessions after reload. All 12 HTTP checks succeeded, discovery remained off, and the temporary test logins were signed out. No meeting, calendar or profile mutation was made by that verification. The real connected-user UI also displayed the new alternating conversation; its private transcript is not stored in this repository.

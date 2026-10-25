@@ -1,0 +1,11 @@
+{
+  "testedAt": "2026-10-24T23:22:37.506Z",
+  "origin": "https://sf-sidekick-raupro.vercel.app",
+  "commit": "dac6d88",
+  "fixture": "Two existing fictional test accounts; no real-user transcript exported",
+  "passed": true,
+  "agentTurns": 4,
+  "status": "completed",
+  "sameTranscriptAfterReload": true,
+  "verification": "Only aggregate results are published. Conversation text, questions, answers, identities and provider data are omitted."
+}

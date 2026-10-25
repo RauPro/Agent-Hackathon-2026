@@ -1,5 +1,7 @@
 import {
   DISCOVERY_LIMITS,
+  PROACTIVE_EVENT_LIMITS,
+  isDiscoveryError,
   DiscoveryError,
   canonicalUrl,
   deduplicate,
@@ -16,7 +18,9 @@ import {
   type DiscoveryResult,
   type DiscoveryView,
 } from "@/lib/domain/event-discovery";
-import { ContextStore } from "./store";
+import { ContextStore, getStore } from "./store";
+import { randomUUID } from "node:crypto";
+import { Temporal } from "@js-temporal/polyfill";
 import { assistantConfigured } from "./onboarding-model";
 import { exaConfigured, exaContents, exaSearch, type ExaResult } from "./exa";
 import {
@@ -81,6 +85,7 @@ export async function discoveryStatus(
     tripPast: !!state?.context && !window,
     dailyLimitReached,
     window,
+    suggestion: await store.eventSuggestion(owner, now, false, false, row?.run_id ?? null),
     discovery: row
       ? {
           revision: row.profile_revision,
@@ -131,16 +136,27 @@ export async function startDiscovery(
   if (!discoveryConfigured()) throw new DiscoveryError("not_configured");
   const deps = { ...defaultDeps, ...overrides };
   const now = deps.now();
-  const owner = await store.calendarOwner(token);
   const capacity = active.size < DISCOVERY_LIMITS.concurrent;
   const claim = await store.claimDiscovery(token, request, now, capacity);
-  if (!claim.claimed)
-    return { view: await discoveryStatus(store, token, now), run: null };
+  const run = prepareDiscoveryRun(store, claim, request, deps, true);
+  return { view: await discoveryStatus(store, token, now), run };
+}
+
+function prepareDiscoveryRun(
+  store: ContextStore,
+  claim: Awaited<ReturnType<ContextStore["claimDiscovery"]>>,
+  request: DiscoveryRequest,
+  deps: DiscoveryDeps,
+  explicitlyRequested: boolean,
+  timeBudgetMs: number = DISCOVERY_LIMITS.deadlineMs,
+) {
+  if (!claim.claimed) return null;
+  const owner = claim.owner;
   for (const pending of active.values())
     if (pending.owner === owner && pending.revision !== request.revision)
       pending.controller.abort();
   const controller = new AbortController();
-  const deadline = AbortSignal.timeout(DISCOVERY_LIMITS.deadlineMs);
+  const deadline = AbortSignal.timeout(timeBudgetMs);
   const signal = AbortSignal.any([controller.signal, deadline]);
   active.set(claim.row.run_id, {
     owner,
@@ -342,6 +358,60 @@ export async function startDiscovery(
       clearTimeout(reservation);
       active.delete(claim.row.run_id);
     }
+    await store.eventSuggestion(owner, deps.now(), true, explicitlyRequested);
   };
-  return { view: await discoveryStatus(store, token, now), run };
+  return run;
+}
+
+// One bounded research pipeline per cron invocation. Checking is frequent;
+// research and user-visible suggestions each have independent quiet budgets.
+export async function drainEventDiscovery(
+  store = getStore(),
+  overrides: Partial<DiscoveryDeps> = {},
+) {
+  if (!discoveryConfigured()) return { configured: false, checked: 0, started: 0 };
+  const deps = { ...defaultDeps, ...overrides };
+  const startedAt = Date.now();
+  const lease = await store.db.acquireLease("event-discovery-worker", 60_000);
+  if (!lease) return { configured: true, checked: 0, started: 0 };
+  let checked = 0;
+  try {
+    // Metadata-only checks are bounded by count and wall time, leaving room for
+    // one provider pipeline and its final database writes within a 60s route.
+    while (checked < PROACTIVE_EVENT_LIMITS.checksPerRun && Date.now() - startedAt < 8_000) {
+      const now = deps.now();
+      const due = await store.claimProactiveDiscoveryCheck(now);
+      if (!due) break;
+      checked++;
+      await store.eventSuggestion(due.owner, now, true);
+      const local = Temporal.Instant.from(now.toISOString()).toZonedDateTimeISO("America/Los_Angeles");
+      if (local.hour < 8 || local.hour >= 21) continue;
+      const row = await store.readDiscoveryForOwner(due.owner, now);
+      // Provider failures stay visible and cannot consume a fresh paid run on
+      // every tick. Cached profiles do not block checks for other due users.
+      if (row && (row.status === "running"
+        || now.getTime() - Date.parse(row.started_at) < PROACTIVE_EVENT_LIMITS.refreshMs)) continue;
+      const request: DiscoveryRequest = {
+        action: row ? "refresh" : "start", revision: due.revision, requestId: randomUUID(),
+      };
+      try {
+        const claim = await store.claimDiscoveryForOwner(
+          due.owner, request, now, active.size < DISCOVERY_LIMITS.concurrent, true,
+        );
+        // The 50-second cap shrinks if database checks have already used time.
+        const remainingMs = Math.max(1, Math.min(DISCOVERY_LIMITS.deadlineMs, 52_000 - (Date.now() - startedAt)));
+        const run = prepareDiscoveryRun(store, claim, request, deps, false, remainingMs);
+        if (run) {
+          await run();
+          return { configured: true, checked, started: 1 };
+        }
+      } catch (error) {
+        if (!isDiscoveryError(error)) throw error;
+        if (error.code === "daily_limit" || error.code === "busy") break;
+      }
+    }
+    return { configured: true, checked, started: 0 };
+  } finally {
+    await store.db.releaseLease("event-discovery-worker", lease);
+  }
 }

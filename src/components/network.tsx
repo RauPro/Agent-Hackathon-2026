@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Account } from "@/lib/domain/auth";
+import type { AgentDialogue, DialogueAction } from "@/lib/domain/agent-dialogue";
 import type {
   OpportunityView as Opportunity,
   NetworkEvent,
@@ -22,10 +23,10 @@ import {
   type NetworkField,
   type NetworkSettings,
   type Visibility,
+  type SharedEvent,
 } from "@/lib/domain/network";
 import { manualMeetingSlot, type MeetingView } from "@/lib/domain/meetings";
-import { Brand } from "./brand";
-import { AccountMenu } from "./account-menu";
+import { AppHeader } from "./app-header";
 import { QRScanner } from "./qr-scanner";
 import {
   AgentConversations,
@@ -43,6 +44,7 @@ type NetworkState = {
   opportunities: Opportunity[];
   events: NetworkEvent[];
   meetings: MeetingView[];
+  dialogues: AgentDialogue[];
 };
 type Action = (
   payload: Record<string, unknown>,
@@ -77,33 +79,25 @@ const timeLabel = (value: string) =>
     timeZone: "America/Los_Angeles",
   }).format(new Date(value));
 
-function Header({
+const eventTimeLabel = (event: SharedEvent) => {
+  const timing = event.start
+    ? `${timeLabel(event.start)} SF time`
+    : event.date ? `${dateLabel(event.date)} · Time not confirmed` : "Time not confirmed";
+  return `${timing}${event.dateStatus === "unconfirmed_year" ? " · Year not confirmed" : ""}`;
+};
+
+export function Network({
   account,
-  disabled = false,
+  embedded = false,
+  active = true,
 }: {
   account: Account;
-  disabled?: boolean;
+  embedded?: boolean;
+  active?: boolean;
 }) {
-  return (
-    <header className="site-header network-header">
-      <Brand />
-      <nav aria-label="Main">
-        <a href="/onboarding">Your profile</a>
-      </nav>
-      <details className="network-account">
-        <summary aria-label="Account menu">
-          {account.email.slice(0, 1).toUpperCase()}
-        </summary>
-        <AccountMenu account={account} disabled={disabled} />
-      </details>
-    </header>
-  );
-}
-
-export function Network({ account }: { account: Account }) {
   const [state, setState] = useState<NetworkState | null>(null);
   const [tab, setTab] = useState<"opportunities" | "connections" | "agents">(
-    "opportunities",
+    embedded ? "agents" : "opportunities",
   );
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -112,53 +106,73 @@ export function Network({ account }: { account: Account }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const inFlight = useRef(false);
+  const activeRef = useRef(active);
+  const refreshSequence = useRef(0);
   const retry = useRef<{ signature: string; requestId: string } | null>(null);
   const goTo = (view: typeof tab, person: string | null = null) => {
-    setTab(view);
+    setTab(embedded ? "agents" : view);
     setSelectedId(person);
     const url = new URL(window.location.href);
-    url.searchParams.set("view", view);
+    if (embedded) url.searchParams.set("agents", "1");
+    else url.searchParams.set("view", view);
     if (person) url.searchParams.set("person", person);
     else url.searchParams.delete("person");
-    window.history.pushState(null, "", url);
+    if (url.href !== window.location.href)
+      window.history.pushState(null, "", url);
   };
   const openThread = (userId: string) => goTo("agents", userId);
 
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
-      const response = await fetch("/api/network", {
-        cache: "no-store",
-        signal,
-        headers: { "X-Sidekick-Account": account.id },
-      });
-      if (response.status === 401) {
-        window.location.replace("/login?next=%2Fnetwork");
-        return;
+      if (!activeRef.current) return;
+      const sequence = ++refreshSequence.current;
+      try {
+        const response = await fetch("/api/network", {
+          cache: "no-store",
+          signal,
+          headers: { "X-Sidekick-Account": account.id },
+        });
+        if (!activeRef.current || sequence !== refreshSequence.current || signal?.aborted)
+          return;
+        if (response.status === 401) {
+          window.location.replace(
+            embedded ? "/login?next=%2Fonboarding" : "/login?next=%2Fnetwork",
+          );
+          return;
+        }
+        const result = await response.json();
+        if (!activeRef.current || sequence !== refreshSequence.current || signal?.aborted)
+          return;
+        if (!response.ok)
+          throw new Error(
+            result.message || "Could not load your network. Try again.",
+          );
+        if (result.accountId !== account.id) {
+          window.location.reload();
+          return;
+        }
+        setState(result);
+        setLoading(false);
+      } catch (problem) {
+        if (!activeRef.current || sequence !== refreshSequence.current || signal?.aborted)
+          return;
+        throw problem;
       }
-      const result = await response.json();
-      if (!response.ok)
-        throw new Error(
-          result.message || "Could not load your network. Try again.",
-        );
-      if (result.accountId !== account.id) {
-        window.location.reload();
-        return;
-      }
-      setState(result);
-      setLoading(false);
     },
-    [account.id],
+    [account.id, embedded],
   );
 
   useEffect(() => {
+    activeRef.current = active;
+    if (!active) return;
     const controller = new AbortController();
     void Promise.resolve()
       .then(() => {
         const view = new URLSearchParams(window.location.search).get("view");
+        if (!embedded && new URLSearchParams(window.location.search).get("sharing") === "1") setSharing(true);
         if (
-          view === "agents" ||
-          view === "connections" ||
-          view === "opportunities"
+          !embedded &&
+          (view === "agents" || view === "connections" || view === "opportunities")
         )
           setTab(view);
         setSelectedId(
@@ -179,28 +193,48 @@ export function Network({ account }: { account: Account }) {
       if (document.visibilityState === "visible" && !inFlight.current)
         void refresh(controller.signal).catch(() => {});
     };
-    const interval = setInterval(update, 15000);
     window.addEventListener("focus", update);
     const restoreView = () => {
       const parameters = new URLSearchParams(window.location.search),
         view = parameters.get("view");
       setTab(
-        view === "agents" || view === "connections" ? view : "opportunities",
+        embedded
+          ? "agents"
+          : view === "agents" || view === "connections" ? view : "opportunities",
       );
       setSelectedId(parameters.get("person"));
     };
     window.addEventListener("popstate", restoreView);
     return () => {
+      activeRef.current = false;
+      refreshSequence.current += 1;
       controller.abort();
-      clearInterval(interval);
       window.removeEventListener("focus", update);
       window.removeEventListener("popstate", restoreView);
     };
-  }, [refresh]);
+  }, [active, embedded, refresh]);
+
+  const dialogueActive = state?.dialogues?.some((dialogue) =>
+    dialogue.status === "queued" || dialogue.status === "running",
+  ) ?? false;
+  useEffect(() => {
+    if (!active) return;
+    const controller = new AbortController();
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible" && !inFlight.current)
+        void refresh(controller.signal).catch(() => {});
+    }, dialogueActive ? 3000 : 15000);
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
+  }, [active, dialogueActive, refresh]);
 
   const act: Action = async (payload, endpoint = "/api/network") => {
-    if (inFlight.current) return false;
+    if (!activeRef.current || inFlight.current) return false;
     inFlight.current = true;
+    // A delayed poll must not restore state from before this action.
+    refreshSequence.current += 1;
     setBusy(true);
     setError("");
     const signature = JSON.stringify({ endpoint, payload });
@@ -220,7 +254,9 @@ export function Network({ account }: { account: Account }) {
       });
       const result = await response.json();
       if (response.status === 401) {
-        window.location.replace("/login?next=%2Fnetwork");
+        window.location.replace(
+          embedded ? "/login?next=%2Fonboarding" : "/login?next=%2Fnetwork",
+        );
         return false;
       }
       if (!response.ok) {
@@ -232,6 +268,7 @@ export function Network({ account }: { account: Account }) {
       retry.current = null;
       await refresh();
       if (
+        activeRef.current &&
         (payload.action === "query" ||
           payload.action === "propose" ||
           (payload.action === "connection" && payload.decision === "accept")) &&
@@ -258,6 +295,7 @@ export function Network({ account }: { account: Account }) {
         state.connections,
         state.messages,
         state.meetings,
+        state.dialogues,
       )
     : [];
   const pending = threads.reduce((sum, thread) => sum + thread.needsYou, 0);
@@ -265,20 +303,35 @@ export function Network({ account }: { account: Account }) {
     state?.connections.filter(
       (item) => item.status === "pending" && item.direction === "incoming",
     ).length ?? 0;
+  const Container = embedded ? "div" : "main";
 
   return (
     <>
-      <a className="skip-link" href="#network">
-        Skip to network
-      </a>
-      <Header account={account} disabled={busy} />
-      <main
-        className={`network-layout${tab === "agents" ? " conversation-layout" : ""}`}
-        id="network"
+      {!embedded && (
+        <>
+          <a className="skip-link" href="#network">Skip to network</a>
+          <AppHeader account={account} active="network" disabled={busy} />
+        </>
+      )}
+      <Container
+        className={`network-layout${embedded ? " network-panel" : ""}${tab === "agents" ? " conversation-layout" : ""}`}
+        id={embedded ? undefined : "network"}
       >
-        <div className="network-page-heading">
+        {embedded ? (
+          <div className="network-panel-toolbar">
+            <button
+              className="toolbar-button"
+              aria-expanded={sharing}
+              onClick={() => setSharing(!sharing)}
+            >
+              Sharing
+            </button>
+            <a href={selectedId ? `/network?view=agents&person=${encodeURIComponent(selectedId)}` : "/network?view=agents"}>
+              Open Network <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        ) : <div className="network-page-heading">
           <div>
-            <span className="network-eyebrow">SIDEKICK NETWORK</span>
             <h1>
               {tab === "agents"
                 ? "Agent conversations"
@@ -314,7 +367,7 @@ export function Network({ account }: { account: Account }) {
               Connect with QR
             </button>
           </div>
-        </div>
+        </div>}
         {error && (
           <div className="notice network-notice" role="alert">
             <p>{error}</p>
@@ -332,7 +385,7 @@ export function Network({ account }: { account: Account }) {
             </button>
           </div>
         )}
-        {loading && <p className="loading-state">Opening your network…</p>}
+        {loading && <p className="loading-state">{embedded ? "Opening conversations…" : "Opening your network…"}</p>}
         {state && (
           <>
             {sharing && (
@@ -377,7 +430,7 @@ export function Network({ account }: { account: Account }) {
                 </div>
               </section>
             )}
-            <nav className="network-tabs" aria-label="Network views">
+            {!embedded && <nav className="network-tabs" aria-label="Network views">
               <button
                 aria-current={tab === "opportunities" ? "page" : undefined}
                 onClick={() => goTo("opportunities")}
@@ -400,7 +453,7 @@ export function Network({ account }: { account: Account }) {
                   <span className="nav-count">{incomingConnections}</span>
                 )}
               </button>
-            </nav>
+            </nav>}
             {tab === "opportunities" && (
               <section aria-label="For you">
                 {pending > 0 && (
@@ -465,7 +518,7 @@ export function Network({ account }: { account: Account }) {
                     />
                   ))}
                 </div>
-                {threads.some((thread) => thread.messages.length > 0) && (
+                {threads.some((thread) => thread.messages.length > 0 || thread.dialogue) && (
                   <section
                     className="recent-agent-section"
                     aria-label="Recent agent activity"
@@ -480,7 +533,7 @@ export function Network({ account }: { account: Account }) {
                       </button>
                     </div>
                     {threads
-                      .filter((thread) => thread.messages.length > 0)
+                      .filter((thread) => thread.messages.length > 0 || thread.dialogue)
                       .slice(0, 2)
                       .map((thread) => (
                         <button
@@ -549,12 +602,14 @@ export function Network({ account }: { account: Account }) {
               </section>
             )}
             {tab === "agents" && (
+              <div hidden={embedded && sharing}>
               <AgentConversations
                 accountId={account.id}
                 threads={threads}
                 selectedId={selectedId}
                 select={(id) => goTo("agents", id)}
                 seePeople={() => goTo("connections")}
+                peopleHref={embedded ? "/network?view=connections" : undefined}
                 response={(value) => <InformationAnswers response={value} />}
                 messageAction={(message) => (
                   <MessageCard
@@ -572,6 +627,20 @@ export function Network({ account }: { account: Account }) {
                     accountId={account.id}
                     act={act}
                     busy={busy}
+                  />
+                )}
+                dialogueAction={(dialogue) => (
+                  <DialogueCard
+                    key={`${dialogue.id}:${dialogue.turns[0]?.id ?? ""}:${dialogue.waitingForUserId ?? ""}:${dialogue.question ?? ""}`}
+                    dialogue={dialogue}
+                    accountId={account.id}
+                    act={act}
+                    busy={busy}
+                    reviewSharing={() => {
+                      setSharing(true);
+                      setTools(false);
+                      requestAnimationFrame(() => document.querySelector<HTMLElement>('[aria-label="Discovery and sharing"] select')?.focus());
+                    }}
                   />
                 )}
                 compose={(thread) => (
@@ -601,11 +670,82 @@ export function Network({ account }: { account: Account }) {
                   </div>
                 )}
               />
+              </div>
             )}
           </>
         )}
-      </main>
+      </Container>
     </>
+  );
+}
+
+function DialogueCard({
+  dialogue,
+  accountId,
+  act,
+  busy,
+  reviewSharing,
+}: {
+  dialogue: AgentDialogue;
+  accountId: string;
+  act: Action;
+  busy: boolean;
+  reviewSharing: () => void;
+}) {
+  const [answer, setAnswer] = useState("");
+  const ownsQuestion = dialogue.status === "needs_user" && dialogue.waitingForUserId === accountId;
+  const canPause = ["queued", "running", "needs_user"].includes(dialogue.status);
+  const titles: Record<AgentDialogue["status"], string> = {
+    awaiting_profile: dialogue.ownProfileReady ? "Waiting for their profile" : "Confirm your profile to begin",
+    awaiting_sharing: dialogue.ownSharingReady ? "Waiting for their sharing preferences" : "Choose what your Sidekick can share",
+    queued: "Conversation queued",
+    running: "Your Sidekicks are talking",
+    needs_user: ownsQuestion ? "Your Sidekick has a question" : `Waiting for ${dialogue.name.split(" ")[0]}`,
+    completed: dialogue.suggestion ? "Suggested next step" : "Conversation complete",
+    paused: "Conversation paused",
+    error: "The conversation couldn’t continue",
+    revoked: "Conversation access revoked",
+  };
+  const operate = (operation: DialogueAction["operation"], sharedAnswer?: string) =>
+    act({ action: "dialogue", toUserId: dialogue.userId, revision: dialogue.revision, operation, ...(sharedAnswer ? { answer: sharedAnswer } : {}) });
+  return (
+    <section className={`dialogue-status${ownsQuestion ? " needs-answer" : ""}`} aria-label="Agent conversation status">
+      <div className="dialogue-status-heading">
+        <h3 aria-live="polite">{titles[dialogue.status]}</h3>
+        {canPause && <button className="text-button" disabled={busy} onClick={() => void operate("pause")}>Pause conversation</button>}
+      </div>
+      {dialogue.status === "revoked" ? (
+        <p>Previously shared conversation content is hidden.</p>
+      ) : (
+        <>
+          {["awaiting_sharing", "completed", "paused", "error"].includes(dialogue.status) && dialogue.statusDetail && <p>{dialogue.statusDetail}</p>}
+          {dialogue.status === "completed" && dialogue.suggestion && (
+            <p className="dialogue-suggestion">{dialogue.suggestion}</p>
+          )}
+          {dialogue.status === "completed" && dialogue.suggestion && <p className="network-muted">A suggestion only. Meeting times still need approval from both people.</p>}
+          {dialogue.status === "awaiting_profile" && !dialogue.ownProfileReady && <a className="primary-button" href="/onboarding">Review and confirm profile</a>}
+          {dialogue.status === "awaiting_sharing" && !dialogue.ownSharingReady && <button className="primary-button" onClick={reviewSharing}>Review sharing preferences</button>}
+          {ownsQuestion && dialogue.question && (
+            <form onSubmit={(event) => {
+              event.preventDefault();
+              void operate("answer", answer.trim()).then((saved) => { if (saved) setAnswer(""); });
+            }}>
+              <label>
+                {dialogue.question}
+                <textarea value={answer} maxLength={2000} required onChange={(event) => setAnswer(event.target.value)} />
+              </label>
+              <p className="network-muted">Your answer will be shared with {dialogue.name} and their Sidekick in this conversation.</p>
+              <div className="network-actions">
+                <button className="primary-button" disabled={busy || !answer.trim()}>Share answer and continue</button>
+                <button type="button" className="text-button" disabled={busy} onClick={() => void operate("decline")}>Decline to answer</button>
+              </div>
+            </form>
+          )}
+          {dialogue.status === "paused" && dialogue.pausedByUserId === accountId && <button className="primary-button" disabled={busy} onClick={() => void operate("resume")}>Resume conversation</button>}
+          {dialogue.status === "error" && <button className="primary-button" disabled={busy} onClick={() => void operate("retry")}>Retry conversation</button>}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -837,7 +977,7 @@ export function ConnectPreview({
   }
   return (
     <>
-      <Header account={account} disabled={busy} />
+      <AppHeader account={account} active="network" disabled={busy} />
       <main className="network-layout">
         <h1>
           {person ? `Connect with ${person.name}` : "Connect on Sidekick"}
@@ -920,14 +1060,14 @@ function OpportunityCard({
       </div>
       {opportunity.sharedEvents.map((event) => (
         <p key={event.id}>
-          Shared event: {event.title} · {timeLabel(event.start)} SF time
+          Shared event: {event.title} · {eventTimeLabel(event)}
         </p>
       ))}
       {opportunity.eventSuggestions?.map((event) => (
         <p key={event.id}>
-          {opportunity.name} plans to attend {event.title} ·{" "}
-          {timeLabel(event.start)} SF time{event.area ? ` · ${event.area}` : ""}
-          . Registration and availability have not been checked.
+          {opportunity.name} {event.attendance === "registered" ? "reported registering for" : "plans to attend"} {event.title} ·{" "}
+          {eventTimeLabel(event)}{event.area ? ` · ${event.area}` : ""}
+          . Admission and availability have not been checked.
         </p>
       ))}
       <details>
@@ -971,7 +1111,7 @@ function OpportunityCard({
                 action: "connect",
                 toUserId: opportunity.userId,
                 source: "opportunity",
-                context: opportunity.benefits.them,
+                context: "Sidekick suggested exploring a connection based on your shared profiles.",
               })
             }
           >
@@ -1022,7 +1162,7 @@ function ConnectionCard({
                 : "Request sent"}
         </span>
       </div>
-      {connection.context && <p>{connection.context}</p>}
+      {connection.context && <p>{connection.source === "opportunity" ? "Sidekick suggested exploring a connection based on your shared profiles." : connection.context}</p>}
       <p className="network-muted">
         {connection.source === "qr"
           ? "Met through a QR connection"
@@ -1033,8 +1173,8 @@ function ConnectionCard({
         connection.direction === "incoming" && (
           <>
             <p className="network-muted">
-              Your agents can use the information you allow connections to see
-              to find opportunities.
+              Your agents can talk after you accept and both profiles are
+              confirmed, using only the information you share.
             </p>
             <div className="network-actions">
               <button
@@ -1181,7 +1321,7 @@ function informationText(result: InformationResult): ReactNode {
   if (Array.isArray(value))
     return value.length
       ? value
-          .map((event) => `${event.title} · ${timeLabel(event.start)} SF time`)
+          .map((event) => `${event.title} · ${eventTimeLabel(event)}`)
           .join("\n")
       : "No shared events";
   if ("bio" in value) return `${value.bio}\n${value.offers}`;
@@ -1662,16 +1802,17 @@ function EventList({
     }
   }
   return (
-    <details className="network-settings">
-      <summary>Events you plan to attend</summary>
+    <details className="network-settings" id="my-events" open={events.length > 0}>
+      <summary>Your events</summary>
       {events.map((event) => (
         <article className="network-card" key={event.id}>
           <h3>{event.title}</h3>
           <p>
-            {timeLabel(event.start)} SF time
+            {eventTimeLabel(event)}
             {event.area ? ` · ${event.area}` : ""}
           </p>
           <p className="network-muted">
+            {event.attendance === "registered" ? "Registered · " : "Planning to attend · "}
             {event.sourceMode === "demo" ? "Demo event" : "Reported by you"} ·{" "}
             {event.visibility === "private"
               ? "Only me"

@@ -1,7 +1,7 @@
 import { test, expect, type Browser, type Page } from "@playwright/test";
 import { join } from "node:path";
 import { validContext } from "../fixtures";
-import { register, testPassword } from "./auth-helper";
+import { register } from "./auth-helper";
 
 const origin = "http://127.0.0.1:3100";
 
@@ -9,6 +9,7 @@ async function person(
   browser: Browser,
   name: string,
   goal: "seeking_role" | "hiring" = "seeking_role",
+  confirmed = true,
 ) {
   const context = await browser.newContext({
     baseURL: origin,
@@ -35,16 +36,18 @@ async function person(
   profile.trip.end = new Date(Date.now() + 12 * 86400000)
     .toISOString()
     .slice(0, 10);
-  const saved = await page.request.post("/api/context", {
-    headers: { origin },
-    data: {
-      context: profile,
-      baseRevision: 0,
-      requestId: crypto.randomUUID(),
-      confirmed: true,
-    },
-  });
-  expect(saved.status()).toBe(200);
+  if (confirmed) {
+    const saved = await page.request.post("/api/context", {
+      headers: { origin },
+      data: {
+        context: profile,
+        baseRevision: 0,
+        requestId: crypto.randomUUID(),
+        confirmed: true,
+      },
+    });
+    expect(saved.status()).toBe(200);
+  }
   const state = await (await page.request.get("/api/network")).json();
   return { page, context, account, email, state, date: tomorrow };
 }
@@ -69,6 +72,23 @@ async function connect(
     data: { action: "connection", toUserId: a.account.id, decision: "accept" },
   });
   expect(accepted.status()).toBe(200);
+}
+
+async function shareWithConnections(current: Awaited<ReturnType<typeof person>>) {
+  const state = await (await current.page.request.get("/api/network")).json();
+  const response = await current.page.request.post("/api/network", {
+    headers: { origin },
+    data: {
+      action: "settings",
+      settings: {
+        revision: state.settings.revision,
+        discoverable: false,
+        visibility: { ...state.settings.visibility, profile: "friends", goal: "friends" },
+        area: null,
+      },
+    },
+  });
+  expect(response.status()).toBe(200);
 }
 
 async function shot(page: Page, name: string) {
@@ -154,7 +174,7 @@ test("a QR image opens a name-only preview; a request requires acceptance and pe
       new RegExp(`view=agents&person=${alex.account.id}$`),
     );
     await expect(
-      pedro.page.getByRole("heading", { name: "Your Sidekicks are connected" }),
+      pedro.page.getByRole("heading", { name: "Choose what your Sidekick can share" }),
     ).toBeVisible();
     await pedro.page.reload();
     await expect(
@@ -280,6 +300,113 @@ test("discovery recommends a reciprocal match after explicit sharing consent", a
       });
       await current.context.close();
     }
+  }
+});
+
+test("connected confirmed profiles exchange real turns, ask their owner and continue after a shared answer", async ({ browser }) => {
+  test.setTimeout(60000);
+  const alex = await person(browser, "Alex Dialogue");
+  const pedro = await person(browser, "Pedro Dialogue");
+  try {
+    for (const current of [alex, pedro]) await shareWithConnections(current);
+    const request = await alex.page.request.post("/api/network", {
+      headers: { origin },
+      data: { action: "connect", toUserId: pedro.account.id, source: "qr", token: pedro.state.settings.qrToken, context: "Met while discussing production AI." },
+    });
+    expect(request.status()).toBe(200);
+    for (const current of [alex, pedro]) {
+      const state = await (await current.page.request.get("/api/network")).json();
+      expect(state.dialogues).toEqual([]);
+    }
+    await alex.page.goto("/network?view=agents");
+    await expect(alex.page.getByRole("heading", { name: "No agent conversations yet" })).toBeVisible();
+    expect((await pedro.page.request.post("/api/network", {
+      headers: { origin },
+      data: { action: "connection", toUserId: alex.account.id, decision: "accept" },
+    })).status()).toBe(200);
+    await openConversation(alex.page, "Pedro Dialogue");
+    await expect(alex.page.getByText("We both build AI agents in production. Would comparing our approaches to reliable deployments be useful?", { exact: true })).toBeVisible({ timeout: 25000 });
+    await expect(alex.page.getByText("Comparing production experience could help both people. I will ask my user which project they would like to discuss.", { exact: true })).toBeVisible({ timeout: 25000 });
+    const state = await (await alex.page.request.get("/api/network")).json();
+    const dialogue = state.dialogues.find((item: { userId: string }) => item.userId === pedro.account.id);
+    expect(dialogue.status).toBe("needs_user");
+    expect(dialogue.turns.filter((turn: { kind: string }) => turn.kind === "agent").map((turn: { actorUserId: string }) => turn.actorUserId).sort()).toEqual([alex.account.id, pedro.account.id].sort());
+    const owner = dialogue.waitingForUserId === alex.account.id ? alex : pedro;
+    const peer = owner === alex ? pedro : alex;
+    await openConversation(owner.page, peer === alex ? "Alex Dialogue" : "Pedro Dialogue");
+    await openConversation(peer.page, owner === alex ? "Alex Dialogue" : "Pedro Dialogue");
+    const question = "Which project would you like to discuss with your connection?";
+    await expect(owner.page.getByRole("textbox", { name: question })).toBeVisible();
+    await expect(peer.page.getByRole("textbox", { name: question })).toHaveCount(0);
+    let releaseStale!: () => void;
+    let capturedStale!: () => void;
+    const holdStale = new Promise<void>((resolve) => { releaseStale = resolve; });
+    const staleCaptured = new Promise<void>((resolve) => { capturedStale = resolve; });
+    let held = false;
+    await owner.page.route("**/api/network", async (route) => {
+      if (route.request().method() !== "GET" || held) return route.continue();
+      held = true;
+      const response = await route.fetch();
+      const json = await response.json();
+      capturedStale();
+      await holdStale;
+      await route.fulfill({ status: response.status(), json, headers: { "x-stale-response-test": "1" } });
+    });
+    await owner.page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await staleCaptured;
+    await owner.page.getByRole("button", { name: "Pause conversation", exact: true }).click();
+    await expect(owner.page.getByRole("heading", { name: "Conversation paused", exact: true })).toBeVisible();
+    const staleDelivered = owner.page.waitForResponse((response) => response.headers()["x-stale-response-test"] === "1");
+    releaseStale();
+    await staleDelivered;
+    await owner.page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(owner.page.getByRole("heading", { name: "Conversation paused", exact: true })).toBeVisible();
+    await expect(owner.page.getByRole("textbox", { name: question })).toHaveCount(0);
+    await owner.page.unroute("**/api/network");
+    await peer.page.reload();
+    await expect(peer.page.getByRole("button", { name: "Resume conversation" })).toHaveCount(0);
+    await owner.page.getByRole("button", { name: "Resume conversation" }).click();
+    await owner.page.getByRole("textbox", { name: question }).fill("I would like to discuss the production evaluation pipeline I built.");
+    await owner.page.getByRole("button", { name: "Share answer and continue" }).click();
+    await expect(owner.page.getByRole("heading", { name: "Suggested next step", exact: true })).toBeVisible({ timeout: 25000 });
+    await peer.page.reload();
+    await expect(peer.page.getByText("I would like to discuss the production evaluation pipeline I built.", { exact: true })).toBeVisible();
+    await expect(peer.page.getByText("Shared answer", { exact: true })).toBeVisible();
+    await expect(peer.page.getByRole("region", { name: `Conversation with ${owner === alex ? "Alex Dialogue" : "Pedro Dialogue"}`, exact: true }).getByText("Consider a short conversation about production AI projects. Both people still need to approve any meeting time.", { exact: true })).toBeVisible();
+    const completed = await (await peer.page.request.get("/api/network")).json();
+    expect(completed.meetings).toHaveLength(0);
+    expect(completed.settings.discoverable).toBe(false);
+    expect(completed.dialogues[0].turns.filter((turn: { kind: string }) => turn.kind === "agent")).toHaveLength(4);
+    await shot(peer.page, "network-agent-dialogue-mobile");
+    for (const width of [320, 1280]) {
+      await peer.page.setViewportSize({ width, height: 900 });
+      expect(await peer.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await shot(peer.page, `network-agent-dialogue-${width}`);
+    }
+  } finally {
+    await alex.context.close();
+    await pedro.context.close();
+  }
+});
+
+test("an unconfirmed connection shows whose profile needs confirmation before agents can talk", async ({ browser }) => {
+  const alex = await person(browser, "Alex Draft", "seeking_role", false);
+  const pedro = await person(browser, "Pedro Confirmed");
+  try {
+    await connect(alex, pedro);
+    await openConversation(alex.page, "Pedro Confirmed");
+    await expect(alex.page.getByRole("heading", { name: "Confirm your profile to begin" })).toBeVisible();
+    await expect(alex.page.getByRole("link", { name: "Review and confirm profile" })).toHaveAttribute("href", "/onboarding");
+    await openConversation(pedro.page, "Sidekick member");
+    await expect(pedro.page.getByRole("heading", { name: "Waiting for their profile" })).toBeVisible();
+    await expect(pedro.page.getByRole("link", { name: "Review and confirm profile" })).toHaveCount(0);
+    for (const current of [alex, pedro]) {
+      const state = await (await current.page.request.get("/api/network")).json();
+      expect(state.dialogues[0].turns).toEqual([]);
+    }
+  } finally {
+    await alex.context.close();
+    await pedro.context.close();
   }
 });
 
@@ -416,8 +543,7 @@ test("sign-in returns to the scanned connection and foreign links are rejected",
     await page
       .getByRole("textbox", { name: "Email", exact: true })
       .fill(alex.email);
-    await page.getByLabel("Password", { exact: true }).fill(testPassword);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
     await expect(page).toHaveURL(`${origin}${path}`);
     await expect(
       page.getByRole("heading", { name: "Connect with Pedro Chen" }),
