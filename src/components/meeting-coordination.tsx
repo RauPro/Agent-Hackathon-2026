@@ -68,7 +68,7 @@ export function MeetingForm({
           placeholder="A café or public meeting place"
         />
       </label>}
-      {modality === "in_person" && suggestedArea && <label className="meeting-share-area">
+      {modality === "in_person" && suggestedArea && <label className="network-check">
         <input type="checkbox" checked={shareArea} onChange={(event) => setShareArea(event.target.checked)} />
         Share {suggestedArea} as a convenient area for this meeting
       </label>}
@@ -147,7 +147,7 @@ export function MeetingCard({
       </div>
       <p>{meeting.purpose}</p>
       <p>
-        <strong>{meeting.modality === "online" ? "Online:" : "Place:"}</strong> {meeting.modality === "online" ? "Google Meet after both people approve" : meeting.location || "Choose a public meeting place"}
+        <strong>{meeting.modality === "online" ? "Online:" : "Place:"}</strong> {meeting.modality === "online" ? "Google Meet" : meeting.location || "Choose a public meeting place"}
       </p>
       {meeting.sharedEvent && <p className="network-muted">Around {meeting.sharedEvent.title} · {timeLabel(meeting.sharedEvent.start)} SF time</p>}
       {meeting.sharedArea && <p>Suggested area: {meeting.sharedArea}</p>}

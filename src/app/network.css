@@ -1155,3 +1155,5 @@
 .network-panel .network-actions > button {
   min-height: 44px;
 }
+.meeting-publication { margin: 12px 0; }
+.meeting-offered-times { padding-left: 20px; }
