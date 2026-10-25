@@ -418,11 +418,11 @@ export class MeetingService {
       nextAction = calendar.connection
         ? {
             kind: "authorize_availability",
-            prompt: `${value.names[other]} would like to meet. May I check your calendar and share possible meeting times with their agent?`,
+            prompt: `May I check your calendar and share possible meeting times with ${value.names[other]}'s agent?`,
           }
         : {
             kind: "provide_availability",
-            prompt: `${value.names[other]} would like to meet. What day and time would work for you?`,
+            prompt: `What day and time would work for a meeting with ${value.names[other]}?`,
           };
     } else if (active && value.status === "needs_user_input") {
       nextAction = {
