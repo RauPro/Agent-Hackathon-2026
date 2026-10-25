@@ -1,0 +1,114 @@
+{
+  "testedAt": "2026-10-25T00:55:34.357Z",
+  "provider": "OpenAI live",
+  "model": "gpt-5.4-mini",
+  "contextDate": "2026-10-24 in America/Los_Angeles",
+  "fixture": "Fictional Alex Rivera profiles; no user account data",
+  "results": [
+    {
+      "scenario": "optional stay question",
+      "message": "No plans outside my calendar.",
+      "reply": {
+        "draft": {
+          "name": "Alex Rivera",
+          "bio": "Product engineer with experience building agents in production.",
+          "offers": "I can offer experience in TypeScript, product work, and small teams.",
+          "goalType": "seeking_role",
+          "goalText": "Meet teams hiring a founding engineer for agent products.",
+          "arrival": "2026-11-01",
+          "departure": "2026-11-20",
+          "stay": {
+            "status": "unknown",
+            "area": "",
+            "hotel": ""
+          },
+          "availability": {
+            "status": "unknown",
+            "windows": []
+          },
+          "commitments": {
+            "status": "none",
+            "items": []
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "profileGaps": [],
+        "reply": "Where will you stay in SF—a hotel or neighborhood? You can leave this for later."
+      },
+      "passed": true
+    },
+    {
+      "scenario": "private hotel and neighborhood",
+      "message": "I'm staying at Example Demo Hotel in SoMa. Nothing else outside my calendar.",
+      "reply": {
+        "draft": {
+          "name": "Alex Rivera",
+          "bio": "Product engineer with experience building agents in production.",
+          "offers": "I can offer experience in TypeScript, product work, and small teams.",
+          "goalType": "seeking_role",
+          "goalText": "Meet teams hiring a founding engineer for agent products.",
+          "arrival": "2026-11-01",
+          "departure": "2026-11-20",
+          "stay": {
+            "status": "provided",
+            "area": "SoMa",
+            "hotel": "Example Demo Hotel"
+          },
+          "availability": {
+            "status": "unknown",
+            "windows": []
+          },
+          "commitments": {
+            "status": "none",
+            "items": []
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "profileGaps": [],
+        "reply": "Your profile is ready to review."
+      },
+      "passed": true
+    },
+    {
+      "scenario": "undecided private stay",
+      "message": "I haven't decided where to stay. No plans outside my calendar.",
+      "reply": {
+        "draft": {
+          "name": "Alex Rivera",
+          "bio": "Product engineer with experience building agents in production.",
+          "offers": "I can offer experience in TypeScript, product work, and small teams.",
+          "goalType": "seeking_role",
+          "goalText": "Meet teams hiring a founding engineer for agent products.",
+          "arrival": "2026-11-01",
+          "departure": "2026-11-20",
+          "stay": {
+            "status": "unknown",
+            "area": "",
+            "hotel": ""
+          },
+          "availability": {
+            "status": "unknown",
+            "windows": []
+          },
+          "commitments": {
+            "status": "none",
+            "items": []
+          },
+          "preferences": {
+            "meetingFormat": "any",
+            "budgetUsd": null
+          }
+        },
+        "profileGaps": [],
+        "reply": "Your profile is ready to review."
+      },
+      "passed": true
+    }
+  ]
+}

@@ -633,6 +633,7 @@ describe("proactive discovery with authorized context", () => {
     await expect(drainAll()).rejects.toThrow("Injected processing failure");
     expect(await queued()).toHaveLength(2);
     expect(await opportunityCount()).toBe(0);
+    expect(await network.db.prepare("SELECT COUNT(*) AS count FROM network_pair_checks").get()).toEqual({ count: 0 });
     network.sharedEvents = original;
     await drainAll();
     expect(await queued()).toEqual([]);
@@ -891,5 +892,25 @@ describe("proactive discovery with authorized context", () => {
     expect((await queued()).length).toBeGreaterThan(0);
     await drainAll();
     expect(await queued()).toEqual([]);
+  });
+
+  it("preserves pair deduplication across restarts and refreshes it on a new SF day", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await drainAll();
+    store.close();
+    store = new ContextStore(path);
+    network = store.network;
+    discovery = new DiscoveryService(network);
+    const project = vi.spyOn(network, "project");
+    await network.enqueue(a.id);
+    await drainAll();
+    expect(project).not.toHaveBeenCalled();
+    vi.setSystemTime(new Date("2026-10-25T17:00:00Z"));
+    vi.mocked(Temporal.Now.plainDateISO).mockReturnValue(Temporal.PlainDate.from("2026-10-25"));
+    await enqueueDailyNetworkWork(network);
+    await drainAll();
+    expect(project).toHaveBeenCalledTimes(2);
+    expect(await opportunityCount()).toBe(1);
   });
 });
