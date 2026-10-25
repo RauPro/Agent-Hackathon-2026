@@ -10,14 +10,16 @@ const globalNetwork = globalThis as typeof globalThis & {
 
 export async function enqueueDailyNetworkWork(network: NetworkStore) {
   const day = Temporal.Now.plainDateISO("America/Los_Angeles").toString();
-  const sweep = `${day}:v${MATCHING_VERSION}`;
+  // Older deployment aliases still write the unversioned key. Keep sweep state
+  // separate so their raw day values cannot repeatedly reset this worker's queue.
+  const sweepKey = `network-discovery-v${MATCHING_VERSION}-day`;
   return network.db
     .transaction(async () => {
       const prior = (await network.db
         .prepare("SELECT value FROM app_meta WHERE key = ?")
-        .get("network-discovery-day")) as { value: string } | undefined;
-      if (prior?.value === sweep) return false;
-      const matcherChanged = !!prior && !prior.value.endsWith(`:v${MATCHING_VERSION}`);
+        .get(sweepKey)) as { value: string } | undefined;
+      if (prior?.value === day) return false;
+      const matcherChanged = !prior;
       // The day and jobs commit together. Cold starts do not enqueue the whole network again.
       // Only a new matcher resets pending cursors; ordinary daily checks preserve progress.
       await network.db
@@ -35,7 +37,7 @@ export async function enqueueDailyNetworkWork(network: NetworkStore) {
           `INSERT INTO app_meta (key, value) VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
         )
-        .run("network-discovery-day", sweep);
+        .run(sweepKey, day);
       return true;
     })
     .immediate();

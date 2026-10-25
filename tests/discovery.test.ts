@@ -821,11 +821,14 @@ describe("proactive discovery with authorized context", () => {
 
   it("retains pending cursors and prioritizes new changes over daily work", async () => {
     for (const person of [a, b, c]) await discoverable(person);
+    await enqueueDailyNetworkWork(network);
     await network.db.prepare("DELETE FROM network_jobs").run();
     await network.enqueue(a.id);
     await discovery.drain(1);
     const before = await network.db.prepare("SELECT * FROM network_jobs WHERE user_id = ?").get(a.id);
     expect(before?.cursor).toBeTruthy();
+    vi.setSystemTime(new Date("2026-10-25T17:00:00Z"));
+    vi.mocked(Temporal.Now.plainDateISO).mockReturnValue(Temporal.PlainDate.from("2026-10-25"));
     await enqueueDailyNetworkWork(network);
     expect(await network.db.prepare("SELECT * FROM network_jobs WHERE user_id = ?").get(a.id)).toEqual(before);
     const statuses = await network.db.prepare("SELECT user_id, priority FROM network_jobs").all();
@@ -834,6 +837,21 @@ describe("proactive discovery with authorized context", () => {
     await preferences(b, { area: "SoMa" });
     expect((await network.db.prepare("SELECT priority, cursor FROM network_jobs WHERE user_id = ?").get(b.id)))
       .toEqual({ priority: 1, cursor: "" });
+  });
+
+  it("does not reset progress when an older deployment writes its bare-day sweep metadata", async () => {
+    for (const person of [a, b, c]) await discoverable(person);
+    await enqueueDailyNetworkWork(network);
+    await discovery.drain(1);
+    const before = await network.db.prepare("SELECT * FROM network_jobs ORDER BY user_id").all();
+    expect(before.some((job) => !!job.cursor)).toBe(true);
+    await network.db.prepare(`INSERT INTO app_meta (key, value) VALUES ('network-discovery-day', '2026-10-24')
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run();
+    expect(await enqueueDailyNetworkWork(network)).toBe(false);
+    expect(await network.db.prepare("SELECT * FROM network_jobs ORDER BY user_id").all()).toEqual(before);
+    const reopened = new ContextStore(path);
+    try { expect(await enqueueDailyNetworkWork(reopened.network)).toBe(false); }
+    finally { reopened.close(); }
   });
 
   it("gives equally prioritized profiles a turn before continuing an earlier profile", async () => {
