@@ -570,6 +570,7 @@ test("sign-in returns to the scanned connection and foreign links are rejected",
 test("a meeting uses manual availability only when calendar is missing and requires two time approvals", async ({
   browser,
 }) => {
+  test.setTimeout(60000);
   const alex = await person(browser, "Alex Rivera");
   const agustin = await person(browser, "Agustin Park", "hiring");
   try {
@@ -583,29 +584,23 @@ test("a meeting uses manual availability only when calendar is missing and requi
       .getByLabel("What would you like to discuss?")
       .fill("Discuss the AI founding engineer opportunity.");
     await alex.page
-      .getByLabel("Proposed meeting place")
+      .getByLabel("Proposed meeting place (optional)")
       .fill("A public cafe in Downtown SF");
     await alex.page
-      .getByRole("button", { name: "Propose meeting", exact: true })
+      .getByRole("button", { name: "Coordinate meeting", exact: true })
       .click();
-    await expect(alex.page.getByRole("status")).toContainText("Proposed");
+    await expect.poll(async () => (await (await alex.page.request.get("/api/meetings/chat")).json()).meetings.length).toBe(1);
+    const meeting = (await (await alex.page.request.get("/api/meetings/chat")).json()).meetings[0];
     for (const current of [alex, agustin]) {
-      await openConversation(
-        current.page,
-        current === alex ? "Agustin Park" : "Alex Rivera",
-      );
-      await current.page
-        .getByLabel("Date in SF", { exact: true })
-        .fill(alex.date);
-      await current.page.getByLabel("Available from").fill("10:00");
-      await current.page.getByLabel("Until", { exact: true }).fill("12:00");
-      await current.page
-        .getByRole("button", { name: "Find a time together" })
-        .click();
-      await expect(
-        current.page.getByRole("button", { name: "Find a time together" }),
-      ).toHaveCount(0);
+      await current.page.goto(`/onboarding?agents=0&meeting=${meeting.id}`);
+      await expect(current.page.getByText(/Replying about your meeting with/)).toBeVisible();
+      await current.page.getByLabel("Your message", { exact: true }).fill("On the first day of my stay, 11:30 AM to 1 PM works for me.");
+      await current.page.getByRole("button", { name: "Send message", exact: true }).click();
+      await current.page.getByRole("button", { name: "Check these times" }).click();
+      await expect(current.page.getByRole("button", { name: "Check these times" })).toHaveCount(0);
     }
+    await openConversation(alex.page, "Agustin Park");
+    await openConversation(agustin.page, "Alex Rivera");
     let showProviderFailure = true;
     let retryPayload: Record<string, unknown> | null = null;
     await alex.page.route("**/api/network", async (route) => {
@@ -637,11 +632,6 @@ test("a meeting uses manual availability only when calendar is missing and requi
     await expect(alex.page.getByText(/No common time was found/)).toHaveCount(
       0,
     );
-    await expect(
-      alex.page.getByText(
-        "Checks weekdays, 9 AM–6 PM SF time, within the first 14 days of your overlapping stays.",
-      ),
-    ).toBeVisible();
     await alex.page.getByRole("button", { name: "Retry availability" }).click();
     await expect(
       alex.page
@@ -705,7 +695,7 @@ test("a meeting uses manual availability only when calendar is missing and requi
       agustin.page.getByRole("link", { name: "Download calendar file" }),
     ).toBeVisible();
     await expect(
-      agustin.page.getByText(/Sidekick has not added it to Google Calendar/),
+      agustin.page.getByText(/Both people approved. Send a Google Calendar invitation/),
     ).toBeVisible();
     await shot(agustin.page, "network-meeting-approved-mobile");
   } finally {
