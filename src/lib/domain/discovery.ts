@@ -99,6 +99,7 @@ export type MatchEvidence = Omit<
 const terms: Record<string, RegExp> = {
   AI: /\b(ai|artificial intelligence|machine learning|llm|llms)\b/i,
   agents: /\bagents?\b/i,
+  "voice agents": /\b(?:voice[- ]agents?|agent[- ]voice)\b/i,
   infrastructure: /\binfrastructure\b/i,
   algorithms: /\b(algorithms?|icpc|competitive programming)\b/i,
   TypeScript: /\btypescript\b/i,
@@ -114,7 +115,7 @@ const terms: Record<string, RegExp> = {
   education: /\b(edtech|education technology|learning platforms?)\b/i,
 };
 const sectors = new Set(["construction / AEC", "robotics", "healthcare", "climate / energy", "fintech", "education"]);
-const focused = new Set([...sectors, "agents", "infrastructure", "algorithms"]);
+const focused = new Set([...sectors, "agents", "voice agents", "infrastructure", "algorithms"]);
 // Conservatively exclude negated or historical clauses instead of inferring active intent.
 const inactive = /\b(?:not|no|never|without|don't|doesn't|isn't|aren't|won't|can't|cannot|former|formerly|previously|used to|rather than|instead of|avoid|avoiding|decline|declining|exclude|excluding|uninterested)\b/i;
 const uncertainOrOther = /\b(?:might|maybe|may|if|unless)\b|\b(?:my|our) (?:friend|client|colleague)\b|^\s*(?:he|she|they)\b/i;
@@ -173,18 +174,22 @@ function seeksSolutions(goal: string) {
   return /\b(?:find|seek|seeking|looking for|evaluate|evaluating|test|testing|try|pilot|adopt|explore|compare)\b.{0,90}\b(?:tools?|software|products?|platforms?|solutions?|automation|systems?)\b/i.test(goal);
 }
 
-type ReciprocalIntent = "fundraising" | "investing" | "customers" | "evaluating";
+type ReciprocalIntent = "fundraising" | "investing" | "customers" | "evaluating" | "technical_exchange" | "technical_collaboration";
 function sectorFocus(person: SharedProfile) {
   const context = `${professional(person)}. ${positiveText(person.goal!.text)}`;
   const explicit = [...context.matchAll(/\b(?:focus(?:ed|es)?(?: exclusively| only)? on|exclusively|only)\s+([^.;]+)/gi)]
     .flatMap((match) => signalsIn(match[1]).filter((signal) => sectors.has(signal)));
   return explicit.length ? explicit : signalsIn(context).filter((signal) => sectors.has(signal));
 }
+function compatibleSectorFocus(a: SharedProfile, b: SharedProfile) {
+  const sectorsA = sectorFocus(a), sectorsB = sectorFocus(b);
+  return !(sectorsA.length && sectorsB.length && !sectorsA.some((sector) => sectorsB.includes(sector))) &&
+    !sectorsB.some((sector) => rejects(a.goal!.text, terms[sector])) &&
+    !sectorsA.some((sector) => rejects(b.goal!.text, terms[sector]));
+}
 function reciprocalIntent(a: SharedProfile, b: SharedProfile, shared: string[]): ReciprocalIntent | null {
   const specificShared = shared.filter((signal) => focused.has(signal));
-  if (!specificShared.length) return null;
-  const sectorsA = sectorFocus(a), sectorsB = sectorFocus(b);
-  if (sectorsA.length && sectorsB.length && !sectorsA.some((sector) => sectorsB.includes(sector))) return null;
+  if (!specificShared.length || !compatibleSectorFocus(a, b)) return null;
   const goalA = positiveText(a.goal!.text), goalB = positiveText(b.goal!.text);
   // A short goal may rely on the already stated domain. An explicitly different
   // target sector must not be replaced by an earlier area of experience.
@@ -208,6 +213,23 @@ function reciprocalIntent(a: SharedProfile, b: SharedProfile, shared: string[]):
   return null;
 }
 
+function technicalExchange(a: SharedProfile, b: SharedProfile, shared: string[], forA: string[], forB: string[]): ReciprocalIntent | null {
+  const seeker = a.goal!.type === "seeking_role" && b.goal!.type === "collaborators" ? a
+    : b.goal!.type === "seeking_role" && a.goal!.type === "collaborators" ? b : null;
+  if (!seeker) return null;
+  const collaborator = seeker === a ? b : a;
+  const topics = shared.filter((signal) => focused.has(signal));
+  if (!topics.some((topic) => forA.includes(topic)) || !topics.some((topic) => forB.includes(topic))) return null;
+  if (!compatibleSectorFocus(a, b)) return null;
+  const networking = /\b(?:collaborat\w*|partnerships?|networking|meet(?:ing)?|connect\w*|exchanges?|conversations?)\b/i;
+  if ([a, b].some((person) => rejects(person.goal!.text, networking)) ||
+    /\bonly\b.{0,45}\b(?:jobs?|roles?|employment|paid work|positions?)\b/i.test(seeker.goal!.text)) return null;
+  const goal = positiveText(collaborator.goal!.text);
+  const wantsExchange = /\b(?:meet|connect|learn from|exchange|discuss|collaborate with)\b.{0,90}\b(?:engineers?|developers?|builders?|people building|people developing|teams building|teams developing)\b/i.test(goal) ||
+    /\b(?:explore|find|seek|seeking|build)\b.{0,60}\btechnical (?:partnerships?|collaboration|exchange)\b/i.test(goal);
+  return wantsExchange ? seeker === a ? "technical_exchange" : "technical_collaboration" : null;
+}
+
 const intentBenefits: Record<ReciprocalIntent, { you: string; them: string }> = {
   fundraising: {
     you: "Their stated investor experience and interest in startups could support your fundraising conversations.",
@@ -224,6 +246,14 @@ const intentBenefits: Record<ReciprocalIntent, { you: string; them: string }> = 
   evaluating: {
     you: "Their product work could give you a tool to evaluate for your stated needs.",
     them: "Your stated interest in evaluating relevant tools could support their search for customers or design partners.",
+  },
+  technical_exchange: {
+    you: "Their interest in a technical exchange could help you explore the engineering topics in your goal.",
+    them: "Your relevant experience could help them compare approaches and explore technical collaboration.",
+  },
+  technical_collaboration: {
+    you: "Their relevant experience could help you compare approaches and explore technical collaboration.",
+    them: "Your interest in a technical exchange could help them explore the engineering topics in their goal.",
   },
 };
 
@@ -297,7 +327,8 @@ export function rankPeople(
     event.attendance === "registered" &&
     b.events?.some((other) => sameSharedEvent(event, other) && inOverlap(other) && other.attendance === "registered"),
   );
-  const intent = rolesCompatible ? reciprocalIntent(a, b, sharedFocus) : null;
+  const businessIntent = rolesCompatible ? reciprocalIntent(a, b, sharedFocus) : null;
+  const intent = businessIntent ?? (!commercialIntent && rolesCompatible ? technicalExchange(a, b, shared, forA, forB) : null);
   const professionalMatch = !!intent || (
     (complementary || (collaboration && !commercialIntent)) && rolesCompatible &&
     forA.length > 0 &&
@@ -333,7 +364,7 @@ export function rankPeople(
   return {
     score: Math.min(
       95,
-      (professionalMatch && (complementary || intent) ? 65 : 50) +
+      (professionalMatch && (complementary || businessIntent) ? 65 : 50) +
         Math.min(evidenceSignals.length, 3) * 5 +
         (sharedEvents.length ? 10 : 0),
     ),

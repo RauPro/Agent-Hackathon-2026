@@ -4,7 +4,7 @@ import type { SharedProfile } from "../src/lib/domain/network";
 import { validContext } from "./fixtures";
 
 // Fictional profiles exercise explicit stated intent, not inferred commercial interest.
-function person(name: string, bio: string, offers: string, goal: string, type: "customers" | "collaborators" = "customers"): SharedProfile {
+function person(name: string, bio: string, offers: string, goal: string, type: NonNullable<SharedProfile["goal"]>["type"] = "customers"): SharedProfile {
   return {
     id: name, name, revision: 1,
     profile: { name, bio, offers }, goal: { type, text: goal },
@@ -193,5 +193,75 @@ describe("explicit reciprocal business goals", () => {
     b.profile!.bio = "Seed investor focused on construction AI agents.";
     b.profile!.offers = "Investment feedback on construction software.";
     expect(rank(a, b)).not.toBeNull();
+    b.goal!.text = "Avoid construction projects. Meet founders and evaluate startup investments.";
+    expect(rank(a, b)).toBeNull();
+  });
+});
+
+describe("technical exchanges across different goals", () => {
+  const engineer = () => person("Engineer Demo",
+    "Software engineer building production voice agents and agent infrastructure.",
+    "Product engineering experience with voice agents, inference and session context.",
+    "Find a founding engineer role working on voice agents and product engineering.", "seeking_role");
+  const builder = () => person("Builder Demo",
+    "Founder of a company building voice agents for hotel reservations.",
+    "Can discuss voice agents for hotel workflows, inference and session context.",
+    "Meet people building agents to learn about inference and session context, and explore technical partnerships.", "collaborators");
+
+  it("proposes a reciprocal technical exchange without inventing hiring intent", () => {
+    const a = engineer(), b = builder();
+    const forward = rank(a, b), reverse = rank(b, a);
+    expect(forward).not.toBeNull();
+    expect(reverse).not.toBeNull();
+    expect(forward!.signals).toContain("voice agents");
+    expect(forward!.benefits.you).toContain("technical exchange");
+    expect(reverse!.benefits.you).toContain("compare approaches");
+    expect(`${forward!.reasons} ${JSON.stringify(forward!.benefits)} ${JSON.stringify(reverse!.benefits)}`)
+      .not.toMatch(/hiring|job offer|investment|fundraising/);
+  });
+
+  it("requires explicit networking intent and reciprocal specific topic relevance", () => {
+    const a = engineer(), b = builder();
+    b.goal!.text = "Improve our voice agents and hotel operations.";
+    expect(rank(a, b)).toBeNull();
+    b.goal!.text = builder().goal!.text;
+    a.goal!.text = "Find a founding engineer role in payment systems.";
+    expect(rank(a, b)).toBeNull();
+    a.goal!.text = engineer().goal!.text;
+    b.profile!.bio = "Founder building AI software.";
+    b.profile!.offers = "Product feedback on AI software.";
+    expect(rank(a, b)).toBeNull();
+  });
+
+  it("does not route commercial, negated or conditional goals through technical networking", () => {
+    const a = engineer(), b = builder();
+    b.goal!.text = "Meet agent builders for technical partnerships and find customers for our voice agents.";
+    expect(rank(a, b)).toBeNull();
+    b.goal!.text = "Avoid technical partnerships. Meet people building voice agents.";
+    expect(rank(a, b)).toBeNull();
+    b.goal!.text = "I might meet people building voice agents if I decide to explore partnerships.";
+    expect(rank(a, b)).toBeNull();
+    b.goal!.text = builder().goal!.text;
+    a.goal!.text = "Only seeking paid roles working on voice agents.";
+    expect(rank(a, b)).toBeNull();
+    a.goal!.text = "Find a founding engineer role with voice agents. I am not interested in networking.";
+    expect(rank(a, b)).toBeNull();
+  });
+
+  it("keeps other goal combinations and non-overlapping trips out of this path", () => {
+    const a = engineer(), b = builder();
+    a.goal!.type = "customers";
+    expect(rank(a, b)).toBeNull();
+    a.goal!.type = "seeking_role";
+    b.trip = { ...b.trip!, start: "2026-12-01", end: "2026-12-10" };
+    expect(rank(a, b)).toBeNull();
+  });
+
+  it("does not let prior sector experience override a current explicit exclusion", () => {
+    const a = engineer(), b = builder();
+    a.profile!.offers += " Experience with construction voice agents.";
+    b.profile!.offers += " Experience with construction voice agents.";
+    b.goal!.text = "Avoid construction projects. Meet people building voice agents to explore technical partnerships.";
+    expect(rank(a, b)).toBeNull();
   });
 });

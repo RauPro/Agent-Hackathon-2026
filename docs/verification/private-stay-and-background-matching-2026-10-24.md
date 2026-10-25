@@ -35,9 +35,14 @@ Both require a shared specific sector or technical topic in authorized profile/g
 
 This remains a small English vocabulary and explicit intent matcher. Ambiguous or unsupported wording may produce no recommendation; no external enrichment or model interpretation is used in ranking.
 
+For a role seeker and a collaborator, a separate technical-exchange path requires an explicit request to meet builders/engineers or explore technical partnerships, reciprocal goal-to-profile relevance, and a shared specific topic. A fictional voice-agent engineer and hotel voice-agent builder verify this case in both directions. The benefits describe comparing approaches and technical collaboration, without claiming hiring or a job offer. Commercial goals and explicit rejection of networking cannot use this path to bypass the stricter checks above.
+
+Sweep metadata uses a matcher-version-specific key. A legacy deployment writing its raw day value to the old key cannot repeatedly reset the new worker's progress. The first sweep for a new matcher version still rechecks existing profiles once.
+
 ## Verification
 
-- Full unit/service suite: **403 passed, 17 opt-in tests skipped**.
+- Full unit/service suite before the final technical-exchange extension: **403 passed, 17 opt-in tests skipped**.
+- Focused matching, queue, and attendance suite after that extension: **78 passed**.
 - Repository lint: zero errors or warnings.
 - Focused live onboarding: three provider scenarios passed, with credentials kept out of the evidence.
 

@@ -18,7 +18,7 @@ import { NetworkError, NetworkStore } from "./network-store";
 import { networkDemoEnabled } from "./demo-mode";
 import { AgentDialogueService } from "./agent-dialogue-service";
 // Bump when eligibility rules change so the worker revisits cached no-match results.
-export const MATCHING_VERSION = 2;
+export const MATCHING_VERSION = 3;
 const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function eventKey(event: Pick<NetworkEvent, "url" | "date" | "dateStatus" | "start">) {
