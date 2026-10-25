@@ -434,6 +434,9 @@ function parseGoogleMeeting(raw: unknown, input: GoogleMeetingInput): GoogleMeet
   const parsed = z.object({
     id: z.string(),
     status: z.string().optional(),
+    summary: z.string().optional(),
+    location: z.string().optional(),
+    attendees: z.array(z.object({ email: z.string() }).passthrough()).optional(),
     start: z.object({ dateTime: z.iso.datetime({ offset: true }) }).optional(),
     end: z.object({ dateTime: z.iso.datetime({ offset: true }) }).optional(),
     htmlLink: z.string().optional(),
@@ -447,8 +450,14 @@ function parseGoogleMeeting(raw: unknown, input: GoogleMeetingInput): GoogleMeet
   if (!parsed.success) throw new CalendarError("sync_failed");
   const event = parsed.data;
   if (event.status === "cancelled") throw new CalendarError("event_cancelled");
+  const expectedAttendees = [...new Set(input.attendees.map((email) => email.toLowerCase()))].sort();
+  const actualAttendees = [...new Set((event.attendees ?? []).map((person) => person.email.toLowerCase()))].sort();
   if (event.id !== input.eventId ||
       event.extendedProperties?.private?.sidekickMeetingId !== input.meetingId ||
+      event.summary !== input.title ||
+      (event.location || null) !== (input.online ? null : input.location) ||
+      !expectedAttendees.every((email) => actualAttendees.includes(email)) ||
+      actualAttendees.some((email) => !expectedAttendees.includes(email) && email !== input.calendarId.toLowerCase()) ||
       !event.start || !event.end ||
       Date.parse(event.start.dateTime) !== Date.parse(input.start) ||
       Date.parse(event.end.dateTime) !== Date.parse(input.end))
@@ -484,6 +493,7 @@ export async function createOrGetGoogleMeeting(
   accessToken: string,
   input: GoogleMeetingInput,
   signal: AbortSignal,
+  beforeInsert?: () => Promise<void>,
 ): Promise<GoogleMeetingResult> {
   const headers = { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
   const read = async () => parseGoogleMeeting(await googleJson(meetingEventUrl(input, true), { headers }, signal, true), input);
@@ -494,6 +504,7 @@ export async function createOrGetGoogleMeeting(
   const url = new URL(meetingEventUrl(input));
   url.searchParams.set("sendUpdates", "all");
   url.searchParams.set("conferenceDataVersion", "1");
+  await beforeInsert?.();
   try {
     return parseGoogleMeeting(await googleJson(url.toString(), {
       method: "POST", headers,

@@ -18,6 +18,8 @@ const providerInput: GoogleMeetingInput = {
 function event(input = providerInput, conferenceStatus: "success" | "pending" | "failure" = "success") {
   return {
     id: input.eventId, status: "confirmed", htmlLink: "https://calendar.google.com/calendar/event?eid=test",
+    summary: input.title, ...(!input.online && input.location ? { location: input.location } : {}),
+    attendees: input.attendees.map((email) => ({ email })),
     start: { dateTime: input.start }, end: { dateTime: input.end },
     extendedProperties: { private: { sidekickMeetingId: input.meetingId } },
     conferenceData: {
@@ -83,6 +85,16 @@ describe("Google meeting publication adapter", () => {
     vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => reply({}, init?.method === "POST" ? 503 : 404)));
     await expect(createOrGetGoogleMeeting("test-access", providerInput, AbortSignal.timeout(1000))).rejects.toThrow("sync_failed");
   });
+  it.each([
+    { summary: "An unrelated meeting" },
+    { location: "A different meeting place" },
+    { attendees: [{ email: "unapproved@example.test" }] },
+  ])("refuses a retry after the approved Google event changes: %j", async (changed) => {
+    const fetch = vi.fn(async () => reply({ ...event(), ...changed }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(createOrGetGoogleMeeting("test-access", providerInput, AbortSignal.timeout(1000))).rejects.toThrow("event_conflict");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("approved meeting calendar boundary", () => {
@@ -113,7 +125,10 @@ describe("approved meeting calendar boundary", () => {
     await store.network.requestConnection(a.account.id, b.account.id, { source: "qr", token: (await store.network.settings(b.account.id)).qrToken, context: "A test connection" });
     await store.network.connectionAction(b.account.id, a.account.id, "accept");
     input = { id: randomUUID(), purpose: "Discuss a collaboration", location: "Google Meet", modality: "online", participants: [a.account.id, b.account.id], names: { [a.account.id]: "Alex", [b.account.id]: "Blair" }, slot: { start: providerInput.start, end: providerInput.end } };
-    state = { ...input, status: "confirmed", selectedOptionId: "chosen", options: [{ id: "chosen", ...input.slot }], approvals: { [a.account.id]: "chosen", [b.account.id]: "chosen" } };
+    state = { ...input, status: "confirmed", selectedOptionId: "chosen", options: [{ id: "chosen", ...input.slot }], approvals: { [a.account.id]: "chosen", [b.account.id]: "chosen" },
+      contextRevisions: { [a.account.id]: (await store.network.profile(a.account.id)).revision, [b.account.id]: (await store.network.profile(b.account.id)).revision },
+      relationshipRevision: await store.network.relationshipRevision(a.account.id, b.account.id),
+    };
     await store.network.db.prepare("INSERT INTO meetings (id, initiator_id, first_user_id, second_user_id, request_id, payload_hash, revision, state_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(input.id, a.account.id, a.account.id, b.account.id, randomUUID(), "test", 1, JSON.stringify(state));
     await attach();
   });
@@ -180,6 +195,25 @@ describe("approved meeting calendar boundary", () => {
   it("refuses calendar writes after the connection is revoked", async () => {
     const prepared = await prepareMeetingCalendar(store, a.account.id, input);
     await store.network.connectionAction(a.account.id, b.account.id, "remove");
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    await expect(publishApprovedMeeting(store, a.account.id, input, prepared)).rejects.toThrow("approval_required");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("refuses old approvals after the profile changes", async () => {
+    const prepared = await prepareMeetingCalendar(store, a.account.id, input);
+    const profile = await store.network.profile(a.account.id);
+    const context = profile.context!;
+    context.goal.text = "Explore a different objective for this visit.";
+    await store.save(a.token, { context, baseRevision: profile.revision, requestId: randomUUID() });
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    await expect(publishApprovedMeeting(store, a.account.id, input, prepared)).rejects.toThrow("approval_required");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("does not restore old meeting authority by removing and reconnecting a friend", async () => {
+    const prepared = await prepareMeetingCalendar(store, a.account.id, input);
+    await store.network.connectionAction(a.account.id, b.account.id, "remove");
+    await store.network.requestConnection(a.account.id, b.account.id, { source: "qr", token: (await store.network.settings(b.account.id)).qrToken, context: "A new connection" });
+    await store.network.connectionAction(b.account.id, a.account.id, "accept");
     const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     await expect(publishApprovedMeeting(store, a.account.id, input, prepared)).rejects.toThrow("approval_required");
     expect(fetch).not.toHaveBeenCalled();
