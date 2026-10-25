@@ -42,6 +42,7 @@ import {
   inspectPublishedMeeting,
   prepareMeetingCalendar,
   publishApprovedMeeting,
+  type ApprovedMeetingCalendarInput,
 } from "./meeting-calendar-service";
 
 const HALF_HOUR = 30 * 60 * 1000;
@@ -718,8 +719,11 @@ export class MeetingService {
           JSON.stringify(existing?.preferredWindows) ===
             JSON.stringify(input.preferredWindows) &&
           liveStatuses.includes(current.status)
-        )
+        ) {
+          if (current.status === "needs_user_input")
+            await this.writable(actorId, current.id, input.revision);
           return current;
+        }
         await this.writable(actorId, current.id, input.revision);
         const trip = (await this.context(actorId)).context.trip;
         const limits = calendarWindow(trip.start, trip.end)!;
@@ -757,8 +761,7 @@ export class MeetingService {
         );
       })
       .immediate();
-    if (value.status === "options_ready" || value.status === "needs_user_input")
-      return this.view(actorId, value);
+    if (value.status === "options_ready") return this.view(actorId, value);
     return this.negotiate(actorId, value);
   }
   private async negotiate(
@@ -811,6 +814,21 @@ export class MeetingService {
             (await this.calendar(actorId)).revision !== ownCoverage.revision
           )
             throw new MeetingError("availability_changed");
+          if (
+            available &&
+            !available.options.length &&
+            current.status === "needs_user_input"
+          ) {
+            // An explicit retry checks fresh calendars without repeating the same dialogue.
+            return this.save(
+              {
+                ...current,
+                checkedAt: new Date().toISOString(),
+                availabilitySource: available.source,
+              },
+              current.revision,
+            );
+          }
           if (!available) {
             if (
               this.activity(current).some(
@@ -823,7 +841,15 @@ export class MeetingService {
               return current;
             return this.save(
               this.withActivity(
-                { ...current, error: null },
+                {
+                  ...current,
+                  status: ownOptions.length
+                    ? "awaiting_permission"
+                    : "needs_user_input",
+                  error: ownOptions.length
+                    ? null
+                    : "Your agent could not find a time to offer. Suggest another day or time in your main chat.",
+                },
                 {
                   kind: "agent_slots_proposed",
                   actorUserId: actorId,
@@ -1401,7 +1427,7 @@ export class MeetingService {
         (item) => item.id === value.selectedOptionId,
       );
       if (!slot) throw new MeetingError("invalid_option");
-      const spec = {
+      const spec: ApprovedMeetingCalendarInput = {
         id: value.id,
         purpose: value.purpose,
         location: value.location,
@@ -1433,6 +1459,12 @@ export class MeetingService {
       }
       {
         const available = await this.availability(value);
+        spec.availabilityRevisions = Object.fromEntries(
+          value.participants.map((id, index) => [
+            id,
+            available.coverages[index].revision,
+          ]),
+        );
         await this.validateCoverage(value, available.coverages);
         const constraints = await Promise.all(
           value.participants.map((id) => this.constraints(id, value.id)),

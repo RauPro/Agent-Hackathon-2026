@@ -1413,3 +1413,122 @@ describe("meeting location and calendar publication", () => {
     expect(fetch.mock.calls[0][1]?.method).not.toBe("POST");
   });
 });
+
+describe("meeting retry and publication race guards", () => {
+  it("rechecks the same preferred window after a calendar changes without duplicating unresolved dialogue", async () => {
+    await connectCalendar(a);
+    await connectCalendar(b);
+    let busy = true;
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string);
+      return calendarReply(
+        init,
+        busy ? [{ start: body.timeMin, end: body.timeMax }] : [],
+      );
+    });
+    vi.stubGlobal("fetch", fetch);
+    let value = await service.propose(a.account.id, {
+      toUserId: b.account.id,
+      requestId: randomUUID(),
+      purpose: "Find a common project meeting",
+      modality: "online",
+      authorizeAvailability: true,
+    });
+    expect(value.nextAction?.kind).toBe("suggest_times");
+    value = await service.optIn(b.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+    });
+    value = await service.suggestTimes(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      preferredWindows: manual,
+    });
+    expect(value.status).toBe("needs_user_input");
+    const history = value.activity;
+    value = await service.suggestTimes(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      preferredWindows: manual,
+    });
+    expect(value.activity).toEqual(history);
+    busy = false;
+    value = await service.suggestTimes(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      preferredWindows: manual,
+    });
+    expect(value.status).toBe("options_ready");
+    expect(value.options[0].start).toBe(manual[0].start);
+    expect(value.approvedUserIds).toEqual([]);
+  });
+
+  it("stops a Google insert when the peer disconnects during provider reconciliation", async () => {
+    await connectCalendar(a, false, true);
+    await connectCalendar(b);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => calendarReply(init)),
+    );
+    const value = await approveBoth(await calendarOptions());
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("freeBusy")) return calendarReply(init!);
+      if (init?.method === "POST")
+        throw new Error("No insert should be attempted");
+      await store.writeCalendar(b.token, 1, null);
+      return response({}, 404);
+    });
+    vi.stubGlobal("fetch", fetch);
+    await expect(
+      service.publish(a.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      }),
+    ).rejects.toMatchObject({ code: "calendar_changed" });
+    expect(
+      fetch.mock.calls.some(
+        ([url, init]) => !url.includes("freeBusy") && init?.method === "POST",
+      ),
+    ).toBe(false);
+    expect(
+      (await service.list(a.account.id))[0].calendarPublication?.status,
+    ).toBe("failed");
+  });
+
+  it("stops a Google insert when a profile changes during provider reconciliation", async () => {
+    await connectCalendar(a, false, true);
+    await connectCalendar(b);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => calendarReply(init)),
+    );
+    const value = await approveBoth(await calendarOptions());
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("freeBusy")) return calendarReply(init!);
+      if (init?.method === "POST")
+        throw new Error("No insert should be attempted");
+      const context = validContext();
+      context.profile.name = "Blair Morgan";
+      context.trip.end = "2026-10-25";
+      await store.save(b.token, {
+        context,
+        baseRevision: 1,
+        requestId: randomUUID(),
+      });
+      return response({}, 404);
+    });
+    vi.stubGlobal("fetch", fetch);
+    await expect(
+      service.publish(a.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      }),
+    ).rejects.toMatchObject({ code: "approval_required" });
+    expect(
+      fetch.mock.calls.some(
+        ([url, init]) => !url.includes("freeBusy") && init?.method === "POST",
+      ),
+    ).toBe(false);
+    expect((await service.list(a.account.id))[0].status).toBe("stale");
+  });
+});
