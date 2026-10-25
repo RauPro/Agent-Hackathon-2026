@@ -106,9 +106,26 @@ const terms: Record<string, RegExp> = {
   "product engineering": /\b(product|production|software)\b/i,
   "early-stage teams":
     /\b(startups?|founding|founder|early.stage|cofounder)\b/i,
+  "construction / AEC": /\b(construction|contech|aec|bim|revit|built environment|architecture firms?|general contractors?)\b/i,
+  robotics: /\b(robotics|robotic|warehouse automation)\b/i,
+  healthcare: /\b(healthcare|health care|clinical|medical|patient care)\b/i,
+  "climate / energy": /\b(climate tech|climatetech|clean energy|renewable energy|decarbonization)\b/i,
+  fintech: /\b(fintech|financial technology|banking|payments)\b/i,
+  education: /\b(edtech|education technology|learning platforms?)\b/i,
 };
+const sectors = new Set(["construction / AEC", "robotics", "healthcare", "climate / energy", "fintech", "education"]);
+const focused = new Set([...sectors, "agents", "infrastructure", "algorithms"]);
+// Conservatively exclude negated or historical clauses instead of inferring active intent.
+const inactive = /\b(?:not|no|never|without|don't|doesn't|isn't|aren't|won't|can't|cannot|former|formerly|previously|used to|rather than|instead of|avoid|avoiding|decline|declining|exclude|excluding|uninterested)\b/i;
+const uncertainOrOther = /\b(?:might|maybe|may|if|unless)\b|\b(?:my|our) (?:friend|client|colleague)\b|^\s*(?:he|she|they)\b/i;
+const clauses = (text: string) => text.replace(/[’‘]/g, "'").split(/[.!?;\n]+|\b(?:but|however|whereas)\b/i);
+const rejects = (text: string, topic: RegExp) => clauses(text).some((clause) => inactive.test(clause) && topic.test(clause));
+const positiveText = (text: string) => clauses(text)
+  .filter((clause) => !inactive.test(clause) && !uncertainOrOther.test(clause))
+  .map((clause) => clause.trim()).filter(Boolean)
+  .join(". ");
 const professional = (person: SharedProfile) =>
-  `${person.profile?.bio ?? ""} ${person.profile?.offers ?? ""}`;
+  positiveText(`${person.profile?.bio ?? ""}. ${person.profile?.offers ?? ""}`);
 const signalsIn = (text: string) =>
   Object.entries(terms)
     .filter(([, rule]) => rule.test(text))
@@ -129,6 +146,87 @@ function role(text: string) {
   return null;
 }
 
+function seeksInvestment(goal: string) {
+  return /\b(?:rais(?:e|ing)|seek(?:ing)?|looking for|find|secure|attract)\b.{0,80}\b(?:capital|funding|investment|financing|seed round)\b/i.test(goal) ||
+    /\b(?:meet|connect|find|seek(?:ing)?|looking for)\b.{0,80}\b(?:investors?|venture capital(?:ists)?|vcs?|angels?)\b/i.test(goal) ||
+    /(?:^|\.\s*)(?:(?:i am|i'm|we are|currently|actively)\s+)*fundraising\b/i.test(goal);
+}
+
+function investorProfile(profile: string) {
+  return /(?:^|\.\s*)(?:(?:i am|i'm|we are|an?|the)\s+)*(?:(?:angel|venture capital|venture|seed|pre-seed|early-stage|construction|contech|aec|climate|fintech|healthcare|technology|startup|ai)\s+){0,4}(?:investor|venture capitalist|vc)\b/i.test(profile) ||
+    /\b(?:i|we|our fund|our firm)\s+(?:(?:currently|actively)\s+)?(?:invest|invests|back|backs)\s+in\b/i.test(profile);
+}
+
+function seeksStartups(goal: string) {
+  return /\b(?:meet|find|connect|discover|evaluate|explore|back|fund|invest|support|source|identify|seek|seeking|looking for)\b.{0,90}\b(?:startups?|founders?|companies|teams|ventures|investment opportunities)\b/i.test(goal);
+}
+
+function offersProduct(profile: string) {
+  return /\b(?:build|building|develop|developing|ship|shipping|create|creating|sell|selling|founder|cofounder)\b.{0,90}\b(?:tools?|products?|software|platforms?|systems?|solutions?|apps?|automation)\b/i.test(profile);
+}
+
+function seeksCustomers(goal: string) {
+  return /\b(?:find|seek|seeking|meet|recruit|looking for|run|launch|secure|work with)\b.{0,90}\b(?:customers?|design partners?|pilots?|pilot partners?|buyers?)\b/i.test(goal);
+}
+
+function seeksSolutions(goal: string) {
+  return /\b(?:find|seek|seeking|looking for|evaluate|evaluating|test|testing|try|pilot|adopt|explore|compare)\b.{0,90}\b(?:tools?|software|products?|platforms?|solutions?|automation|systems?)\b/i.test(goal);
+}
+
+type ReciprocalIntent = "fundraising" | "investing" | "customers" | "evaluating";
+function sectorFocus(person: SharedProfile) {
+  const context = `${professional(person)}. ${positiveText(person.goal!.text)}`;
+  const explicit = [...context.matchAll(/\b(?:focus(?:ed|es)?(?: exclusively| only)? on|exclusively|only)\s+([^.;]+)/gi)]
+    .flatMap((match) => signalsIn(match[1]).filter((signal) => sectors.has(signal)));
+  return explicit.length ? explicit : signalsIn(context).filter((signal) => sectors.has(signal));
+}
+function reciprocalIntent(a: SharedProfile, b: SharedProfile, shared: string[]): ReciprocalIntent | null {
+  const specificShared = shared.filter((signal) => focused.has(signal));
+  if (!specificShared.length) return null;
+  const sectorsA = sectorFocus(a), sectorsB = sectorFocus(b);
+  if (sectorsA.length && sectorsB.length && !sectorsA.some((sector) => sectorsB.includes(sector))) return null;
+  const goalA = positiveText(a.goal!.text), goalB = positiveText(b.goal!.text);
+  // A short goal may rely on the already stated domain. An explicitly different
+  // target sector must not be replaced by an earlier area of experience.
+  for (const goal of [goalA, goalB]) {
+    const targetSectors = signalsIn(goal).filter((signal) => sectors.has(signal));
+    if (targetSectors.length && !targetSectors.some((signal) => specificShared.includes(signal))) return null;
+    const targetTopics = signalsIn(goal).filter((signal) => focused.has(signal));
+    if (targetTopics.length && !targetTopics.some((signal) => specificShared.includes(signal))) return null;
+  }
+  const profileA = professional(a), profileB = professional(b);
+  const funding = /\b(?:fundrais\w*|funding|capital|investment|investors?|vcs?)\b/i;
+  const investing = /\b(?:invest(?:or|ors|ing|s)?|venture capital(?:ist)?|vcs?)\b/i;
+  const customers = /\b(?:customers?|design partners?|pilots?|buyers?)\b/i;
+  const solutions = /\b(?:tools?|software|products?|platforms?|solutions?|automation|systems?)\b/i;
+  const investorA = !rejects(`${a.profile!.bio}. ${a.profile!.offers}. ${a.goal!.text}`, investing) && investorProfile(profileA) && seeksStartups(goalA);
+  const investorB = !rejects(`${b.profile!.bio}. ${b.profile!.offers}. ${b.goal!.text}`, investing) && investorProfile(profileB) && seeksStartups(goalB);
+  if (!rejects(a.goal!.text, funding) && seeksInvestment(goalA) && investorB) return "fundraising";
+  if (!rejects(b.goal!.text, funding) && seeksInvestment(goalB) && investorA) return "investing";
+  if (!rejects(a.goal!.text, customers) && !rejects(b.goal!.text, solutions) && offersProduct(profileA) && seeksCustomers(goalA) && !seeksCustomers(goalB) && seeksSolutions(goalB)) return "customers";
+  if (!rejects(b.goal!.text, customers) && !rejects(a.goal!.text, solutions) && offersProduct(profileB) && seeksCustomers(goalB) && !seeksCustomers(goalA) && seeksSolutions(goalA)) return "evaluating";
+  return null;
+}
+
+const intentBenefits: Record<ReciprocalIntent, { you: string; them: string }> = {
+  fundraising: {
+    you: "Their stated investor experience and interest in startups could support your fundraising conversations.",
+    them: "Your fundraising goal could be relevant to their stated interest in meeting startups.",
+  },
+  investing: {
+    you: "Their fundraising goal could be relevant to your stated interest in meeting startups.",
+    them: "Your stated investor experience and interest in startups could support their fundraising conversations.",
+  },
+  customers: {
+    you: "Their stated interest in evaluating relevant tools could support your search for customers or design partners.",
+    them: "Your product work could give them a tool to evaluate for their stated needs.",
+  },
+  evaluating: {
+    you: "Their product work could give you a tool to evaluate for your stated needs.",
+    them: "Your stated interest in evaluating relevant tools could support their search for customers or design partners.",
+  },
+};
+
 /** Uses only pre-authorized projections. Score is a heuristic, not a probability. */
 export function rankPeople(
   a: SharedProfile,
@@ -147,8 +245,8 @@ export function rankPeople(
     (b.goal.type === "hiring" && a.goal.type === "seeking_role");
   let rolesCompatible = true;
   if (complementary) {
-    const roleA = role(a.goal.text),
-      roleB = role(b.goal.text);
+    const roleA = role(positiveText(a.goal.text)),
+      roleB = role(positiveText(b.goal.text));
     const technical = ["engineering", "founding_engineer", "cto"];
     if (
       !roleA ||
@@ -161,18 +259,30 @@ export function rankPeople(
         ))
     )
       rolesCompatible = false;
+    const hiring = a.goal.type === "hiring" ? a.goal : b.goal;
+    const seeking = a.goal.type === "seeking_role" ? a.goal : b.goal;
+    if (rejects(hiring.text, /\b(?:hire|hiring|recruit|recruiting)\b/i) ||
+      rejects(seeking.text, /\b(?:jobs?|roles?|positions?|employment)\b/i)) rolesCompatible = false;
   }
   const collaboration =
     a.goal.type === "collaborators" && b.goal.type === "collaborators";
   const shared = signalsIn(professional(a)).filter((term) =>
     signalsIn(professional(b)).includes(term),
   );
-  const forA = signalsIn(a.goal.text).filter((term) =>
+  const forA = signalsIn(positiveText(a.goal.text)).filter((term) =>
     signalsIn(professional(b)).includes(term),
   );
-  const forB = signalsIn(b.goal.text).filter((term) =>
+  const forB = signalsIn(positiveText(b.goal.text)).filter((term) =>
     signalsIn(professional(a)).includes(term),
   );
+  const contextA = `${professional(a)}. ${positiveText(a.goal.text)}`;
+  const contextB = `${professional(b)}. ${positiveText(b.goal.text)}`;
+  const sharedFocus = signalsIn(contextA).filter((term) => signalsIn(contextB).includes(term));
+  const commercialIntent = [a, b].some((person) => {
+    const goal = positiveText(person.goal!.text);
+    return seeksInvestment(goal) || seeksCustomers(goal) ||
+      (investorProfile(professional(person)) && seeksStartups(goal));
+  });
   const inOverlap = (event: SharedEvent) => {
     const date = canonicalEventDate(event);
     return date !== null && date >= start && date <= end;
@@ -187,12 +297,12 @@ export function rankPeople(
     event.attendance === "registered" &&
     b.events?.some((other) => sameSharedEvent(event, other) && inOverlap(other) && other.attendance === "registered"),
   );
-  const professionalMatch =
-    (complementary || collaboration) &&
-    rolesCompatible &&
+  const intent = rolesCompatible ? reciprocalIntent(a, b, sharedFocus) : null;
+  const professionalMatch = !!intent || (
+    (complementary || (collaboration && !commercialIntent)) && rolesCompatible &&
     forA.length > 0 &&
     forB.length > 0 &&
-    shared.length > 0;
+    shared.length > 0);
   if (!professionalMatch && !reunion && !registeredTogether) return null;
   const eventSuggestions = (b.events ?? [])
     .filter(
@@ -201,7 +311,7 @@ export function rankPeople(
         !sharedEvents.some((shared) => sameSharedEvent(shared, event)),
     )
     .slice(0, 3);
-  const you = !professionalMatch
+  const you = intent ? intentBenefits[intent].you : !professionalMatch
     ? connected
       ? "Reconnect at a shared event around your common professional interests."
       : "Meet someone who also reported registering for this event and shares your professional interests."
@@ -210,7 +320,7 @@ export function rankPeople(
         ? "Their stated hiring goal aligns with your search for a role."
         : "Their stated role search aligns with your hiring goal."
       : "Their experience supports your stated collaboration goal.";
-  const them = !professionalMatch
+  const them = intent ? intentBenefits[intent].them : !professionalMatch
     ? connected
       ? "They can continue a conversation with a connection who shares their interests."
       : "They can exchange experience with someone planning the same event who shares their interests."
@@ -219,16 +329,18 @@ export function rankPeople(
         ? "Your experience is relevant to their stated hiring needs."
         : "Your hiring goal offers an opportunity they are seeking."
       : "Your experience supports their stated collaboration goal.";
+  const evidenceSignals = intent ? sharedFocus : shared;
   return {
     score: Math.min(
       95,
-      (professionalMatch && complementary ? 65 : 50) +
-        Math.min(shared.length, 3) * 5 +
+      (professionalMatch && (complementary || intent) ? 65 : 50) +
+        Math.min(evidenceSignals.length, 3) * 5 +
         (sharedEvents.length ? 10 : 0),
     ),
     reasons: [
       you,
-      `Both profiles mention ${shared.join(", ")}.`,
+      intent ? `Shared focus: ${sharedFocus.filter((signal) => focused.has(signal)).join(", ")}.`
+        : `Both profiles mention ${shared.join(", ")}.`,
       "Your stays overlap in San Francisco.",
       ...(sharedEvents.length
         ? [sharedEvents[0].attendance === "registered" && b.events?.some((event) =>
@@ -238,7 +350,7 @@ export function rankPeople(
         : []),
     ],
     benefits: { you, them },
-    signals: [...new Set([...shared, ...forA, ...forB])],
+    signals: [...new Set([...evidenceSignals, ...forA, ...forB])],
     overlap: { start, end },
     sharedEvents,
     eventSuggestions,

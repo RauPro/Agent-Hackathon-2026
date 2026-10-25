@@ -1,5 +1,5 @@
 import { Temporal } from "@js-temporal/polyfill";
-import { DiscoveryService } from "./discovery-service";
+import { DiscoveryService, MATCHING_VERSION } from "./discovery-service";
 import { getStore } from "./store";
 import type { NetworkStore } from "./network-store";
 import { AgentDialogueService } from "./agent-dialogue-service";
@@ -10,26 +10,32 @@ const globalNetwork = globalThis as typeof globalThis & {
 
 export async function enqueueDailyNetworkWork(network: NetworkStore) {
   const day = Temporal.Now.plainDateISO("America/Los_Angeles").toString();
+  const sweep = `${day}:v${MATCHING_VERSION}`;
   return network.db
     .transaction(async () => {
       const prior = (await network.db
         .prepare("SELECT value FROM app_meta WHERE key = ?")
         .get("network-discovery-day")) as { value: string } | undefined;
-      if (prior?.value === day) return false;
+      if (prior?.value === sweep) return false;
+      const matcherChanged = !!prior && !prior.value.endsWith(`:v${MATCHING_VERSION}`);
       // The day and jobs commit together. Cold starts do not enqueue the whole network again.
+      // Only a new matcher resets pending cursors; ordinary daily checks preserve progress.
       await network.db
         .prepare(
           `INSERT INTO network_jobs (user_id, version, updated_at, cursor, priority)
       SELECT id, 1, ?, '', 0 FROM users WHERE 1
-      ON CONFLICT(user_id) DO NOTHING`,
+      ON CONFLICT(user_id) DO UPDATE SET
+        version = network_jobs.version + ?,
+        cursor = CASE WHEN ? THEN '' ELSE network_jobs.cursor END,
+        updated_at = CASE WHEN ? THEN excluded.updated_at ELSE network_jobs.updated_at END`,
         )
-        .run(new Date().toISOString());
+        .run(new Date().toISOString(), Number(matcherChanged), Number(matcherChanged), Number(matcherChanged));
       await network.db
         .prepare(
           `INSERT INTO app_meta (key, value) VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
         )
-        .run("network-discovery-day", day);
+        .run("network-discovery-day", sweep);
       return true;
     })
     .immediate();

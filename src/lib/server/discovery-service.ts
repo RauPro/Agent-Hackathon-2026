@@ -17,6 +17,8 @@ import type { ContextStore } from "./store";
 import { NetworkError, NetworkStore } from "./network-store";
 import { networkDemoEnabled } from "./demo-mode";
 import { AgentDialogueService } from "./agent-dialogue-service";
+// Bump when eligibility rules change so the worker revisits cached no-match results.
+export const MATCHING_VERSION = 2;
 const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function eventKey(event: Pick<NetworkEvent, "url" | "date" | "dateStatus" | "start">) {
@@ -323,6 +325,7 @@ export class DiscoveryService {
       LEFT JOIN network_settings ns ON ns.user_id = u.id
       WHERE u.id IN (?, ?) ORDER BY u.id`).all(a, b);
     const fingerprint = hash([
+      MATCHING_VERSION,
       Temporal.Now.plainDateISO("America/Los_Angeles").toString(), inputs,
       await this.network.relationshipRevision(a, b),
     ]);

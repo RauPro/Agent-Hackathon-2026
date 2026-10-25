@@ -913,4 +913,36 @@ describe("proactive discovery with authorized context", () => {
     expect(project).toHaveBeenCalledTimes(2);
     expect(await opportunityCount()).toBe(1);
   });
+
+  it("discovers a reciprocal fundraising match through cron and invalidates a previous matcher sweep on the same day", async () => {
+    await update(a, (context) => {
+      context.profile.bio = "Founder building construction software and AI agents for BIM coordination.";
+      context.profile.offers = "Construction software demos and production BIM automation experience.";
+      context.goal = { type: "customers", text: "Meet VCs to explore investment for Converza Construction AI." };
+    });
+    await update(b, (context) => {
+      context.profile.bio = "Seed investor focused on construction technology startups.";
+      context.profile.offers = "Investment feedback for construction software founders.";
+      context.goal = { type: "collaborators", text: "Meet founders and evaluate early-stage startups." };
+    });
+    await discoverable(a);
+    await discoverable(b);
+    const [first, second] = [a.id, b.id].sort();
+    await network.db.prepare(`INSERT INTO network_pair_checks (user_a, user_b, fingerprint, checked_at)
+      VALUES (?, ?, 'previous-matcher-no-result', ?)`)
+      .run(first, second, new Date().toISOString());
+    await network.db.prepare("INSERT INTO app_meta (key, value) VALUES ('network-discovery-day', '2026-10-24:v1')").run();
+    await network.db.prepare("UPDATE network_jobs SET cursor = 'zzzz'").run();
+    await drainNetworkWork(network);
+    const forA = await discovery.opportunities(a.id), forB = await discovery.opportunities(b.id);
+    expect(forA).toHaveLength(1);
+    expect(forB).toHaveLength(1);
+    expect(forA[0].id).toBe(forB[0].id);
+    expect(forA[0].benefits.you).toContain("fundraising");
+    expect(forA[0].signals).toContain("construction / AEC");
+    expect(await new AgentDialogueService(network).list(a.id)).toEqual([]);
+    expect(await enqueueDailyNetworkWork(network)).toBe(false);
+    await preferences(b, { discoverable: false });
+    expect(await discovery.opportunities(a.id)).toEqual([]);
+  });
 });
