@@ -81,6 +81,14 @@ export const tripSchema = z
   })
   .strict();
 
+// Private context for the owner's planning. Network projections must not include it.
+export const staySchema = z.object({
+  status: z.enum(["unknown", "provided", "declined"]),
+  area: z.string().trim().max(120),
+  hotel: z.string().trim().max(160),
+}).strict();
+export type StayContext = z.infer<typeof staySchema>;
+
 const scheduleShape = {
   trip: tripSchema,
   availability: z
@@ -168,7 +176,7 @@ export const scheduleSchema = z
   .strict()
   .superRefine(validateSchedule);
 export const contextSchema = z
-  .object({ profile: profileSchema, goal: goalSchema, ...scheduleShape })
+  .object({ profile: profileSchema, goal: goalSchema, ...scheduleShape, stay: staySchema.optional() })
   .strict()
   .superRefine(validateSchedule);
 export type UserContext = z.infer<typeof contextSchema>;

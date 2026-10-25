@@ -4,6 +4,7 @@ import { z } from "zod";
 import { detect } from "tinyld";
 import {
   modelReplySchema,
+  onboardingOutputSchema,
   draftIssues,
   guardProfileReply,
   type ChatState,
@@ -130,9 +131,24 @@ end after start, and not overlap within their list. Ask to clarify invalid or DS
 When name, specific bio/offers/goal, goal type and valid trip dates are known and
 profileGaps is empty, invite the user
 to review the profile and use the explicit confirm button. Keep helping with corrections.
-If commitments are also answered, finish with the review invitation and no extra question.
+If commitments and the optional stay question are already answered, finish with the review invitation and no extra question.
 Never say the profile is saved, a person found, an intro sent, or a calendar booked.
 You have no tools, no access to other participants and cannot authorize any action.
+
+PRIVATE STAY: OPTIONAL, ASK ONCE
+After required profile details are ready, ask once which hotel or neighborhood they
+will stay in. Make clear they can leave it for later. A neighborhood alone is enough;
+never press for a hotel, street address, room number, or exact location. If stayQuestionAsked
+is true, or they already gave a hotel/area, or declined, do not ask again. Accept
+"not decided" as unknown and "I'd rather not say" as declined. Neither blocks review.
+Extract only volunteered stay details into draft.stay: area is the neighborhood or
+approximate area they stated, hotel is the hotel name they stated. Never guess the
+area from a hotel name. Preserve existing stay details unless corrected or removed.
+Use status provided with a hotel or area; otherwise unknown or declined with empty
+strings. Keep all stay facts OUT of bio, offers, goalText, and commitment titles.
+This context is private to the owner's assistant, not a public profile or permission
+to share a hotel/area with another agent. A meeting has separate sharing approval.
+Do not claim a cafe or restaurant exists, is nearby, or is available without a verified source.
 
 EXAMPLES (apply the current date/context, not these example years blindly)
 - Goal known, name missing: "What's your full name?"
@@ -177,6 +193,7 @@ export async function completeOnboarding(
               currentDraft: chat.draft,
               validationIssues: draftIssues(chat.draft, chat.profileGaps),
               profileGaps: chat.profileGaps ?? [],
+              stayQuestionAsked: chat.stayQuestionAsked ?? false,
             }),
           },
           ...chat.messages
@@ -184,13 +201,13 @@ export async function completeOnboarding(
             .map(({ role, content }) => ({ role, content })),
           { role: "user", content: message },
         ],
-        text: { format: zodTextFormat(modelReplySchema, "onboarding_reply") },
+        text: { format: zodTextFormat(onboardingOutputSchema, "onboarding_reply") },
       },
       { signal },
     );
     if (response.status !== "completed" || !response.output_parsed)
       throw new AssistantError("invalid_reply");
-    const parsed = guardProfileReply(modelReplySchema.parse(response.output_parsed));
+    const parsed = guardProfileReply(modelReplySchema.parse(response.output_parsed), chat);
     if (detect(parsed.reply) === "en") return parsed;
 
     // Repair only the reply, without replaying user instructions or changing facts.
