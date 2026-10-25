@@ -2,27 +2,47 @@ import { createHash, randomUUID } from "node:crypto";
 import { Temporal } from "@js-temporal/polyfill";
 import {
   networkEventSchema,
+  eventAttendanceSchema,
+  canonicalEventDate,
+  canonicalEventUrl,
   rankPeople,
+  type EventAttendanceInput,
   type NetworkEvent,
   type NetworkEventInput,
   type OpportunityView,
 } from "../domain/discovery";
 import type { SharedEvent } from "../domain/network";
+import { eventHasEnded, type DiscoveryResult } from "../domain/event-discovery";
+import type { ContextStore } from "./store";
 import { NetworkError, NetworkStore } from "./network-store";
 import { networkDemoEnabled } from "./demo-mode";
 import { AgentDialogueService } from "./agent-dialogue-service";
 const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
-function canonicalEventUrl(value: string) {
-  const url = new URL(value);
-  url.hash = "";
-  for (const key of [...url.searchParams.keys()]) {
-    if (/^utm_/i.test(key) || ["fbclid", "gclid"].includes(key))
-      url.searchParams.delete(key);
-  }
-  url.searchParams.sort();
-  url.pathname = url.pathname.replace(/\/$/, "");
-  return url.toString();
+function eventKey(event: Pick<NetworkEvent, "url" | "date" | "dateStatus" | "start">) {
+  return event.url
+    ? hash([canonicalEventUrl(event.url), canonicalEventDate(event) ?? event.date ?? null,
+        event.dateStatus ?? "confirmed"])
+    : undefined;
+}
+
+function eventKeys(event: Pick<NetworkEvent, "url" | "aliasUrls" | "date" | "dateStatus" | "start">) {
+  return [...new Set([event.url, ...(event.aliasUrls ?? [])]
+    .filter((url): url is string => !!url)
+    .map((url) => eventKey({ ...event, url })!))].sort();
+}
+
+function normalizedEvent(row: EventRow): NetworkEvent {
+  const event = JSON.parse(row.event_json) as NetworkEvent;
+  const date = canonicalEventDate(event);
+  return {
+    ...event,
+    id: row.id,
+    attendance: event.attendance ?? "planned",
+    ...(date && { date, dateStatus: event.dateStatus ?? "confirmed" }),
+    canonicalKey: eventKey(event),
+    canonicalKeys: eventKeys(event),
+  };
 }
 type OpportunityRow = {
   id: string;
@@ -51,6 +71,91 @@ const eligibleRelationshipSql = `NOT EXISTS(SELECT 1 FROM network_blocks WHERE
     OR EXISTS(SELECT 1 FROM network_connections WHERE status = 'accepted'
       AND user_a = min(owner.id, peer.id) AND user_b = max(owner.id, peer.id)))`;
 
+/** An explicit user report, resolved from that account's current discovery snapshot. */
+export async function registerEventAttendance(
+  store: ContextStore,
+  token: string | undefined,
+  input: EventAttendanceInput,
+  now = new Date(),
+): Promise<NetworkEvent> {
+  const parsed = eventAttendanceSchema.parse(input);
+  const service = new DiscoveryService(store.network);
+  return store.db.transaction(async () => {
+    const account = await store.requireAccount(token);
+    const profile = await store.read(token);
+    if (!profile?.context || !profile.confirmedAt)
+      throw new NetworkError("profile_missing", 400, "Confirm your profile before saving a registration.");
+    if (profile.revision !== parsed.revision)
+      throw new NetworkError("stale_revision", 409, "Your profile changed. Reload your event suggestions.");
+    const snapshot = await store.readDiscovery(token, now);
+    if (!snapshot || snapshot.profile_revision !== parsed.revision ||
+      !["ready", "partial"].includes(snapshot.status) || !snapshot.result_json)
+      throw new NetworkError("stale_recommendation", 409, "Reload your current event suggestions before saving a registration.");
+    const result = JSON.parse(snapshot.result_json) as DiscoveryResult;
+    if (result.checkedAt !== parsed.discoveryCheckedAt)
+      throw new NetworkError("stale_recommendation", 409, "Your suggestions changed. Review the latest event before saving a registration.");
+    const recommendation = result.recommendations.find((event) => event.id === parsed.recommendationId);
+    if (!recommendation)
+      throw new NetworkError("not_found", 404, "This event is not in your current suggestions.");
+    if (recommendation.dateStatus === "confirmed" && eventHasEnded(recommendation, now))
+      throw new NetworkError("event_past", 409, "This event has ended. Refresh your event suggestions.");
+    const instant = (time: string | null) => {
+      if (!time || recommendation.dateStatus !== "confirmed" || !recommendation.timeZoneStated) return null;
+      try {
+        return Temporal.ZonedDateTime.from(
+          `${recommendation.date}T${time}[America/Los_Angeles]`,
+          { disambiguation: "reject" },
+        ).toInstant().toString();
+      } catch {
+        return null;
+      }
+    };
+    const draft = {
+      url: canonicalEventUrl(recommendation.url),
+      aliasUrls: [...new Set(recommendation.alsoListed.map((source) => canonicalEventUrl(source.url)))]
+        .filter((url) => url !== canonicalEventUrl(recommendation.url)).sort(),
+      date: recommendation.date,
+      dateStatus: recommendation.dateStatus,
+      start: instant(recommendation.startTime),
+    };
+    const canonicalKey = eventKey(draft)!;
+    const keys = eventKeys(draft);
+    const events = await service.events(account.id);
+    const existing = events.find((event) => event.canonicalKeys?.some((key) => keys.includes(key)));
+    // Retain previously established aliases when a later source lists fewer links.
+    draft.aliasUrls = [...new Set([...draft.aliasUrls, ...(existing?.aliasUrls ?? []), existing?.url]
+      .filter((url): url is string => !!url).map(canonicalEventUrl))]
+      .filter((url) => url !== draft.url).sort();
+    if (!existing && events.length >= 30)
+      throw new NetworkError("event_limit", 400, "Remove an old event before adding another.");
+    const event: NetworkEvent = {
+      ...draft,
+      id: existing?.id ?? randomUUID(),
+      title: recommendation.title,
+      end: instant(recommendation.endTime),
+      area: recommendation.location.city,
+      attendance: "registered",
+      reportedAt: existing?.attendance === "registered" && existing.reportedAt
+        ? existing.reportedAt : now.toISOString(),
+      sourceRecommendationId: recommendation.id,
+      sourceCheckedAt: result.checkedAt,
+      canonicalKey,
+      canonicalKeys: eventKeys(draft),
+      sourceMode: networkDemoEnabled() ? "demo" : "user_report",
+      visibility: parsed.visibility,
+    };
+    // A retry preserves its original report and causes no new matching trigger.
+    if (existing && Object.entries(event).every(([key, value]) =>
+      JSON.stringify(existing[key as keyof NetworkEvent]) === JSON.stringify(value))) return existing;
+    await store.db.prepare(`INSERT INTO network_events (id,user_id,event_json,updated_at)
+      VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+      event_json=excluded.event_json,updated_at=excluded.updated_at`)
+      .run(event.id, account.id, JSON.stringify(event), now.toISOString());
+    await store.network.enqueue(account.id);
+    return event;
+  }).immediate();
+}
+
 export class DiscoveryService {
   constructor(readonly network: NetworkStore) {
     network.sharedEvents = async (ownerId, viewerId) =>
@@ -67,9 +172,7 @@ export class DiscoveryService {
           "SELECT * FROM network_events WHERE user_id = ? ORDER BY updated_at DESC",
         )
         .all(userId)) as EventRow[]
-    ).map(
-      (row) => ({ ...JSON.parse(row.event_json), id: row.id }) as NetworkEvent,
-    );
+    ).map(normalizedEvent);
   }
   async saveEvent(
     userId: string,
@@ -79,20 +182,39 @@ export class DiscoveryService {
     await this.network.profile(userId);
     return this.network.db
       .transaction(async () => {
+        const events = await this.events(userId);
+        const key = eventKey(parsed);
         const existing = parsed.id
-          ? (await this.events(userId)).find((event) => event.id === parsed.id)
-          : undefined;
+          ? events.find((event) => event.id === parsed.id)
+          : key ? events.find((event) => event.canonicalKeys?.includes(key)) : undefined;
         if (parsed.id && !existing) throw new NetworkError("not_found", 404);
-        if (!existing && (await this.events(userId)).length >= 30)
+        if (!existing && events.length >= 30)
           throw new NetworkError(
             "event_limit",
             400,
             "Remove an old event before adding another.",
           );
-        const id = parsed.id ?? randomUUID();
+        const id = existing?.id ?? randomUUID();
+        const sameEvent = key ? existing?.canonicalKeys?.includes(key) : existing?.canonicalKey === key;
+        const attendance = parsed.attendance ?? (sameEvent ? existing?.attendance : undefined) ?? "planned";
         const event: NetworkEvent = {
+          ...existing,
           ...parsed,
           id,
+          date: canonicalEventDate(parsed)!,
+          dateStatus: "confirmed",
+          attendance,
+          canonicalKey: key,
+          aliasUrls: sameEvent
+            ? [...new Set([...(existing?.aliasUrls ?? []), existing?.url]
+                .filter((url): url is string => !!url).map(canonicalEventUrl))]
+                .filter((url) => !parsed.url || url !== canonicalEventUrl(parsed.url)).sort()
+            : undefined,
+          canonicalKeys: sameEvent ? existing?.canonicalKeys : key ? [key] : [],
+          sourceRecommendationId: sameEvent ? existing?.sourceRecommendationId : undefined,
+          sourceCheckedAt: sameEvent ? existing?.sourceCheckedAt : undefined,
+          reportedAt: sameEvent && existing?.attendance === attendance && existing.reportedAt
+            ? existing.reportedAt : new Date().toISOString(),
           sourceMode: networkDemoEnabled() ? "demo" : "user_report",
         };
         await this.network.db
@@ -122,6 +244,7 @@ export class DiscoveryService {
   ): Promise<SharedEvent[]> {
     const connected = await this.network.isConnected(ownerId, viewerId);
     if (await this.network.blocked(ownerId, viewerId)) return [];
+    if (!(await this.network.canSee(viewerId, ownerId, "events"))) return [];
     return (await this.events(ownerId))
       .filter(
         (event) =>
@@ -129,14 +252,17 @@ export class DiscoveryService {
           (connected && event.visibility === "friends") ||
           ownerId === viewerId,
       )
-      .map(({ id, title, start, end, area, sourceMode, url }) => ({
-        // A shared public link and identical times identify the same reported event.
-        id: url
-          ? hash([canonicalEventUrl(url), Date.parse(start), Date.parse(end)])
-          : id,
+      .map(({ id, title, start, end, date, dateStatus, attendance, reportedAt, area, sourceMode, canonicalKey, canonicalKeys }) => ({
+        // The provider identity and SF date survive differing or unknown event times.
+        id: canonicalKey ?? id,
+        canonicalKeys,
         title,
         start,
         end,
+        date,
+        dateStatus,
+        attendance,
+        reportedAt,
         area,
         sourceMode,
       }));

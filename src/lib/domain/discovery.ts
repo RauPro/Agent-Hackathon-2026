@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Temporal } from "@js-temporal/polyfill";
 import type { SharedEvent, SharedProfile, Visibility } from "./network";
+import { canonicalUrl } from "./event-discovery";
 
 export const networkEventSchema = z
   .object({
@@ -18,6 +19,7 @@ export const networkEventSchema = z
     end: z.iso.datetime({ offset: true }),
     area: z.string().trim().max(80),
     visibility: z.enum(["private", "friends", "network"]),
+    attendance: z.enum(["planned", "registered"]).optional(),
   })
   .strict()
   .refine((event) => {
@@ -28,7 +30,50 @@ export type NetworkEventInput = z.infer<typeof networkEventSchema>;
 export type NetworkEvent = SharedEvent & {
   url?: string;
   visibility: Visibility;
+  sourceRecommendationId?: string;
+  sourceCheckedAt?: string;
+  canonicalKey?: string;
+  aliasUrls?: string[];
 };
+export const eventAttendanceSchema = z.object({
+  action: z.literal("register"),
+  recommendationId: z.string().min(1).max(500),
+  discoveryCheckedAt: z.iso.datetime({ offset: true }),
+  revision: z.number().int().positive(),
+  visibility: z.enum(["private", "friends", "network"]),
+}).strict();
+export type EventAttendanceInput = z.infer<typeof eventAttendanceSchema>;
+
+/** Provider aliases share an identity; generic query parameters may identify an event. */
+export function canonicalEventUrl(value: string): string {
+  const url = new URL(value);
+  const provider = canonicalUrl(value);
+  if (provider && provider.platform !== "web") return provider.url;
+  url.hash = "";
+  url.hostname = url.hostname.toLowerCase().replace(/^www\./, "");
+  for (const key of [...url.searchParams.keys()]) {
+    if (/^utm_/i.test(key) || ["fbclid", "gclid"].includes(key))
+      url.searchParams.delete(key);
+  }
+  url.searchParams.sort();
+  url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+  return url.toString().replace(/\/$/, "");
+}
+
+export function canonicalEventDate(event: Pick<SharedEvent, "date" | "dateStatus" | "start">): string | null {
+  if (event.dateStatus === "unconfirmed_year") return null;
+  if (event.date) return event.date;
+  if (!event.start) return null;
+  return Temporal.Instant.from(event.start)
+    .toZonedDateTimeISO("America/Los_Angeles")
+    .toPlainDate().toString();
+}
+
+/** Only server-derived opaque aliases cross the authorized shared-event boundary. */
+function sameSharedEvent(a: SharedEvent, b: SharedEvent): boolean {
+  const keys = new Set([a.id, ...(a.canonicalKeys ?? [])]);
+  return [b.id, ...(b.canonicalKeys ?? [])].some((key) => keys.has(key));
+}
 export type OpportunityView = {
   id: string;
   userId: string;
@@ -129,41 +174,46 @@ export function rankPeople(
     signalsIn(professional(a)).includes(term),
   );
   const inOverlap = (event: SharedEvent) => {
-    const date = Temporal.Instant.from(event.start)
-      .toZonedDateTimeISO("America/Los_Angeles")
-      .toPlainDate()
-      .toString();
-    return date >= start && date <= end;
+    const date = canonicalEventDate(event);
+    return date !== null && date >= start && date <= end;
   };
   const sharedEvents = (a.events ?? []).filter(
     (event) =>
-      (b.events ?? []).some((other) => event.id === other.id) &&
+      (b.events ?? []).some((other) => sameSharedEvent(event, other) && inOverlap(other)) &&
       inOverlap(event),
   );
   const reunion = connected && sharedEvents.length > 0 && shared.length > 0;
+  const registeredTogether = shared.length > 0 && sharedEvents.some((event) =>
+    event.attendance === "registered" &&
+    b.events?.some((other) => sameSharedEvent(event, other) && inOverlap(other) && other.attendance === "registered"),
+  );
   const professionalMatch =
     (complementary || collaboration) &&
     rolesCompatible &&
     forA.length > 0 &&
     forB.length > 0 &&
     shared.length > 0;
-  if (!professionalMatch && !reunion) return null;
+  if (!professionalMatch && !reunion && !registeredTogether) return null;
   const eventSuggestions = (b.events ?? [])
     .filter(
       (event) =>
         inOverlap(event) &&
-        !sharedEvents.some((shared) => shared.id === event.id),
+        !sharedEvents.some((shared) => sameSharedEvent(shared, event)),
     )
     .slice(0, 3);
   const you = !professionalMatch
-    ? "Reconnect at a shared event around your common professional interests."
+    ? connected
+      ? "Reconnect at a shared event around your common professional interests."
+      : "Meet someone who also reported registering for this event and shares your professional interests."
     : complementary
       ? a.goal.type === "seeking_role"
         ? "Their stated hiring goal aligns with your search for a role."
         : "Their stated role search aligns with your hiring goal."
       : "Their experience supports your stated collaboration goal.";
   const them = !professionalMatch
-    ? "They can continue a conversation with a connection who shares their interests."
+    ? connected
+      ? "They can continue a conversation with a connection who shares their interests."
+      : "They can exchange experience with someone planning the same event who shares their interests."
     : complementary
       ? a.goal.type === "seeking_role"
         ? "Your experience is relevant to their stated hiring needs."
@@ -181,7 +231,10 @@ export function rankPeople(
       `Both profiles mention ${shared.join(", ")}.`,
       "Your stays overlap in San Francisco.",
       ...(sharedEvents.length
-        ? [`Both reported plans to attend ${sharedEvents[0].title}.`]
+        ? [sharedEvents[0].attendance === "registered" && b.events?.some((event) =>
+            sameSharedEvent(sharedEvents[0], event) && event.attendance === "registered")
+          ? `Both reported registering for ${sharedEvents[0].title}.`
+          : `Both reported plans to attend ${sharedEvents[0].title}.`]
         : []),
     ],
     benefits: { you, them },

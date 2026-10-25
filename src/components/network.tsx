@@ -23,6 +23,7 @@ import {
   type NetworkField,
   type NetworkSettings,
   type Visibility,
+  type SharedEvent,
 } from "@/lib/domain/network";
 import { manualMeetingSlot, type MeetingView } from "@/lib/domain/meetings";
 import { AppHeader } from "./app-header";
@@ -77,6 +78,13 @@ const timeLabel = (value: string) =>
     minute: "2-digit",
     timeZone: "America/Los_Angeles",
   }).format(new Date(value));
+
+const eventTimeLabel = (event: SharedEvent) => {
+  const timing = event.start
+    ? `${timeLabel(event.start)} SF time`
+    : event.date ? `${dateLabel(event.date)} · Time not confirmed` : "Time not confirmed";
+  return `${timing}${event.dateStatus === "unconfirmed_year" ? " · Year not confirmed" : ""}`;
+};
 
 export function Network({
   account,
@@ -161,6 +169,7 @@ export function Network({
     void Promise.resolve()
       .then(() => {
         const view = new URLSearchParams(window.location.search).get("view");
+        if (!embedded && new URLSearchParams(window.location.search).get("sharing") === "1") setSharing(true);
         if (
           !embedded &&
           (view === "agents" || view === "connections" || view === "opportunities")
@@ -1051,14 +1060,14 @@ function OpportunityCard({
       </div>
       {opportunity.sharedEvents.map((event) => (
         <p key={event.id}>
-          Shared event: {event.title} · {timeLabel(event.start)} SF time
+          Shared event: {event.title} · {eventTimeLabel(event)}
         </p>
       ))}
       {opportunity.eventSuggestions?.map((event) => (
         <p key={event.id}>
-          {opportunity.name} plans to attend {event.title} ·{" "}
-          {timeLabel(event.start)} SF time{event.area ? ` · ${event.area}` : ""}
-          . Registration and availability have not been checked.
+          {opportunity.name} {event.attendance === "registered" ? "reported registering for" : "plans to attend"} {event.title} ·{" "}
+          {eventTimeLabel(event)}{event.area ? ` · ${event.area}` : ""}
+          . Admission and availability have not been checked.
         </p>
       ))}
       <details>
@@ -1312,7 +1321,7 @@ function informationText(result: InformationResult): ReactNode {
   if (Array.isArray(value))
     return value.length
       ? value
-          .map((event) => `${event.title} · ${timeLabel(event.start)} SF time`)
+          .map((event) => `${event.title} · ${eventTimeLabel(event)}`)
           .join("\n")
       : "No shared events";
   if ("bio" in value) return `${value.bio}\n${value.offers}`;
@@ -1793,16 +1802,17 @@ function EventList({
     }
   }
   return (
-    <details className="network-settings">
-      <summary>Events you plan to attend</summary>
+    <details className="network-settings" id="my-events" open={events.length > 0}>
+      <summary>Your events</summary>
       {events.map((event) => (
         <article className="network-card" key={event.id}>
           <h3>{event.title}</h3>
           <p>
-            {timeLabel(event.start)} SF time
+            {eventTimeLabel(event)}
             {event.area ? ` · ${event.area}` : ""}
           </p>
           <p className="network-muted">
+            {event.attendance === "registered" ? "Registered · " : "Planning to attend · "}
             {event.sourceMode === "demo" ? "Demo event" : "Reported by you"} ·{" "}
             {event.visibility === "private"
               ? "Only me"

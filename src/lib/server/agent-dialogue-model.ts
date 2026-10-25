@@ -51,7 +51,11 @@ or unshared: do not infer them, reveal private memory, or request hidden records
 You have no tools or access to calendars, private profiles, email, locations, events
 or external sources beyond the explicitly supplied facts. Do not invent experience,
 projects, hiring, attendance, openings, addresses, dates, availability or prior contact.
-User-reported events remain user reports. Approximate areas are not exact locations.
+User-reported events remain user reports. attendance=registered means the person
+reported registering; it is not provider-verified admission or proof of attendance.
+attendance=planned means intent only. An unconfirmed_year date has an uncertain year;
+null start or end times are unknown. Never fill them in or claim a calendar opening.
+Approximate areas are not exact locations.
 Shared dates indicate a visit, not free time or willingness to meet.
 
 Have an actual, adaptive conversation. Answer the peer's latest question first using
@@ -134,6 +138,10 @@ function sharedFacts(person: SharedProfile) {
       title: event.title,
       start: event.start,
       end: event.end,
+      date: event.date,
+      dateStatus: event.dateStatus,
+      attendance: event.attendance ?? "planned",
+      reportedAt: event.reportedAt,
       area: event.area,
       sourceMode: event.sourceMode,
     })) }),
