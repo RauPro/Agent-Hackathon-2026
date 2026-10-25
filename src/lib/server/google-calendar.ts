@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   CALENDAR_SCOPES,
+  CALENDAR_WRITE_SCOPE,
   mergeBusy,
   type BusyInterval,
   type CalendarOption,
@@ -23,6 +24,12 @@ export class CalendarError extends Error {
       | "missing_dates"
       | "invalid_selection"
       | "calendar_changed"
+      | "needs_upgrade"
+      | "account_changed"
+      | "event_conflict"
+      | "event_not_found"
+      | "event_cancelled"
+      | "approval_required"
       | "busy",
   ) {
     super(code);
@@ -90,6 +97,7 @@ function endpoints() {
       calendars: `${test}/calendars`,
       freebusy: `${test}/freebusy`,
       revoke: `${test}/revoke`,
+      events: `${test}/calendars`,
     };
   }
   return {
@@ -99,6 +107,7 @@ function endpoints() {
     calendars: "https://www.googleapis.com/calendar/v3/users/me/calendarList",
     freebusy: "https://www.googleapis.com/calendar/v3/freeBusy",
     revoke: "https://oauth2.googleapis.com/revoke",
+    events: "https://www.googleapis.com/calendar/v3/calendars",
   };
 }
 
@@ -106,7 +115,14 @@ export function hasCalendarScopes(scopes: string[]) {
   return CALENDAR_SCOPES.slice(2).every((scope) => scopes.includes(scope));
 }
 
-export function googleAuthorizationUrl(state: string, verifier: string) {
+export function hasCalendarWriteScope(scopes: string[]) {
+  return [CALENDAR_WRITE_SCOPE,
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar",
+  ].some((scope) => scopes.includes(scope));
+}
+
+export function googleAuthorizationUrl(state: string, verifier: string, write = false) {
   const config = googleCalendarConfig();
   if (!config) throw new CalendarError("not_configured");
   const url = new URL(endpoints().authorize);
@@ -114,7 +130,7 @@ export function googleAuthorizationUrl(state: string, verifier: string) {
     client_id: config.clientId,
     redirect_uri: config.redirectUri,
     response_type: "code",
-    scope: CALENDAR_SCOPES.join(" "),
+    scope: [...CALENDAR_SCOPES, ...(write ? [CALENDAR_WRITE_SCOPE] : [])].join(" "),
     state,
     access_type: "offline",
     prompt: "consent select_account",
@@ -125,7 +141,7 @@ export function googleAuthorizationUrl(state: string, verifier: string) {
   return url.toString();
 }
 
-async function googleJson(url: string, init: RequestInit, signal: AbortSignal) {
+async function googleJson(url: string, init: RequestInit, signal: AbortSignal, eventRequest = false) {
   let response: Response;
   try {
     response = await fetch(url, {
@@ -144,6 +160,12 @@ async function googleJson(url: string, init: RequestInit, signal: AbortSignal) {
     throw new CalendarError("sync_failed");
   }
   if (!response.ok) {
+    if (eventRequest && response.status === 404)
+      throw new CalendarError("event_not_found");
+    if (eventRequest && response.status === 409)
+      throw new CalendarError("event_conflict");
+    if (eventRequest && response.status === 410)
+      throw new CalendarError("event_cancelled");
     const code = (body as { error?: unknown })?.error;
     if (response.status === 401 || code === "invalid_grant")
       throw new CalendarError("needs_reconnect");
@@ -374,6 +396,131 @@ export async function googleBusy(
     intervals.push(...value.busy);
   }
   return mergeBusy(intervals, window);
+}
+
+export type GoogleMeetingInput = {
+  meetingId: string;
+  calendarId: string;
+  eventId: string;
+  conferenceRequestId: string;
+  title: string;
+  location: string | null;
+  start: string;
+  end: string;
+  online: boolean;
+  attendees: string[];
+};
+export type GoogleMeetingResult = {
+  eventUrl: string | null;
+  meetUrl: string | null;
+  conferenceStatus: "success" | "pending" | "failure" | null;
+};
+
+function meetingEventUrl(input: GoogleMeetingInput, item = false) {
+  return `${endpoints().events}/${encodeURIComponent(input.calendarId)}/events${item ? `/${input.eventId}` : ""}`;
+}
+
+function trustedGoogleUrl(raw: string | undefined, kind: "event" | "meet") {
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    const hosts = kind === "meet" ? ["meet.google.com"] : ["calendar.google.com", "www.google.com"];
+    return url.protocol === "https:" && !url.username && !url.password && hosts.includes(url.hostname)
+      ? url.toString() : null;
+  } catch { return null; }
+}
+
+function parseGoogleMeeting(raw: unknown, input: GoogleMeetingInput): GoogleMeetingResult {
+  const parsed = z.object({
+    id: z.string(),
+    status: z.string().optional(),
+    start: z.object({ dateTime: z.iso.datetime({ offset: true }) }).optional(),
+    end: z.object({ dateTime: z.iso.datetime({ offset: true }) }).optional(),
+    htmlLink: z.string().optional(),
+    hangoutLink: z.string().optional(),
+    extendedProperties: z.object({ private: z.record(z.string(), z.string()).optional() }).optional(),
+    conferenceData: z.object({
+      createRequest: z.object({ status: z.object({ statusCode: z.enum(["pending", "success", "failure"]) }).optional() }).optional(),
+      entryPoints: z.array(z.object({ entryPointType: z.string(), uri: z.string().optional() })).optional(),
+    }).optional(),
+  }).safeParse(raw);
+  if (!parsed.success) throw new CalendarError("sync_failed");
+  const event = parsed.data;
+  if (event.status === "cancelled") throw new CalendarError("event_cancelled");
+  if (event.id !== input.eventId ||
+      event.extendedProperties?.private?.sidekickMeetingId !== input.meetingId ||
+      !event.start || !event.end ||
+      Date.parse(event.start.dateTime) !== Date.parse(input.start) ||
+      Date.parse(event.end.dateTime) !== Date.parse(input.end))
+    throw new CalendarError("event_conflict");
+  const video = event.conferenceData?.entryPoints?.find((entry) => entry.entryPointType === "video")?.uri;
+  const meetUrl = input.online ? trustedGoogleUrl(video ?? event.hangoutLink, "meet") : null;
+  return {
+    eventUrl: trustedGoogleUrl(event.htmlLink, "event"),
+    meetUrl,
+    conferenceStatus: input.online
+      ? meetUrl ? "success" : event.conferenceData?.createRequest?.status?.statusCode === "failure" ? "failure" : "pending"
+      : null,
+  };
+}
+
+/** Reconcile one stable event before retrying an insert with an uncertain result. */
+export async function getGoogleMeeting(
+  accessToken: string,
+  input: GoogleMeetingInput,
+  signal: AbortSignal,
+): Promise<GoogleMeetingResult | null> {
+  try {
+    return parseGoogleMeeting(await googleJson(meetingEventUrl(input, true), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }, signal, true), input);
+  } catch (error) {
+    if (error instanceof CalendarError && error.code === "event_not_found") return null;
+    throw error;
+  }
+}
+
+export async function createOrGetGoogleMeeting(
+  accessToken: string,
+  input: GoogleMeetingInput,
+  signal: AbortSignal,
+): Promise<GoogleMeetingResult> {
+  const headers = { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" };
+  const read = async () => parseGoogleMeeting(await googleJson(meetingEventUrl(input, true), { headers }, signal, true), input);
+  try { return await read(); }
+  catch (error) {
+    if (!(error instanceof CalendarError) || error.code !== "event_not_found") throw error;
+  }
+  const url = new URL(meetingEventUrl(input));
+  url.searchParams.set("sendUpdates", "all");
+  url.searchParams.set("conferenceDataVersion", "1");
+  try {
+    return parseGoogleMeeting(await googleJson(url.toString(), {
+      method: "POST", headers,
+      body: JSON.stringify({
+        id: input.eventId,
+        summary: input.title,
+        description: "Both participants approved this meeting in Sidekick.",
+        ...(input.location && !input.online ? { location: input.location } : {}),
+        start: { dateTime: input.start, timeZone: "America/Los_Angeles" },
+        end: { dateTime: input.end, timeZone: "America/Los_Angeles" },
+        attendees: [...new Set(input.attendees)].map((email) => ({ email })),
+        visibility: "private",
+        guestsCanModify: false,
+        guestsCanInviteOthers: false,
+        extendedProperties: { private: { sidekickMeetingId: input.meetingId } },
+        ...(input.online ? { conferenceData: { createRequest: {
+          requestId: input.conferenceRequestId,
+          conferenceSolutionKey: { type: "hangoutsMeet" },
+        } } } : {}),
+      }),
+    }, signal, true), input);
+  } catch (error) {
+    if (error instanceof CalendarError && ["event_conflict", "sync_failed"].includes(error.code) && !signal.aborted) {
+      try { return await read(); } catch { /* Keep the original error; a later explicit retry reconciles again. */ }
+    }
+    throw error;
+  }
 }
 
 export async function revokeGoogleTokens(tokens: GoogleTokens) {

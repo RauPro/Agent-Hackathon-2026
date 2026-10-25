@@ -15,10 +15,18 @@ import {
   googleCalendarConfig,
   googleCalendars,
   hasCalendarScopes,
+  hasCalendarWriteScope,
   refreshGoogleTokens,
   revokeGoogleTokens,
   tokenDataSchema,
 } from "./google-calendar";
+import { z } from "zod";
+
+export const calendarConnectionRequestSchema = z.union([
+  z.object({ purpose: z.literal("availability").optional() }).strict(),
+  z.object({ purpose: z.literal("meeting"), meetingId: z.uuid() }).strict(),
+]);
+type CalendarConnectionRequest = z.infer<typeof calendarConnectionRequestSchema>;
 
 export async function calendarStatus(
   store: ContextStore,
@@ -40,6 +48,13 @@ export async function calendarStatus(
     context.context &&
     chat.baseRevision === context.revision
   );
+  let meetingPublishingReady = false;
+  if (connection) {
+    try {
+      const tokens = tokenDataSchema.parse(openCalendarData(connection.encryptedTokens, await store.calendarOwner(token)));
+      meetingPublishingReady = configured && hasCalendarWriteScope(tokens.scopes) && connection.issue !== "needs_reconnect";
+    } catch { /* Read-only availability remains independently usable. */ }
+  }
   return {
     configured,
     revision,
@@ -61,21 +76,37 @@ export async function calendarStatus(
     availabilityReady,
     profileReady,
     onboardingComplete: profileReady && availabilityReady,
+    meetingPublishingReady,
   };
 }
 
 export async function beginCalendarConnection(
   store: ContextStore,
   token: string,
+  raw: CalendarConnectionRequest = {},
 ) {
+  const input = calendarConnectionRequestSchema.parse(raw);
   const owner = await store.calendarOwner(token);
+  const existing = await store.readCalendar(token);
+  let returnTo: string | undefined;
+  if (input.purpose === "meeting") {
+    const account = await store.requireAccount(token);
+    const row = await store.network.db.prepare("SELECT state_json FROM meetings WHERE id = ? AND (first_user_id = ? OR second_user_id = ?)")
+      .get(input.meetingId, account.id, account.id) as { state_json: string } | undefined;
+    const meeting = row && z.object({ status: z.literal("confirmed"), participants: z.array(z.string()).length(2), selectedOptionId: z.string(), approvals: z.record(z.string(), z.string()) }).safeParse(JSON.parse(row.state_json));
+    if (!meeting?.success || !meeting.data.participants.every((id) => meeting.data.approvals[id] === meeting.data.selectedOptionId) ||
+        !(await store.network.isConnected(...meeting.data.participants as [string, string])) ||
+        await store.network.blocked(...meeting.data.participants as [string, string]))
+      throw new CalendarError("approval_required");
+    returnTo = `/onboarding?agents=1&person=${encodeURIComponent(meeting.data.participants.find((id) => id !== account.id)!)}`;
+  }
   const state = randomBytes(32).toString("hex"),
     verifier = randomBytes(32).toString("base64url");
-  const url = googleAuthorizationUrl(state, verifier);
+  const url = googleAuthorizationUrl(state, verifier, input.purpose === "meeting");
   await store.startCalendarOAuth(
     token,
     state,
-    sealCalendarData(verifier, `${owner}:${state}`),
+    sealCalendarData(input.purpose === "meeting" ? { verifier, write: true, subject: existing.connection?.subject ?? null, returnTo } : verifier, `${owner}:${state}`),
   );
   return url;
 }
@@ -86,24 +117,34 @@ export async function finishCalendarConnection(
   state: string,
   code: string | null,
   denied: boolean,
+  onReturnTo?: (path: string) => void,
 ) {
   if (!/^[a-f0-9]{64}$/.test(state)) throw new CalendarError("invalid_state");
   const attempt = await store.consumeCalendarOAuth(token, state);
-  if (denied) throw new CalendarError("denied");
-  if (!code || code.length > 4096) throw new CalendarError("invalid_state");
   const owner = await store.calendarOwner(token);
-  const verifier = openCalendarData<string>(
+  const payload = openCalendarData<string | { verifier: string; write: true; subject: string | null; returnTo: string }>(
     attempt.encrypted_verifier,
     `${owner}:${state}`,
   );
+  const verifier = typeof payload === "string" ? payload : payload.verifier;
+  if (typeof payload !== "string") onReturnTo?.(payload.returnTo);
+  if (denied) throw new CalendarError("denied");
+  if (!code || code.length > 4096) throw new CalendarError("invalid_state");
   const signal = AbortSignal.timeout(25000);
   const tokens = await exchangeGoogleCode(code, verifier, signal);
   const [account, calendars] = await Promise.all([
     googleAccount(tokens.accessToken, signal),
     googleCalendars(tokens.accessToken, signal),
   ]);
+  const existing = await store.readCalendar(token);
+  const upgrading = typeof payload !== "string" && payload.write;
+  if (upgrading && !hasCalendarWriteScope(tokens.scopes)) throw new CalendarError("needs_upgrade");
+  if (upgrading && payload.subject && payload.subject !== account.subject) throw new CalendarError("account_changed");
   const primary = calendars.find((calendar) => calendar.primary);
   if (!primary) throw new CalendarError("calendar_unavailable");
+  const retainedIds = upgrading && existing.connection?.subject === account.subject
+    ? existing.connection.selectedIds.filter((id) => calendars.some((calendar) => calendar.id === id))
+    : [];
   return await store.connectCalendar(
     token!,
     attempt.base_revision,
@@ -111,8 +152,8 @@ export async function finishCalendarConnection(
       ...account,
       encryptedTokens: sealCalendarData(tokens, nextOwner),
       calendars,
-      selectedIds: [primary.id],
-      snapshot: null,
+      selectedIds: retainedIds.length ? retainedIds : [primary.id],
+      snapshot: retainedIds.length && existing.connection?.subject === account.subject ? existing.connection.snapshot : null,
       issue: null,
     }),
   );

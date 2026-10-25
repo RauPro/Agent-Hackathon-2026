@@ -9,6 +9,21 @@ export const CALENDAR_SCOPES = [
   "https://www.googleapis.com/auth/calendar.events.freebusy",
   "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
 ] as const;
+export const CALENDAR_WRITE_SCOPE =
+  "https://www.googleapis.com/auth/calendar.events.owned";
+
+export type MeetingCalendarPublication = {
+  status: "publishing" | "scheduled" | "conference_pending" | "failed";
+  organizerUserId: string;
+  eventId: string;
+  conferenceRequestId: string;
+  /** Kept server-side; a calendar ID can contain the owner's private email. */
+  calendarId: string;
+  eventUrl: string | null;
+  meetUrl: string | null;
+  error: string | null;
+  updatedAt: string;
+};
 
 export type CalendarOption = {
   id: string;
@@ -65,6 +80,7 @@ export type CalendarStatus = {
   profileReady: boolean;
   onboardingComplete: boolean;
   issue: CalendarIssue;
+  meetingPublishingReady?: boolean;
 };
 
 export const calendarActionSchema = z.discriminatedUnion("action", [

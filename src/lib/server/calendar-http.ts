@@ -1,12 +1,13 @@
 import { isStoreError } from "./store";
 import { CalendarError } from "./google-calendar";
 import { json } from "./http";
+import { ZodError } from "zod";
 
 export function calendarFailure(error: unknown) {
   const code =
     error instanceof CalendarError || isStoreError(error, "calendar_conflict")
       ? error.code
-      : isStoreError(error, "session_missing")
+      : error instanceof ZodError ? "invalid_request" : isStoreError(error, "session_missing")
         ? "session_missing"
         : "sync_failed";
   const messages: Record<string, string> = {
@@ -20,6 +21,13 @@ export function calendarFailure(error: unknown) {
     api_disabled:
       "Google Calendar is not enabled for this app yet. Contact the app owner.",
     needs_reconnect: "Reconnect Google Calendar to check availability.",
+    needs_upgrade: "Allow Google Calendar event creation to send this invitation.",
+    account_changed: "Use the same Google account that started this calendar invitation.",
+    approval_required: "Both participants must approve the same meeting before an invitation can be sent.",
+    event_conflict: "The Google event changed. Review it in Google Calendar before continuing.",
+    event_cancelled: "This event was cancelled in Google Calendar. Start a new meeting to reschedule it.",
+    event_not_found: "The Google event could not be found. Try again.",
+    invalid_request: "Review your calendar connection request.",
     sync_failed: "Could not check calendar availability. Try again.",
     calendar_unavailable:
       "A selected calendar could not be checked. Review your calendars or reconnect.",

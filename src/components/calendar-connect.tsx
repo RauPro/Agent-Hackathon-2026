@@ -105,6 +105,10 @@ export function CalendarConnect({
                   "Google Calendar is not enabled for this app yet. Contact the app owner.",
                 calendar_unavailable:
                   "Your primary calendar could not be accessed. Try connecting again.",
+                needs_upgrade:
+                  "Google did not grant event creation. Availability is still connected; allow event creation when sending the invitation.",
+                account_changed:
+                  "Select the Google account already connected to your profile. Your existing connection is unchanged.",
               };
               setNotice(
                 messages[code] ||

@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   const config = googleCalendarConfig();
   if (!config) return calendarFailure(new CalendarError("not_configured"));
-  const target = new URL("/onboarding", config.origin);
+  let target = new URL("/onboarding", config.origin);
   let token: string | undefined;
   try {
     await getStore().requireAccount(
@@ -28,6 +28,7 @@ export async function GET(request: NextRequest) {
       request.nextUrl.searchParams.get("state") || "",
       request.nextUrl.searchParams.get("code"),
       request.nextUrl.searchParams.has("error"),
+      (path) => { target = new URL(path, config.origin); },
     );
   } catch (error) {
     const code =
