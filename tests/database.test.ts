@@ -167,8 +167,8 @@ describe("async persistence", () => {
       await db.prepare("SELECT email,profile_id FROM users").get(),
     ).toEqual({ email: "test@example.test", profile_id: "profile" });
     expect(
-      await db.prepare("SELECT version,cursor FROM network_jobs").get(),
-    ).toEqual({ version: 7, cursor: "" });
+      await db.prepare("SELECT version,cursor,priority FROM network_jobs").get(),
+    ).toEqual({ version: 7, cursor: "", priority: 1 });
     expect(
       (await db.prepare("PRAGMA table_info(calendar_oauth_states)").all()).some(
         (row) => row.name === "browser_token_hash",

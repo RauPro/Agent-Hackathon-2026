@@ -1,11 +1,11 @@
 import { NextRequest } from "next/server";
 import { calendarFailure } from "@/lib/server/calendar-http";
-import { beginCalendarConnection } from "@/lib/server/calendar-service";
+import { beginCalendarConnection, calendarConnectionRequestSchema } from "@/lib/server/calendar-service";
 import {
   CalendarError,
   googleCalendarConfig,
 } from "@/lib/server/google-calendar";
-import { json, sameOrigin, SESSION_COOKIE } from "@/lib/server/http";
+import { json, readJson, sameOrigin, SESSION_COOKIE } from "@/lib/server/http";
 import { getStore, SessionMissing } from "@/lib/server/store";
 
 export const runtime = "nodejs";
@@ -36,8 +36,9 @@ export async function POST(request: NextRequest) {
       );
     const token = request.cookies.get(SESSION_COOKIE)?.value;
     if (!token) throw new SessionMissing();
+    const input = calendarConnectionRequestSchema.parse(request.headers.get("content-type")?.split(";")[0] === "application/json" ? await readJson(request) : {});
     const response = json({
-      url: await beginCalendarConnection(getStore(), token),
+      url: await beginCalendarConnection(getStore(), token, input),
     });
     // Lax permits the top-level callback from Google; POST mutations check Origin.
     response.cookies.set(SESSION_COOKIE, token, {

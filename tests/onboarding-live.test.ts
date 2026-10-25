@@ -29,6 +29,7 @@ function profile(withDates = false): ChatState {
     confirmedAt: null,
     evidenceKind: null,
   });
+  chat.stayQuestionAsked = true;
   chat.draft = draftFromContext(validContext());
   chat.draft.arrival = withDates ? "2026-11-01" : "";
   chat.draft.departure = withDates ? "2026-11-20" : "";
@@ -60,7 +61,8 @@ async function check(
   }
   if (
     validateDraft(reply.draft, reply.profileGaps).success &&
-    reply.draft.commitments.status !== "unknown"
+    reply.draft.commitments.status !== "unknown" &&
+    (chat.stayQuestionAsked || reply.draft.stay?.status === "provided" || reply.draft.stay?.status === "declined")
   )
     expect(reply.reply).not.toContain("?");
   assertions(reply);
@@ -99,6 +101,26 @@ describe.skipIf(!enabled)("live onboarding conversation regressions", () => {
         ) + "\n",
       );
   });
+
+  it("asks once for a private stay, extracts it separately, and accepts an undecided answer", async () => {
+    const chat = profile(true);
+    chat.stayQuestionAsked = false;
+    await check("optional stay question", chat, "No plans outside my calendar.", (result) => {
+      expect(result.reply).toMatch(/hotel or neighborhood/);
+      expect(validateDraft(result.draft).success).toBe(true);
+    });
+    chat.stayQuestionAsked = true;
+    chat.messages.push({ id: "stay-question", role: "assistant", content: "Where will you stay in SF—a hotel or neighborhood? You can leave this for later." });
+    await check("private hotel and neighborhood", chat, "I'm staying at Example Demo Hotel in SoMa. Nothing else outside my calendar.", (result) => {
+      expect(result.draft.stay).toEqual({ status: "provided", area: "SoMa", hotel: "Example Demo Hotel" });
+      expect(JSON.stringify({ bio: result.draft.bio, offers: result.draft.offers, goal: result.draft.goalText, commitments: result.draft.commitments })).not.toMatch(/Example Demo Hotel|SoMa/);
+    });
+    await check("undecided private stay", chat, "I haven't decided where to stay. No plans outside my calendar.", (result) => {
+      expect(result.draft.stay).toEqual({ status: "unknown", area: "", hotel: "" });
+      expect(result.reply).not.toContain("?");
+      expect(validateDraft(result.draft).success).toBe(true);
+    });
+  }, 90000);
 
   it("probes a generic profile and resolves gaps from concrete follow-ups", async () => {
     const chat = profile(true);

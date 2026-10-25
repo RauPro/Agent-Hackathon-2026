@@ -17,6 +17,8 @@ import type { ContextStore } from "./store";
 import { NetworkError, NetworkStore } from "./network-store";
 import { networkDemoEnabled } from "./demo-mode";
 import { AgentDialogueService } from "./agent-dialogue-service";
+// Bump when eligibility rules change so the worker revisits cached no-match results.
+export const MATCHING_VERSION = 3;
 const hash = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function eventKey(event: Pick<NetworkEvent, "url" | "date" | "dateStatus" | "start">) {
@@ -310,8 +312,36 @@ export class DiscoveryService {
       .run(randomUUID(), a, b, signature, now, now);
   }
 
-  /** Resume a few peer comparisons per invocation. Only one pair occupies a transaction. */
-  async drain(limit = 5): Promise<number> {
+  private async processChangedPair(ownerId: string, peerId: string) {
+    const [a, b] = [ownerId, peerId].sort();
+    const db = this.network.db;
+    // A negative result needs the same deduplication as a positive opportunity.
+    // Hash source revisions/data, never store another copy of private context.
+    const inputs = await db.prepare(`
+      SELECT u.id, s.revision, ns.settings_json,
+        (SELECT group_concat(event_json) FROM
+          (SELECT event_json FROM network_events WHERE user_id = u.id ORDER BY id)) AS events
+      FROM users u JOIN sessions s ON s.token_hash = u.profile_id
+      LEFT JOIN network_settings ns ON ns.user_id = u.id
+      WHERE u.id IN (?, ?) ORDER BY u.id`).all(a, b);
+    const fingerprint = hash([
+      MATCHING_VERSION,
+      Temporal.Now.plainDateISO("America/Los_Angeles").toString(), inputs,
+      await this.network.relationshipRevision(a, b),
+    ]);
+    const previous = await db.prepare(
+      "SELECT fingerprint FROM network_pair_checks WHERE user_a = ? AND user_b = ?",
+    ).get(a, b);
+    if (previous?.fingerprint === fingerprint) return;
+    await this.processPair(a, b);
+    await db.prepare(`INSERT INTO network_pair_checks (user_a, user_b, fingerprint, checked_at)
+      VALUES (?, ?, ?, ?) ON CONFLICT(user_a, user_b) DO UPDATE SET
+      fingerprint = excluded.fingerprint, checked_at = excluded.checked_at`)
+      .run(a, b, fingerprint, new Date().toISOString());
+  }
+
+  /** Resume bounded work fairly; a fresh profile need not wait for the daily sweep. */
+  async drain(limit = 80): Promise<number> {
     const db = this.network.db;
     const leaseKey = "network-discovery";
     const lease = await db.acquireLease(leaseKey, 45_000);
@@ -330,12 +360,12 @@ export class DiscoveryService {
         )
         .run();
       while (
-        processed < Math.max(1, Math.min(limit, 5)) &&
+        processed < Math.max(1, Math.min(limit, 80)) &&
         Date.now() < deadline
       ) {
         const job = (await db
           .prepare(
-            "SELECT user_id, version, cursor FROM network_jobs ORDER BY updated_at, user_id LIMIT 1",
+            "SELECT user_id, version, cursor FROM network_jobs ORDER BY priority DESC, updated_at, user_id LIMIT 1",
           )
           .get()) as
           | { user_id: string; version: number; cursor: string }
@@ -363,7 +393,7 @@ export class DiscoveryService {
                   ORDER BY peer.id LIMIT 2`,
               )
               .all(job.user_id, job.cursor)) as { id: string }[];
-            if (peers[0]) await this.processPair(job.user_id, peers[0].id);
+            if (peers[0]) await this.processChangedPair(job.user_id, peers[0].id);
             if (peers.length < 2) {
               await db
                 .prepare(
@@ -377,7 +407,7 @@ export class DiscoveryService {
                 )
                 .run(
                   peers[0].id,
-                  new Date().toISOString(),
+                  new Date(Date.now() + processed + 1).toISOString(),
                   job.user_id,
                   job.version,
                   job.cursor,
@@ -420,6 +450,14 @@ export class DiscoveryService {
     return result
       .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
       .slice(0, 3);
+  }
+
+  async matchingStatus(userId: string): Promise<{ pending: boolean; lastCheckedAt: string | null }> {
+    const row = await this.network.db.prepare(`SELECT
+      EXISTS(SELECT 1 FROM network_jobs WHERE user_id = ?) AS pending,
+      (SELECT MAX(checked_at) FROM network_pair_checks WHERE user_a = ? OR user_b = ?) AS checked_at`)
+      .get(userId, userId, userId);
+    return { pending: !!row?.pending, lastCheckedAt: row?.checked_at as string | null ?? null };
   }
 
   async dismiss(userId: string, id: string) {

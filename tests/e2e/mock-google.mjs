@@ -3,6 +3,10 @@ import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 const codes = new Map();
 const grants = new Map();
+const events = new Map();
+let busyOverride = null;
+let conferencePending = false;
+let insertCount = 0;
 const scopes =
   "openid email https://www.googleapis.com/auth/calendar.events.freebusy https://www.googleapis.com/auth/calendar.calendarlist.readonly";
 const server = createServer(async (request, response) => {
@@ -12,6 +16,17 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify(data));
   };
   if (url.pathname === "/health") return json({});
+  if (url.pathname === "/test/state") {
+    if (request.method === "POST") {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      const input = JSON.parse(raw);
+      if (input.reset) { events.clear(); insertCount = 0; busyOverride = null; conferencePending = false; }
+      if (Array.isArray(input.busy)) busyOverride = input.busy;
+      if (typeof input.conferencePending === "boolean") conferencePending = input.conferencePending;
+    }
+    return json({ insertCount, events: [...events.values()], busy: busyOverride, conferencePending });
+  }
   if (url.pathname === "/authorize") {
     const params = url.searchParams
       .toString()
@@ -34,6 +49,7 @@ const server = createServer(async (request, response) => {
       codes.set(code, {
         challenge: url.searchParams.get("code_challenge"),
         partial: url.searchParams.get("mode") === "partial",
+        scopes: url.searchParams.get("scope") || scopes,
       });
       callback.searchParams.set("code", code);
     }
@@ -57,13 +73,13 @@ const server = createServer(async (request, response) => {
     codes.delete(code);
     const access = randomUUID(),
       refresh = randomUUID();
-    grants.set(access, { refresh });
+    grants.set(access, { refresh, scopes: attempt.partial ? "openid email" : attempt.scopes });
     return json({
       access_token: access,
       refresh_token: refresh,
       expires_in: 3600,
       token_type: "Bearer",
-      scope: attempt.partial ? "openid email" : scopes,
+      scope: attempt.partial ? "openid email" : attempt.scopes,
     });
   }
   if (url.pathname === "/revoke") {
@@ -74,6 +90,32 @@ const server = createServer(async (request, response) => {
   }
   const access = request.headers.authorization?.replace("Bearer ", "");
   if (!grants.has(access)) return json({ error: "invalid_grant" }, 401);
+  if (/^\/calendars\/[^/]+\/events(?:\/[^/]+)?$/.test(url.pathname)) {
+    if (!grants.get(access).scopes.includes("https://www.googleapis.com/auth/calendar.events.owned")) return json({ error: { errors: [{ reason: "insufficientPermissions" }] } }, 403);
+    const segments = url.pathname.split("/");
+    const calendarId = decodeURIComponent(segments[2]);
+    const represent = (event) => ({
+      ...event,
+      ...(event.conferenceData ? { conferenceData: {
+        createRequest: { ...event.conferenceData.createRequest, status: { statusCode: conferencePending ? "pending" : "success" } },
+        ...(!conferencePending ? { entryPoints: [{ entryPointType: "video", uri: "https://meet.google.com/fixture-only-demo" }] } : {}),
+      } } : {}),
+    });
+    if (request.method === "GET") {
+      const value = events.get(`${calendarId}:${segments[4]}`);
+      return value ? json(represent(value)) : json({}, 404);
+    }
+    if (request.method === "POST") {
+      const input = JSON.parse(raw);
+      const key = `${calendarId}:${input.id}`;
+      if (events.has(key)) return json({}, 409);
+      if (url.searchParams.get("sendUpdates") !== "all" || url.searchParams.get("conferenceDataVersion") !== "1") return json({}, 400);
+      const event = { ...input, status: "confirmed", htmlLink: `https://calendar.google.com/calendar/event?eid=fixture-${input.id}` };
+      events.set(key, event); insertCount++;
+      return json(represent(event));
+    }
+    return json({}, 405);
+  }
   if (url.pathname === "/userinfo")
     return json({
       sub: "test-alex-subject",
@@ -113,12 +155,12 @@ const server = createServer(async (request, response) => {
           id === "unavailable@example.test"
             ? { errors: [{ reason: "notFound" }] }
             : {
-                busy: [
+                busy: [...(busyOverride ?? [
                   {
                     start: "2026-10-25T09:00:00-07:00",
                     end: "2026-10-25T10:00:00-07:00",
                   },
-                ],
+                ]), ...[...events.values()].map((event) => ({ start: event.start.dateTime, end: event.end.dateTime }))],
               },
         ]),
       ),

@@ -7,6 +7,23 @@ import {
 import { validContext } from "./fixtures";
 
 describe("confirmed onboarding context", () => {
+  it("accepts legacy profiles and optional private stay details without making them required", () => {
+    const legacy = validContext();
+    expect(contextSchema.parse(legacy).stay).toBeUndefined();
+    for (const stay of [
+      { status: "unknown" as const, area: "", hotel: "" },
+      { status: "declined" as const, area: "", hotel: "" },
+      { status: "provided" as const, area: "SoMa", hotel: "" },
+      { status: "provided" as const, area: "", hotel: "Example Hotel" },
+    ]) expect(contextSchema.parse({ ...legacy, stay }).stay).toEqual(stay);
+    expect(contextSchema.safeParse({ ...legacy, stay: {
+      status: "provided", area: "a".repeat(121), hotel: "",
+    } }).success).toBe(false);
+    expect(contextSchema.safeParse({ ...legacy, stay: {
+      status: "provided", area: "SoMa", hotel: "Example Hotel", room: "201",
+    } }).success).toBe(false);
+  });
+
   it("keeps unknown availability distinct from an explicit absence of commitments", () => {
     const context = validContext();
     context.commitments.status = "none";

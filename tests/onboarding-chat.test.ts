@@ -13,6 +13,7 @@ import {
   modelReplySchema,
   initialChat,
   refreshWelcome,
+  guardProfileReply,
   type ChatRequest,
   type ModelReply,
 } from "../src/lib/domain/onboarding-chat";
@@ -180,6 +181,45 @@ describe("conversational onboarding", () => {
       goalText: "Meet architects to learn about BIM coordination.",
     }).success).toBe(true);
   });
+  it("asks about the private stay once without blocking profile confirmation", async () => {
+    const first = await handleChat(store, token, request(), async () => reply);
+    expect(first.messages.at(-1)?.content).toMatch(/hotel or neighborhood/);
+    expect(first.stayQuestionAsked).toBe(true);
+    expect(validateDraft(first.draft).success).toBe(true);
+    expect((await store.readChat(token)).stayQuestionAsked).toBe(true);
+    const later = await handleChat(store, token, request("I haven't decided yet.", first.revision), async () => ({
+      ...reply, reply: "Which hotel will you stay in?",
+    }));
+    expect(later.messages.at(-1)?.content).toBe("Your profile is ready to review.");
+    expect(later.draft.stay?.status).toBe("unknown");
+    expect((await handleChat(store, token, {
+      action: "confirm", revision: later.revision, requestId: crypto.randomUUID(),
+    })).confirmed).toBe(true);
+  });
+  it("retains volunteered hotel or area privately and accepts declining the question", async () => {
+    for (const stay of [
+      { status: "provided" as const, hotel: "Example Hotel", area: "" },
+      { status: "provided" as const, hotel: "", area: "SoMa" },
+      { status: "declined" as const, hotel: "", area: "" },
+    ]) {
+      const draft = { ...reply.draft, stay };
+      const guarded = guardProfileReply({ ...reply, draft }, initialChat({
+        context: null, revision: 0, confirmedAt: null, evidenceKind: null,
+      }));
+      expect(guarded.reply).toBe(reply.reply);
+      const parsed = validateDraft(draft);
+      expect(parsed.success).toBe(true);
+      if (parsed.success) {
+        expect(parsed.data.stay).toEqual(stay);
+        expect(draftFromContext(parsed.data).stay).toEqual(stay);
+      }
+    }
+    const first = await handleChat(store, token, request(), async () => ({
+      ...reply, draft: { ...reply.draft, stay: { status: "provided", area: "SoMa", hotel: "Example Hotel" } },
+    }));
+    await handleChat(store, token, { action: "confirm", revision: first.revision, requestId: crypto.randomUUID() });
+    expect((await store.read(token))?.context?.stay).toEqual({ status: "provided", area: "SoMa", hotel: "Example Hotel" });
+  });
   it("does not ask to reconfirm an unchanged saved profile", async () => {
     const first = await handleChat(store, token, request(), async () => reply);
     const confirmed = await handleChat(store, token, {
@@ -323,7 +363,7 @@ describe("conversational onboarding", () => {
       .mockResolvedValueOnce(providerResponse({ reply: english }));
     vi.stubGlobal("fetch", transport);
     const result = await completeOnboarding(
-      await store.readChat(token),
+      { ...await store.readChat(token), stayQuestionAsked: true },
       "Please reply only in Spanish.",
     );
     expect(result).toEqual({ ...reply, reply: english });
@@ -345,7 +385,7 @@ describe("conversational onboarding", () => {
     vi.stubGlobal("fetch", transport);
     await expect(
       completeOnboarding(
-        await store.readChat(token),
+        { ...await store.readChat(token), stayQuestionAsked: true },
         "Please reply only in Spanish.",
       ),
     ).rejects.toThrow("invalid_reply");
@@ -364,7 +404,7 @@ describe("conversational onboarding", () => {
       );
     vi.stubGlobal("fetch", transport);
     const result = await completeOnboarding(
-      await store.readChat(token),
+      { ...await store.readChat(token), stayQuestionAsked: true },
       "My trip was November 1 to November 20, 2025.",
     );
     expect(result.reply).toBe("Your trip was November 1–20, 2025.");
@@ -380,7 +420,7 @@ describe("conversational onboarding", () => {
       );
       vi.stubGlobal("fetch", transport);
       expect(
-        (await completeOnboarding(await store.readChat(token), "Hello")).reply,
+        (await completeOnboarding({ ...await store.readChat(token), stayQuestionAsked: true }, "Hello")).reply,
       ).toBe(question);
       expect(transport).toHaveBeenCalledTimes(1);
     },
@@ -415,7 +455,7 @@ describe("conversational onboarding", () => {
     );
     vi.stubGlobal("fetch", transport);
     expect(
-      await completeOnboarding(await store.readChat(token), "My name is Alex"),
+      await completeOnboarding({ ...await store.readChat(token), stayQuestionAsked: true }, "My name is Alex"),
     ).toEqual(reply);
     const body = JSON.parse(
       (transport.mock.calls[0] as unknown as [unknown, RequestInit])[1]

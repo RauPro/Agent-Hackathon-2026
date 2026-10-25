@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CALENDAR_SCOPES,
+  CALENDAR_WRITE_SCOPE,
   type CalendarConnection,
 } from "../src/lib/domain/calendar";
 import {
@@ -60,7 +61,11 @@ async function options() {
     manualSlots: manual,
   });
 }
-async function connectCalendar(account: typeof a, expired = false) {
+async function connectCalendar(
+  account: typeof a,
+  expired = false,
+  write = false,
+) {
   const owner = await store.calendarOwner(account.token);
   const connection: CalendarConnection = {
     subject: `google-${account.account.id}`,
@@ -70,7 +75,7 @@ async function connectCalendar(account: typeof a, expired = false) {
         accessToken: `access-${account.account.id}`,
         refreshToken: `refresh-${account.account.id}`,
         expiresAt: expired ? 0 : Date.now() + 3600000,
-        scopes: [...CALENDAR_SCOPES],
+        scopes: [...CALENDAR_SCOPES, ...(write ? [CALENDAR_WRITE_SCOPE] : [])],
       },
       owner,
     ),
@@ -215,6 +220,8 @@ describe("bilateral meeting agreements", () => {
       "proposed",
       "availability_consented",
       "availability_consented",
+      "agent_slots_proposed",
+      "agent_slots_checked",
       "options_ready",
       "option_approved",
       "option_counterproposed",
@@ -223,6 +230,8 @@ describe("bilateral meeting agreements", () => {
     ]);
     expect(value.activity.map((entry) => entry.actorUserId)).toEqual([
       a.account.id,
+      a.account.id,
+      b.account.id,
       a.account.id,
       b.account.id,
       undefined,
@@ -234,10 +243,8 @@ describe("bilateral meeting agreements", () => {
     expect(value.activity[0].at).toBe(createdAt);
     const times = value.activity.map((entry) => entry.at);
     expect(times).toEqual([...times].sort());
-    expect(new Set(value.activity.map((entry) => entry.id)).size).toBe(8);
-    expect(JSON.stringify(value.activity)).not.toMatch(
-      /manualSlots|calendar|T16:00/,
-    );
+    expect(new Set(value.activity.map((entry) => entry.id)).size).toBe(10);
+    expect(JSON.stringify(value.activity)).not.toMatch(/manualSlots|calendar/);
     vi.setSystemTime(Date.now() + 1000);
     expect(await service.approve(a.account.id, finalApproval)).toEqual(value);
     store.close();
@@ -677,9 +684,10 @@ describe("bilateral meeting agreements", () => {
       manualSlots: later,
     });
     expect(other.options).toEqual([]);
-    expect(other.status).toBe("awaiting_permission");
+    expect(other.status).toBe("needs_user_input");
     expect(other.error).toContain("No common time");
-    expect(other.activity.at(-1)?.kind).toBe("no_common_time");
+    expect(other.activity.at(-1)?.kind).toBe("escalated");
+    expect(other.nextAction?.kind).toBe("suggest_times");
     const history = other.activity;
     other = await service.optIn(b.account.id, {
       meetingId: other.id,
@@ -977,5 +985,550 @@ describe("fresh calendar coordination", () => {
     value = (await service.list(a.account.id))[0];
     expect(value.approvedUserIds).toEqual([]);
     expect(value.status).toBe("awaiting_permission");
+  });
+});
+
+describe("agent meeting negotiation", () => {
+  it("offers only the initiator's free times before the other participant authorizes a check", async () => {
+    await connectCalendar(a);
+    await connectCalendar(b);
+    const fetch = vi.fn(async (_url: string, init: RequestInit) =>
+      calendarReply(init),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const input = {
+      toUserId: b.account.id,
+      requestId: randomUUID(),
+      purpose: "Compare our agent projects",
+      location: "Public cafe",
+      authorizeAvailability: true,
+    };
+    let value = await service.propose(a.account.id, input);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetch.mock.calls[0][1].body as string).items).toEqual([
+      { id: `private-${a.account.id}` },
+    ]);
+    expect(value.consentedUserIds).toEqual([a.account.id]);
+    expect(value.options).toEqual([]);
+    expect(value.activity.at(-1)).toMatchObject({
+      kind: "agent_slots_proposed",
+      actorUserId: a.account.id,
+      optionCount: 3,
+    });
+    expect(value.approvedUserIds).toEqual([]);
+    expect((await service.list(b.account.id))[0].nextAction?.kind).toBe(
+      "authorize_availability",
+    );
+    expect((await service.propose(a.account.id, input)).activity).toEqual(
+      value.activity,
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    value = await service.optIn(b.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(value.status).toBe("options_ready");
+    expect(value.activity.at(-2)).toMatchObject({
+      kind: "agent_slots_checked",
+      actorUserId: b.account.id,
+    });
+    expect(value.approvedUserIds).toEqual([]);
+    await expect(
+      service.exportICS(a.account.id, value.id),
+    ).rejects.toMatchObject({ code: "approval_required" });
+  });
+
+  it("records a counterproposal when the other agent cannot use the initial offer", async () => {
+    await connectCalendar(a);
+    await connectCalendar(b);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const isB = (init.body as string).includes(`private-${b.account.id}`);
+        return calendarReply(
+          init,
+          isB ? [manualMeetingSlot("2026-10-26", "09:00", "10:30")] : [],
+        );
+      }),
+    );
+    let value = await service.propose(a.account.id, {
+      toUserId: b.account.id,
+      requestId: randomUUID(),
+      purpose: "Compare agent evaluations",
+      modality: "online",
+      authorizeAvailability: true,
+    });
+    value = await service.optIn(b.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+    });
+    expect(value.options[0].start).toBe("2026-10-26T17:30:00.000Z");
+    expect(value.activity.slice(-4).map((entry) => entry.kind)).toEqual([
+      "agent_slots_checked",
+      "agent_counterproposed",
+      "agent_slots_checked",
+      "options_ready",
+    ]);
+    expect(
+      value.activity.find((entry) => entry.kind === "agent_counterproposed")
+        ?.actorUserId,
+    ).toBe(b.account.id);
+    value = await approveBoth(value);
+    expect(value.status).toBe("confirmed");
+    expect(value.location).toBe("Google Meet");
+  });
+
+  it("escalates no fit into each owner's chat and never uses a preferred window to override Google busy time", async () => {
+    await connectCalendar(a);
+    await connectCalendar(b);
+    const window = manualMeetingSlot("2026-10-26", "18:00", "20:00");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(init.body as string);
+        return calendarReply(init, [
+          { start: body.timeMin, end: body.timeMax },
+        ]);
+      }),
+    );
+    let value = await service.propose(a.account.id, {
+      toUserId: b.account.id,
+      requestId: randomUUID(),
+      purpose: "Find an evening to meet",
+      modality: "online",
+      authorizeAvailability: true,
+    });
+    value = await service.optIn(b.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+    });
+    expect(value.status).toBe("needs_user_input");
+    expect(value.nextAction?.kind).toBe("suggest_times");
+    expect((await service.list(a.account.id))[0].nextAction?.prompt).toContain(
+      "Blair Morgan",
+    );
+    value = await service.suggestTimes(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      preferredWindows: [window],
+    });
+    expect(value.options).toEqual([]);
+    expect(value.status).toBe("needs_user_input");
+    expect((await service.list(b.account.id))[0].ownPreferredWindows).toEqual(
+      [],
+    );
+    const blocked = manualMeetingSlot("2026-10-26", "18:00", "19:00");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) =>
+        calendarReply(init, [blocked]),
+      ),
+    );
+    value = await service.suggestTimes(b.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      preferredWindows: [window],
+    });
+    expect(value.status).toBe("options_ready");
+    expect(value.options[0].start).toBe("2026-10-27T02:00:00.000Z");
+    expect(value.approvedUserIds).toEqual([]);
+    expect(value.calendarStatus).toBe("not_ready");
+    await expect(
+      service.suggestTimes(outsider.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+        preferredWindows: [window],
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("uses only reciprocally shared events and removes offered times after sharing is revoked", async () => {
+    const event = {
+      id: "shared-roundtable",
+      title: "Shared roundtable",
+      start: "2026-10-26T17:00:00Z",
+      end: "2026-10-26T18:00:00Z",
+      sourceMode: "demo" as const,
+    };
+    let shared = true;
+    vi.spyOn(store.network, "project").mockImplementation(
+      async (_viewer, target) => ({
+        id: target,
+        name: "Connection",
+        revision: 1,
+        events: shared ? [event] : [],
+      }),
+    );
+    let value = await service.propose(a.account.id, {
+      toUserId: b.account.id,
+      requestId: randomUUID(),
+      purpose: "Talk after our roundtable",
+      location: "Public cafe",
+      authorizeAvailability: true,
+    });
+    expect(value.sharedEvent?.id).toBe(event.id);
+    value = await service.optIn(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      manualSlots: manual,
+    });
+    value = await service.optIn(b.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      manualSlots: manual,
+    });
+    expect(value.options[0].start).toBe("2026-10-26T18:30:00.000Z");
+    shared = false;
+    value = (await service.list(a.account.id))[0];
+    expect(value.status).toBe("stale");
+    expect(value.sharedEvent).toBeNull();
+    expect(value.activity.every((entry) => !entry.slots)).toBe(true);
+    await expect(
+      service.propose(a.account.id, {
+        toUserId: b.account.id,
+        requestId: randomUUID(),
+        purpose: "Use a private event",
+        eventId: event.id,
+      }),
+    ).rejects.toMatchObject({ code: "event_unavailable" });
+  });
+});
+
+describe("meeting location and calendar publication", () => {
+  it("requires a shared place before in-person approval and resets prior approvals when it changes", async () => {
+    let value = await options();
+    value = await service.approve(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      optionId: value.options[0].id,
+    });
+    const changed = {
+      meetingId: value.id,
+      revision: value.revision,
+      location: "Cafe next to the event entrance",
+    };
+    value = await service.setLocation(b.account.id, changed);
+    expect(value.location).toBe(changed.location);
+    expect(value.approvedUserIds).toEqual([]);
+    expect(value.selectedOptionId).toBeNull();
+    expect(value.activity.at(-1)?.kind).toBe("location_updated");
+    expect((await service.setLocation(b.account.id, changed)).revision).toBe(
+      value.revision,
+    );
+    await expect(
+      service.publish(a.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      }),
+    ).rejects.toMatchObject({ code: "approval_required" });
+  });
+
+  it("publishes only after both human approvals and a fresh free-busy check, and keeps provider retries idempotent", async () => {
+    await connectCalendar(a, false, true);
+    await connectCalendar(b);
+    let external: Record<string, unknown> | null = null;
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("freeBusy")) return calendarReply(init!);
+      if (init?.method === "POST") {
+        external = {
+          ...JSON.parse(init.body as string),
+          status: "confirmed",
+          htmlLink: "https://calendar.google.com/calendar/event?eid=test",
+          conferenceData: {
+            createRequest: { status: { statusCode: "success" } },
+            entryPoints: [
+              {
+                entryPointType: "video",
+                uri: "https://meet.google.com/abc-defg-hij",
+              },
+            ],
+          },
+        };
+        return response(external);
+      }
+      return response(external ?? {}, external ? 200 : 404);
+    });
+    vi.stubGlobal("fetch", fetch);
+    let value = await service.propose(a.account.id, {
+      toUserId: b.account.id,
+      requestId: randomUUID(),
+      purpose: "Review the agent collaboration",
+      modality: "online",
+      authorizeAvailability: true,
+    });
+    value = await service.optIn(b.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+    });
+    value = await service.approve(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      optionId: value.options[0].id,
+    });
+    await expect(
+      service.publish(a.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      }),
+    ).rejects.toMatchObject({ code: "approval_required" });
+    expect(external).toBeNull();
+    value = await service.approve(b.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      optionId: value.options[0].id,
+    });
+    const checksBefore = fetch.mock.calls.filter(([url]) =>
+      url.includes("freeBusy"),
+    ).length;
+    value = await service.publish(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+    });
+    expect(
+      fetch.mock.calls.filter(([url]) => url.includes("freeBusy")),
+    ).toHaveLength(checksBefore + 2);
+    expect(value.calendarPublication?.status).toBe("scheduled");
+    expect(value.calendarPublication?.meetUrl).toBe(
+      "https://meet.google.com/abc-defg-hij",
+    );
+    expect(JSON.stringify(value.calendarPublication)).not.toMatch(
+      /private-|calendarId|conferenceRequestId|access-/,
+    );
+    const published = value;
+    expect(
+      (
+        await service.publish(b.account.id, {
+          meetingId: value.id,
+          revision: value.revision,
+        })
+      ).calendarPublication,
+    ).toEqual(published.calendarPublication);
+    expect(
+      fetch.mock.calls.filter(
+        ([url, init]) => !url.includes("freeBusy") && init?.method === "POST",
+      ),
+    ).toHaveLength(1);
+    await expect(
+      service.withdraw(a.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      }),
+    ).rejects.toMatchObject({ code: "calendar_published" });
+  });
+
+  it("requests incremental permission before publishing and refuses a slot occupied after both approvals", async () => {
+    await connectCalendar(a);
+    await connectCalendar(b);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => calendarReply(init)),
+    );
+    let value = await approveBoth(await calendarOptions());
+    await expect(
+      service.publish(a.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      }),
+    ).rejects.toMatchObject({ code: "needs_upgrade" });
+    expect(
+      (await service.list(a.account.id))[0].calendarPublication,
+    ).toBeNull();
+    const owner = await store.calendarOwner(a.token);
+    const record = await store.readCalendar(a.token);
+    await store.writeCalendar(a.token, record.revision, {
+      ...record.connection!,
+      encryptedTokens: sealCalendarData(
+        {
+          accessToken: "test-write-access",
+          refreshToken: "test-write-refresh",
+          expiresAt: Date.now() + 3600000,
+          scopes: [...CALENDAR_SCOPES, CALENDAR_WRITE_SCOPE],
+        },
+        owner,
+      ),
+    });
+    const chosen = value.options.find(
+      (slot) => slot.id === value.selectedOptionId,
+    )!;
+    const fetch = vi.fn(async (_url: string, init: RequestInit) =>
+      calendarReply(init, [chosen]),
+    );
+    vi.stubGlobal("fetch", fetch);
+    await expect(
+      service.publish(a.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      }),
+    ).rejects.toMatchObject({ code: "availability_changed" });
+    expect(fetch.mock.calls.every(([url]) => url.includes("freeBusy"))).toBe(
+      true,
+    );
+    value = (await service.list(a.account.id))[0];
+    expect(value.calendarPublication).toBeNull();
+  });
+
+  it("reconciles an interrupted publication without rejecting its own occupied slot or sending another invitation", async () => {
+    await connectCalendar(a, false, true);
+    await connectCalendar(b);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => calendarReply(init)),
+    );
+    let value = await approveBoth(await calendarOptions());
+    let external: Record<string, unknown> | null = null;
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("freeBusy")) return calendarReply(init!);
+      if (init?.method === "POST") {
+        external = {
+          ...JSON.parse(init.body as string),
+          status: "confirmed",
+          htmlLink: "https://calendar.google.com/calendar/event?eid=test",
+        };
+        return response(external);
+      }
+      return response(external ?? {}, external ? 200 : 404);
+    });
+    vi.stubGlobal("fetch", fetch);
+    value = await service.publish(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+    });
+    const row = (await store.network.db
+      .prepare("SELECT state_json FROM meetings WHERE id = ?")
+      .get(value.id)) as { state_json: string };
+    const record = JSON.parse(row.state_json);
+    record.calendarPublication.status = "publishing";
+    await store.network.db
+      .prepare("UPDATE meetings SET state_json = ? WHERE id = ?")
+      .run(JSON.stringify(record), value.id);
+    fetch.mockClear();
+    value = await service.publish(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+    });
+    expect(value.calendarPublication?.status).toBe("scheduled");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0][0]).not.toContain("freeBusy");
+    expect(fetch.mock.calls[0][1]?.method).not.toBe("POST");
+  });
+});
+
+describe("meeting retry and publication race guards", () => {
+  it("rechecks the same preferred window after a calendar changes without duplicating unresolved dialogue", async () => {
+    await connectCalendar(a);
+    await connectCalendar(b);
+    let busy = true;
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string);
+      return calendarReply(
+        init,
+        busy ? [{ start: body.timeMin, end: body.timeMax }] : [],
+      );
+    });
+    vi.stubGlobal("fetch", fetch);
+    let value = await service.propose(a.account.id, {
+      toUserId: b.account.id,
+      requestId: randomUUID(),
+      purpose: "Find a common project meeting",
+      modality: "online",
+      authorizeAvailability: true,
+    });
+    expect(value.nextAction?.kind).toBe("suggest_times");
+    value = await service.optIn(b.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+    });
+    value = await service.suggestTimes(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      preferredWindows: manual,
+    });
+    expect(value.status).toBe("needs_user_input");
+    const history = value.activity;
+    value = await service.suggestTimes(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      preferredWindows: manual,
+    });
+    expect(value.activity).toEqual(history);
+    busy = false;
+    value = await service.suggestTimes(a.account.id, {
+      meetingId: value.id,
+      revision: value.revision,
+      preferredWindows: manual,
+    });
+    expect(value.status).toBe("options_ready");
+    expect(value.options[0].start).toBe(manual[0].start);
+    expect(value.approvedUserIds).toEqual([]);
+  });
+
+  it("stops a Google insert when the peer disconnects during provider reconciliation", async () => {
+    await connectCalendar(a, false, true);
+    await connectCalendar(b);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => calendarReply(init)),
+    );
+    const value = await approveBoth(await calendarOptions());
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("freeBusy")) return calendarReply(init!);
+      if (init?.method === "POST")
+        throw new Error("No insert should be attempted");
+      await store.writeCalendar(b.token, 1, null);
+      return response({}, 404);
+    });
+    vi.stubGlobal("fetch", fetch);
+    await expect(
+      service.publish(a.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      }),
+    ).rejects.toMatchObject({ code: "calendar_changed" });
+    expect(
+      fetch.mock.calls.some(
+        ([url, init]) => !url.includes("freeBusy") && init?.method === "POST",
+      ),
+    ).toBe(false);
+    expect(
+      (await service.list(a.account.id))[0].calendarPublication?.status,
+    ).toBe("failed");
+  });
+
+  it("stops a Google insert when a profile changes during provider reconciliation", async () => {
+    await connectCalendar(a, false, true);
+    await connectCalendar(b);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => calendarReply(init)),
+    );
+    const value = await approveBoth(await calendarOptions());
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("freeBusy")) return calendarReply(init!);
+      if (init?.method === "POST")
+        throw new Error("No insert should be attempted");
+      const context = validContext();
+      context.profile.name = "Blair Morgan";
+      context.trip.end = "2026-10-25";
+      await store.save(b.token, {
+        context,
+        baseRevision: 1,
+        requestId: randomUUID(),
+      });
+      return response({}, 404);
+    });
+    vi.stubGlobal("fetch", fetch);
+    await expect(
+      service.publish(a.account.id, {
+        meetingId: value.id,
+        revision: value.revision,
+      }),
+    ).rejects.toMatchObject({ code: "approval_required" });
+    expect(
+      fetch.mock.calls.some(
+        ([url, init]) => !url.includes("freeBusy") && init?.method === "POST",
+      ),
+    ).toBe(false);
+    expect((await service.list(a.account.id))[0].status).toBe("stale");
   });
 });

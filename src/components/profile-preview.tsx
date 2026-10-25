@@ -61,6 +61,13 @@ export function ProfilePreview({ chat }: { chat: ChatState }) {
             )}
           </dd>
         </div>
+        {(draft.stay?.area || draft.stay?.hotel) && (
+          <div>
+            <dt>Stay · private</dt>
+            {draft.stay.hotel && <dd>{draft.stay.hotel}</dd>}
+            {draft.stay.area && <dd>{draft.stay.area}</dd>}
+          </div>
+        )}
         {draft.availability.status === "provided" && (
           <div>
             <dt>Preferred meeting times</dt>

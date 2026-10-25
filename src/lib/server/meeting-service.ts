@@ -6,6 +6,7 @@ import {
   type CalendarConnection,
   type CalendarRecord,
   type CalendarWindow,
+  type MeetingCalendarPublication,
 } from "@/lib/domain/calendar";
 import {
   SF_TIMEZONE,
@@ -16,6 +17,8 @@ import {
 import {
   meetingApprovalSchema,
   meetingOptInSchema,
+  meetingPreferencesSchema,
+  meetingLocationSchema,
   meetingRevisionSchema,
   proposeMeetingSchema,
   type MeetingActivityEntry,
@@ -24,6 +27,7 @@ import {
   type MeetingStatus,
   type MeetingView,
 } from "@/lib/domain/meetings";
+import type { SharedProfile } from "@/lib/domain/network";
 import { openCalendarData, sealCalendarData } from "./calendar-crypto";
 import {
   CalendarError,
@@ -34,10 +38,24 @@ import {
   tokenDataSchema,
 } from "./google-calendar";
 import type { ContextStore } from "./store";
+import {
+  inspectPublishedMeeting,
+  prepareMeetingCalendar,
+  publishApprovedMeeting,
+  type ApprovedMeetingCalendarInput,
+} from "./meeting-calendar-service";
 
 const HALF_HOUR = 30 * 60 * 1000;
-const liveStatuses: MeetingStatus[] = ["awaiting_permission", "options_ready"];
-type Consent = { at: string; manualSlots: MeetingSlot[] | null };
+const liveStatuses: MeetingStatus[] = [
+  "awaiting_permission",
+  "options_ready",
+  "needs_user_input",
+];
+type Consent = {
+  at: string;
+  manualSlots: MeetingSlot[] | null;
+  preferredWindows?: MeetingSlot[];
+};
 type MeetingRecord = {
   id: string;
   revision: number;
@@ -46,6 +64,10 @@ type MeetingRecord = {
   names: Record<string, string>;
   purpose: string;
   location: string | null;
+  modality?: "in_person" | "online";
+  agentNegotiation?: boolean;
+  sharedArea?: string | null;
+  sharedEvent?: MeetingView["sharedEvent"];
   status: MeetingStatus;
   contextRevisions: Record<string, number>;
   relationshipRevision: number;
@@ -59,6 +81,7 @@ type MeetingRecord = {
   activity?: MeetingActivityEntry[];
   expiresAt: string;
   error: string | null;
+  calendarPublication?: MeetingCalendarPublication | null;
 };
 type NetworkAccess = {
   db: AsyncDatabase;
@@ -66,12 +89,14 @@ type NetworkAccess = {
   isConnected(a: string, b: string): Promise<boolean>;
   blocked(a: string, b: string): Promise<boolean>;
   relationshipRevision(a: string, b: string): Promise<number>;
+  project(viewerId: string, targetId: string): Promise<SharedProfile>;
 };
 type Coverage = {
   busy: MeetingSlot[];
   manual: MeetingSlot[] | null;
   revision: number;
   source: "google" | "manual";
+  preferredWindows?: MeetingSlot[];
 };
 type CalendarOwner = CalendarRecord & { owner: string };
 type SchedulingConstraints = {
@@ -133,6 +158,18 @@ const meetingErrors = {
     429,
     "You have proposed ten meetings today. Try again tomorrow.",
   ],
+  event_unavailable: [
+    403,
+    "Choose an event that both people have shared with each other.",
+  ],
+  calendar_published: [
+    409,
+    "This meeting has a calendar invitation. Open that event to cancel or change it.",
+  ],
+  publishing: [
+    409,
+    "This calendar invitation is being prepared. Try again shortly.",
+  ],
 } as const;
 
 export class MeetingError extends Error {
@@ -147,7 +184,7 @@ export class MeetingError extends Error {
 export class MeetingService {
   private network: NetworkAccess;
   private db: AsyncDatabase;
-  constructor(store: ContextStore) {
+  constructor(private store: ContextStore) {
     this.network = store.network;
     this.db = this.network.db;
   }
@@ -212,7 +249,9 @@ export class MeetingService {
     const previous = activity.at(-1);
     // Repeated failed checks describe the same unresolved state.
     if (
-      ["availability_failed", "no_common_time"].includes(entry.kind) &&
+      ["availability_failed", "no_common_time", "escalated"].includes(
+        entry.kind,
+      ) &&
       previous?.kind === entry.kind
     )
       return { ...value, activity };
@@ -240,6 +279,48 @@ export class MeetingService {
       if ((await this.context(id)).revision !== value.contextRevisions[id])
         throw new MeetingError("meeting_changed");
     }
+    if (value.sharedEvent)
+      await this.sharedEvent(value.participants, value.sharedEvent.id);
+  }
+  private async sharedEvent(participants: [string, string], eventId?: string) {
+    const [a, b] = await Promise.all([
+      this.network.project(participants[1], participants[0]),
+      this.network.project(participants[0], participants[1]),
+    ]);
+    const event = a.events
+      ?.filter((item) => !eventId || item.id === eventId)
+      .sort((first, second) =>
+        (first.start ?? "").localeCompare(second.start ?? ""),
+      )
+      .find((item) => {
+        if (
+          !item.start ||
+          !item.end ||
+          (!eventId && Date.parse(item.end) <= Date.now()) ||
+          item.dateStatus === "unconfirmed_year"
+        )
+          return false;
+        const keys = new Set([item.id, ...(item.canonicalKeys ?? [])]);
+        return b.events?.some(
+          (peer) =>
+            peer.start &&
+            peer.end &&
+            peer.dateStatus !== "unconfirmed_year" &&
+            [peer.id, ...(peer.canonicalKeys ?? [])].some((key) =>
+              keys.has(key),
+            ),
+        );
+      });
+    if (!event?.start || !event.end) {
+      if (eventId) throw new MeetingError("event_unavailable");
+      return null;
+    }
+    return {
+      id: event.id,
+      title: event.title,
+      start: event.start,
+      end: event.end,
+    };
   }
   private async writable(actorId: string, meetingId: string, revision: number) {
     const value = await this.read(actorId, meetingId);
@@ -328,10 +409,45 @@ export class MeetingService {
           .immediate();
       }
     }
+    const calendar = await this.calendar(actorId);
+    const active = liveStatuses.includes(value.status);
+    const consent = value.consents[actorId];
+    const other = value.participants.find((id) => id !== actorId)!;
+    let nextAction: MeetingView["nextAction"] = null;
+    if (active && !consent) {
+      nextAction = calendar.connection
+        ? {
+            kind: "authorize_availability",
+            prompt: `${value.names[other]} would like to meet. May I check your calendar and share possible meeting times with their agent?`,
+          }
+        : {
+            kind: "provide_availability",
+            prompt: `${value.names[other]} would like to meet. What day and time would work for you?`,
+          };
+    } else if (active && value.status === "needs_user_input") {
+      nextAction = {
+        kind: "suggest_times",
+        prompt: `I could not find a common time with ${value.names[other]}. What other day or time would work for you? I will check it with their agent.`,
+      };
+    } else if (active && value.error) {
+      nextAction = {
+        kind: "reconnect_calendar",
+        prompt:
+          "I could not check availability. Please reconnect your calendar or try again.",
+      };
+    }
+    const ownContext = (await this.network.profile(actorId)).context;
+    const publication = value.calendarPublication;
     return {
       id: value.id,
       createdAt: value.createdAt,
       activity: this.activity(value).map((entry) => {
+        if (!active && value.status !== "confirmed") {
+          const metadata = { ...entry };
+          delete metadata.optionId;
+          delete metadata.slots;
+          return metadata;
+        }
         if (
           !entry.optionId ||
           value.options.some((option) => option.id === entry.optionId)
@@ -349,6 +465,15 @@ export class MeetingService {
       })),
       purpose: value.purpose,
       location: value.location,
+      modality: value.modality ?? "in_person",
+      sharedArea: value.sharedArea ?? null,
+      suggestedArea: ownContext?.stay?.area ?? null,
+      ownPreferredWindows: consent?.preferredWindows ?? [],
+      sharedEvent:
+        active || value.status === "confirmed"
+          ? (value.sharedEvent ?? null)
+          : null,
+      nextAction,
       status: value.status,
       durationMinutes: 30,
       timezone: SF_TIMEZONE,
@@ -356,12 +481,23 @@ export class MeetingService {
       selectedOptionId: value.selectedOptionId,
       consentedUserIds: Object.keys(value.consents),
       approvedUserIds: Object.keys(value.approvals),
-      manualAvailabilityNeeded: !(await this.calendar(actorId)).connection,
+      manualAvailabilityNeeded: !calendar.connection,
       availabilitySource: value.availabilitySource,
       checkedAt: value.checkedAt,
       expiresAt: value.expiresAt,
       calendarStatus:
         value.status === "confirmed" ? "export_available" : "not_ready",
+      calendarPublication: publication
+        ? {
+            status: publication.status,
+            organizerUserId: publication.organizerUserId,
+            eventId: publication.eventId,
+            eventUrl: publication.eventUrl,
+            meetUrl: publication.meetUrl,
+            error: publication.error,
+            updatedAt: publication.updatedAt,
+          }
+        : null,
       error: value.error,
     };
   }
@@ -385,6 +521,10 @@ export class MeetingService {
       requestId: string;
       purpose: string;
       location?: string;
+      modality?: "in_person" | "online";
+      sharedArea?: string;
+      eventId?: string;
+      authorizeAvailability?: boolean;
     },
   ): Promise<MeetingView> {
     const input = proposeMeetingSchema.parse(raw);
@@ -431,7 +571,14 @@ export class MeetingService {
             ]),
           ),
           purpose: input.purpose,
-          location: input.location ?? null,
+          location:
+            input.modality === "online"
+              ? "Google Meet"
+              : (input.location ?? null),
+          modality: input.modality ?? "in_person",
+          agentNegotiation: input.authorizeAvailability === true,
+          sharedArea: input.sharedArea ?? null,
+          sharedEvent: await this.sharedEvent(participants, input.eventId),
           status: "awaiting_permission",
           contextRevisions: Object.fromEntries(
             participants.map((id, index) => [id, profiles[index].revision]),
@@ -466,6 +613,15 @@ export class MeetingService {
         return value;
       })
       .immediate();
+    if (
+      input.authorizeAvailability &&
+      !result.consents[actorId] &&
+      (await this.calendar(actorId)).connection
+    )
+      return this.optIn(actorId, {
+        meetingId: result.id,
+        revision: result.revision,
+      });
     return await this.view(actorId, result);
   }
   async optIn(
@@ -523,6 +679,7 @@ export class MeetingService {
                 [actorId]: {
                   at: new Date().toISOString(),
                   manualSlots: manual,
+                  preferredWindows: current.consents[actorId]?.preferredWindows,
                 },
               },
               options: [],
@@ -536,57 +693,255 @@ export class MeetingService {
         );
       })
       .immediate();
-    if (value.status === "options_ready" || value.status === "confirmed")
+    if (
+      value.status === "options_ready" ||
+      value.status === "confirmed" ||
+      value.status === "needs_user_input"
+    )
       return await this.view(actorId, value);
-    if (value.participants.every((id) => value.consents[id])) {
-      try {
-        const available = await this.availability(value);
-        const updated = await this.db
-          .transaction(async () => {
-            const current = await this.writable(
-              actorId,
-              value.id,
-              value.revision,
-            );
+    return this.negotiate(actorId, value);
+  }
+  async suggestTimes(
+    actorId: string,
+    raw: {
+      meetingId: string;
+      revision: number;
+      preferredWindows: MeetingSlot[];
+    },
+  ): Promise<MeetingView> {
+    const input = meetingPreferencesSchema.parse(raw);
+    const value = await this.db
+      .transaction(async () => {
+        const current = await this.read(actorId, input.meetingId);
+        await this.current(current);
+        const existing = current.consents[actorId];
+        if (
+          JSON.stringify(existing?.preferredWindows) ===
+            JSON.stringify(input.preferredWindows) &&
+          liveStatuses.includes(current.status)
+        ) {
+          if (current.status === "needs_user_input")
+            await this.writable(actorId, current.id, input.revision);
+          return current;
+        }
+        await this.writable(actorId, current.id, input.revision);
+        const trip = (await this.context(actorId)).context.trip;
+        const limits = calendarWindow(trip.start, trip.end)!;
+        if (
+          input.preferredWindows.some(
+            (slot) =>
+              Date.parse(slot.start) < Date.parse(limits.timeMin) ||
+              Date.parse(slot.end) > Date.parse(limits.timeMax) ||
+              Date.parse(slot.end) <= Date.now(),
+          )
+        )
+          throw new MeetingError("invalid_manual_slots");
+        const connected = !!(await this.calendar(actorId)).connection;
+        return this.save(
+          this.withActivity(
+            {
+              ...current,
+              status: "awaiting_permission",
+              consents: {
+                ...current.consents,
+                [actorId]: {
+                  at: new Date().toISOString(),
+                  manualSlots: connected ? null : input.preferredWindows,
+                  preferredWindows: input.preferredWindows,
+                },
+              },
+              options: [],
+              approvals: {},
+              selectedOptionId: null,
+              error: null,
+            },
+            { kind: "preferences_updated", actorUserId: actorId },
+          ),
+          current.revision,
+        );
+      })
+      .immediate();
+    if (value.status === "options_ready") return this.view(actorId, value);
+    return this.negotiate(actorId, value);
+  }
+  private async negotiate(
+    actorId: string,
+    value: MeetingRecord,
+  ): Promise<MeetingView> {
+    const bothConsented = value.participants.every((id) => value.consents[id]);
+    if (!bothConsented && !value.consents[actorId])
+      return this.view(actorId, value);
+    if (!bothConsented && !value.agentNegotiation)
+      return this.view(actorId, value);
+    if (
+      !bothConsented &&
+      !value.error &&
+      this.activity(value).at(-1)?.kind === "agent_slots_proposed"
+    )
+      return this.view(actorId, value);
+    try {
+      const available = bothConsented ? await this.availability(value) : null;
+      // A unilateral offer reads only the consenting owner's calendar.
+      const ownCoverage = !bothConsented
+        ? await this.coverage(
+            actorId,
+            value.consents[actorId],
+            await this.bounds(value),
+          )
+        : null;
+      const ownConstraints = ownCoverage
+        ? await this.constraints(actorId, value.id)
+        : null;
+      const ownOptions =
+        ownCoverage && ownConstraints
+          ? this.candidates(value, await this.bounds(value))
+              .filter((slot) =>
+                this.permitted(ownCoverage, slot, ownConstraints),
+              )
+              .slice(0, 3)
+          : [];
+      const updated = await this.db
+        .transaction(async () => {
+          const current = await this.writable(
+            actorId,
+            value.id,
+            value.revision,
+          );
+          if (available)
             await this.validateCoverage(current, available.coverages);
-            if (!available.options.length)
-              return await this.save(
-                this.withActivity(
-                  {
-                    ...current,
-                    error:
-                      "No common time was found in the next 14 days of your overlapping stays.",
-                  },
-                  { kind: "no_common_time" },
-                ),
-                current.revision,
-              );
-            return await this.save(
+          else if (
+            ownCoverage &&
+            (await this.calendar(actorId)).revision !== ownCoverage.revision
+          )
+            throw new MeetingError("availability_changed");
+          if (
+            available &&
+            !available.options.length &&
+            current.status === "needs_user_input"
+          ) {
+            // An explicit retry checks fresh calendars without repeating the same dialogue.
+            return this.save(
+              {
+                ...current,
+                checkedAt: new Date().toISOString(),
+                availabilitySource: available.source,
+              },
+              current.revision,
+            );
+          }
+          if (!available) {
+            if (
+              this.activity(current).some(
+                (entry) =>
+                  entry.kind === "agent_slots_proposed" &&
+                  entry.actorUserId === actorId,
+              ) &&
+              !current.error
+            )
+              return current;
+            return this.save(
               this.withActivity(
                 {
                   ...current,
-                  status: "options_ready",
-                  options: available.options,
-                  availabilitySource: available.source,
-                  checkedAt: new Date().toISOString(),
-                  error: null,
+                  status: ownOptions.length
+                    ? "awaiting_permission"
+                    : "needs_user_input",
+                  error: ownOptions.length
+                    ? null
+                    : "Your agent could not find a time to offer. Suggest another day or time in your main chat.",
                 },
                 {
-                  kind: "options_ready",
-                  optionCount: available.options.length,
+                  kind: "agent_slots_proposed",
+                  actorUserId: actorId,
+                  optionCount: ownOptions.length,
+                  slots: ownOptions,
                 },
               ),
               current.revision,
             );
-          })
-          .immediate();
-        return await this.view(actorId, updated);
-      } catch (error) {
-        await this.recordFailure(actorId, value, error);
-        throw error;
-      }
+          }
+          let next = current;
+          const lastProposal = this.activity(current)
+            .filter((entry) => entry.kind === "agent_slots_proposed")
+            .at(-1);
+          if (
+            !lastProposal ||
+            !lastProposal.slots?.some((slot) =>
+              available.offered.some(
+                (offered) =>
+                  offered.start === slot.start && offered.end === slot.end,
+              ),
+            )
+          ) {
+            next = this.withActivity(next, {
+              kind: "agent_slots_proposed",
+              actorUserId: value.initiatorId,
+              optionCount: available.offered.length,
+              slots: available.offered,
+            });
+          }
+          const recipient = current.participants.find(
+            (id) => id !== current.initiatorId,
+          )!;
+          next = this.withActivity(next, {
+            kind: "agent_slots_checked",
+            actorUserId: recipient,
+            optionCount: available.accepted.length,
+            slots: available.accepted,
+          });
+          if (!available.accepted.length && available.options.length) {
+            next = this.withActivity(next, {
+              kind: "agent_counterproposed",
+              actorUserId: recipient,
+              optionCount: available.options.length,
+              slots: available.options,
+            });
+            next = this.withActivity(next, {
+              kind: "agent_slots_checked",
+              actorUserId: current.initiatorId,
+              optionCount: available.options.length,
+              slots: available.options,
+            });
+          }
+          if (!available.options.length) {
+            next = this.withActivity(
+              {
+                ...next,
+                status: "needs_user_input",
+                options: [],
+                approvals: {},
+                selectedOptionId: null,
+                availabilitySource: available.source,
+                checkedAt: new Date().toISOString(),
+                error:
+                  "No common time was found. Tell your agent another day or time in the main chat.",
+              },
+              { kind: "no_common_time" },
+            );
+            next = this.withActivity(next, { kind: "escalated" });
+          } else {
+            next = this.withActivity(
+              {
+                ...next,
+                status: "options_ready",
+                options: available.options,
+                availabilitySource: available.source,
+                checkedAt: new Date().toISOString(),
+                error: null,
+              },
+              { kind: "options_ready", optionCount: available.options.length },
+            );
+          }
+          return this.save(next, current.revision);
+        })
+        .immediate();
+      return this.view(actorId, updated);
+    } catch (error) {
+      await this.recordFailure(actorId, value, error);
+      if (error instanceof MeetingError && error.code === "no_slots")
+        return this.view(actorId, await this.read(actorId, value.id));
+      throw error;
     }
-    return await this.view(actorId, value);
   }
   private async recordFailure(
     actorId: string,
@@ -601,7 +956,10 @@ export class MeetingService {
           this.withActivity(
             {
               ...current,
-              status: "awaiting_permission",
+              status:
+                error instanceof MeetingError && error.code === "no_slots"
+                  ? "needs_user_input"
+                  : "awaiting_permission",
               options: [],
               selectedOptionId: null,
               approvals: {},
@@ -613,7 +971,12 @@ export class MeetingService {
                     ? "Availability changed. Check for another time."
                     : "Availability could not be checked. Reconnect your calendar or try again.",
             },
-            { kind: "availability_failed" },
+            {
+              kind:
+                error instanceof MeetingError && error.code === "no_slots"
+                  ? "escalated"
+                  : "availability_failed",
+            },
           ),
           current.revision,
         );
@@ -626,7 +989,31 @@ export class MeetingService {
     );
     const [a, b] = profiles.map((profile) => profile.context.trip);
     const today = Temporal.Now.plainDateISO(SF_TIMEZONE).toString();
-    const start = [a.start, b.start, today].sort().at(-1)!;
+    const preferredStarts = value.participants.flatMap((id) => {
+      const first = value.consents[id]?.preferredWindows
+        ?.map((slot) => slot.start)
+        .sort()[0];
+      return first
+        ? [
+            Temporal.Instant.from(first)
+              .toZonedDateTimeISO(SF_TIMEZONE)
+              .toPlainDate()
+              .toString(),
+          ]
+        : [];
+    });
+    const eventDate =
+      !preferredStarts.length && value.sharedEvent
+        ? [
+            Temporal.Instant.from(value.sharedEvent.start)
+              .toZonedDateTimeISO(SF_TIMEZONE)
+              .toPlainDate()
+              .toString(),
+          ]
+        : [];
+    const start = [a.start, b.start, today, ...preferredStarts, ...eventDate]
+      .sort()
+      .at(-1)!;
     const end = [
       a.end,
       b.end,
@@ -650,6 +1037,7 @@ export class MeetingService {
         manual: consent.manualSlots,
         revision: record.revision,
         source: "manual",
+        preferredWindows: consent.preferredWindows,
       };
     }
     if (consent.manualSlots) throw new MeetingError("availability_changed");
@@ -682,6 +1070,7 @@ export class MeetingService {
         manual: null,
         revision: record.revision,
         source: "google",
+        preferredWindows: consent.preferredWindows,
       };
     } catch (error) {
       if (error instanceof MeetingError) throw error;
@@ -732,6 +1121,14 @@ export class MeetingService {
       start < Date.parse(item.end) && end > Date.parse(item.start);
     if (coverage.busy.some(overlaps)) return false;
     if (
+      coverage.preferredWindows?.length &&
+      !coverage.preferredWindows.some(
+        (item) =>
+          start >= Date.parse(item.start) && end <= Date.parse(item.end),
+      )
+    )
+      return false;
+    if (
       coverage.manual &&
       !coverage.manual.some(
         (item) =>
@@ -756,6 +1153,78 @@ export class MeetingService {
       return false;
     return !confirmedSlots.some(overlaps);
   }
+  private candidates(
+    value: MeetingRecord,
+    window: CalendarWindow,
+  ): MeetingOption[] {
+    const candidates: MeetingOption[] = [];
+    for (
+      let date = Temporal.PlainDate.from(window.startDate);
+      Temporal.PlainDate.compare(date, window.endDate) <= 0;
+      date = date.add({ days: 1 })
+    ) {
+      // Explicitly requested windows and a shared event may include weekends.
+      if (
+        date.dayOfWeek > 5 &&
+        !value.sharedEvent &&
+        !value.participants.some(
+          (id) => value.consents[id]?.preferredWindows?.length,
+        )
+      )
+        continue;
+      const explicitWindows = value.participants.some(
+        (id) => value.consents[id]?.preferredWindows?.length,
+      );
+      const limits = explicitWindows
+        ? {
+            start: Number(date.toZonedDateTime(SF_TIMEZONE).epochMilliseconds),
+            end: Number(
+              date.add({ days: 1 }).toZonedDateTime(SF_TIMEZONE)
+                .epochMilliseconds,
+            ),
+          }
+        : windowInstants({
+            date: date.toString(),
+            start: "09:00",
+            end: "18:00",
+          });
+      for (
+        let start = limits.start;
+        start + HALF_HOUR <= limits.end;
+        start += HALF_HOUR
+      ) {
+        const slot = {
+          start: new Date(start).toISOString(),
+          end: new Date(start + HALF_HOUR).toISOString(),
+        };
+        if (
+          value.sharedEvent &&
+          start < Date.parse(value.sharedEvent.end) &&
+          start + HALF_HOUR > Date.parse(value.sharedEvent.start)
+        )
+          continue;
+        candidates.push({
+          ...slot,
+          id: createHash("sha256")
+            .update(`${value.id}:${slot.start}:${slot.end}`)
+            .digest("hex")
+            .slice(0, 24),
+        });
+      }
+    }
+    if (value.sharedEvent) {
+      const end = Date.parse(value.sharedEvent.end);
+      // Prefer a half-hour buffer after the shared event, without claiming travel time.
+      const distance = (slot: MeetingSlot) => {
+        const gap = Date.parse(slot.start) - end;
+        return gap >= HALF_HOUR && gap <= 4 * 3600000
+          ? gap
+          : 10000000000 + Math.abs(gap);
+      };
+      candidates.sort((a, b) => distance(a) - distance(b));
+    }
+    return candidates;
+  }
   private async availability(value: MeetingRecord) {
     await this.current(value);
     if (!value.participants.every((id) => value.consents[id]))
@@ -774,49 +1243,23 @@ export class MeetingService {
     const constraints = await Promise.all(
       value.participants.map((id) => this.constraints(id, value.id)),
     );
-    const options: MeetingOption[] = [];
-    for (
-      let date = Temporal.PlainDate.from(window.startDate);
-      Temporal.PlainDate.compare(date, window.endDate) <= 0;
-      date = date.add({ days: 1 })
-    ) {
-      if (date.dayOfWeek > 5) continue;
-      const bounds = windowInstants({
-        date: date.toString(),
-        start: "09:00",
-        end: "18:00",
-      });
-      for (
-        let start = bounds.start;
-        start + HALF_HOUR <= bounds.end;
-        start += HALF_HOUR
-      ) {
-        const slot = {
-          start: new Date(start).toISOString(),
-          end: new Date(start + HALF_HOUR).toISOString(),
-        };
-        if (
-          !coverages.every((coverage, index) =>
-            this.permitted(coverage, slot, constraints[index]),
-          )
-        )
-          continue;
-        options.push({
-          ...slot,
-          id: createHash("sha256")
-            .update(`${value.id}:${slot.start}:${slot.end}`)
-            .digest("hex")
-            .slice(0, 24),
-        });
-        if (options.length === 3) break;
-      }
-      if (options.length === 3) break;
-    }
+    const candidates = this.candidates(value, window);
+    const own = candidates.filter((slot) =>
+      this.permitted(coverages[0], slot, constraints[0]),
+    );
+    const offered = own.slice(0, 3);
+    const accepted = offered.filter((slot) =>
+      this.permitted(coverages[1], slot, constraints[1]),
+    );
+    const common = own.filter((slot) =>
+      this.permitted(coverages[1], slot, constraints[1]),
+    );
+    const options = accepted.length ? accepted : common.slice(0, 3);
     const source =
       coverages[0].source === coverages[1].source
         ? coverages[0].source
         : ("mixed" as const);
-    return { coverages, options, source };
+    return { coverages, options, source, offered, accepted };
   }
   async approve(
     actorId: string,
@@ -853,7 +1296,8 @@ export class MeetingService {
             !current.options.some((option) => option.id === input.optionId)
           )
             throw new MeetingError("invalid_option");
-          if (!current.location) throw new MeetingError("location_required");
+          if (!current.location && current.modality !== "online")
+            throw new MeetingError("location_required");
           const approvals =
             current.selectedOptionId &&
             current.selectedOptionId !== input.optionId
@@ -927,6 +1371,166 @@ export class MeetingService {
       throw error;
     }
   }
+  async setLocation(
+    actorId: string,
+    raw: { meetingId: string; revision: number; location: string },
+  ): Promise<MeetingView> {
+    const input = meetingLocationSchema.parse(raw);
+    const value = await this.db
+      .transaction(async () => {
+        const current = await this.read(actorId, input.meetingId);
+        await this.current(current);
+        if (current.location === input.location) return current;
+        await this.writable(actorId, current.id, input.revision);
+        if (current.modality === "online")
+          throw new MeetingError("meeting_changed");
+        return this.save(
+          this.withActivity(
+            {
+              ...current,
+              location: input.location,
+              approvals: {},
+              selectedOptionId: null,
+            },
+            { kind: "location_updated", actorUserId: actorId },
+          ),
+          current.revision,
+        );
+      })
+      .immediate();
+    return this.view(actorId, value);
+  }
+  async publish(
+    actorId: string,
+    raw: { meetingId: string; revision: number },
+  ): Promise<MeetingView> {
+    const input = meetingRevisionSchema.parse(raw);
+    const leaseKey = `meeting-publish:${input.meetingId}`;
+    const lease = await this.db.acquireLease(leaseKey, 90_000);
+    if (!lease) throw new MeetingError("publishing");
+    let publishing: MeetingRecord | null = null;
+    try {
+      const value = await this.read(actorId, input.meetingId);
+      await this.current(value);
+      if (
+        value.status !== "confirmed" ||
+        !value.participants.every(
+          (id) => value.approvals[id] === value.selectedOptionId,
+        )
+      )
+        throw new MeetingError("approval_required");
+      if (value.calendarPublication?.status === "scheduled")
+        return this.view(actorId, value);
+      if (!value.calendarPublication && value.revision !== input.revision)
+        throw new MeetingError("meeting_changed");
+      const slot = value.options.find(
+        (item) => item.id === value.selectedOptionId,
+      );
+      if (!slot) throw new MeetingError("invalid_option");
+      const spec: ApprovedMeetingCalendarInput = {
+        id: value.id,
+        purpose: value.purpose,
+        location: value.location,
+        modality: value.modality ?? ("in_person" as const),
+        participants: value.participants,
+        names: value.names,
+        slot,
+      };
+      const prepared = await prepareMeetingCalendar(
+        this.store,
+        actorId,
+        spec,
+        value.calendarPublication,
+      );
+      const reconciled = value.calendarPublication
+        ? await inspectPublishedMeeting(this.store, actorId, spec, prepared)
+        : null;
+      if (reconciled) {
+        const saved = await this.db
+          .transaction(async () => {
+            const latest = await this.read(actorId, value.id);
+            return this.save(
+              { ...latest, calendarPublication: reconciled },
+              latest.revision,
+            );
+          })
+          .immediate();
+        return this.view(actorId, saved);
+      }
+      {
+        const available = await this.availability(value);
+        spec.availabilityRevisions = Object.fromEntries(
+          value.participants.map((id, index) => [
+            id,
+            available.coverages[index].revision,
+          ]),
+        );
+        await this.validateCoverage(value, available.coverages);
+        const constraints = await Promise.all(
+          value.participants.map((id) => this.constraints(id, value.id)),
+        );
+        if (
+          !available.coverages.every((coverage, index) =>
+            this.permitted(coverage, slot, constraints[index]),
+          )
+        )
+          throw new MeetingError("availability_changed");
+      }
+      publishing = await this.db
+        .transaction(async () => {
+          const latest = await this.read(actorId, value.id);
+          if (latest.revision !== value.revision)
+            throw new MeetingError("meeting_changed");
+          await this.current(latest);
+          return this.save(
+            { ...latest, calendarPublication: prepared },
+            latest.revision,
+          );
+        })
+        .immediate();
+      const result = await publishApprovedMeeting(
+        this.store,
+        actorId,
+        spec,
+        prepared,
+      );
+      const saved = await this.db
+        .transaction(async () => {
+          const latest = await this.read(actorId, value.id);
+          return this.save(
+            { ...latest, calendarPublication: result },
+            latest.revision,
+          );
+        })
+        .immediate();
+      return this.view(actorId, saved);
+    } catch (error) {
+      if (publishing?.calendarPublication) {
+        await this.db
+          .transaction(async () => {
+            const latest = await this.read(actorId, publishing!.id);
+            if (latest.calendarPublication?.status !== "publishing") return;
+            await this.save(
+              {
+                ...latest,
+                calendarPublication: {
+                  ...latest.calendarPublication,
+                  status: "failed",
+                  updatedAt: new Date().toISOString(),
+                  error:
+                    "The calendar result could not be verified. Retry to check the same invitation.",
+                },
+              },
+              latest.revision,
+            );
+          })
+          .immediate();
+      }
+      throw error;
+    } finally {
+      await this.db.releaseLease(leaseKey, lease);
+    }
+  }
   async withdraw(
     actorId: string,
     raw: { meetingId: string; revision: number },
@@ -935,6 +1539,8 @@ export class MeetingService {
     const result = await this.db
       .transaction(async () => {
         const value = await this.read(actorId, input.meetingId);
+        if (value.calendarPublication)
+          throw new MeetingError("calendar_published");
         if (value.status === "withdrawn") return value;
         if (value.revision !== input.revision)
           throw new MeetingError("meeting_changed");

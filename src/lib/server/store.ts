@@ -29,6 +29,7 @@ import {
   refreshWelcome,
   modelReplySchema,
   guardProfileReply,
+  isStayQuestion,
   validateDraft,
   type ChatRequest,
   type ChatState,
@@ -440,7 +441,7 @@ export class ContextStore {
         const current = await this.checkChat(token, request);
         let next: ChatState;
         if (request.action === "message") {
-          const parsed = guardProfileReply(modelReplySchema.parse(reply));
+          const parsed = guardProfileReply(modelReplySchema.parse(reply), current);
           next = {
             ...current,
             revision: current.revision + 1,
@@ -450,6 +451,8 @@ export class ContextStore {
               JSON.stringify(parsed.draft) === JSON.stringify(current.draft),
             draft: parsed.draft,
             profileGaps: parsed.profileGaps,
+            stayQuestionAsked: current.stayQuestionAsked || isStayQuestion(parsed.reply) ||
+              parsed.draft.stay?.status === "declined" || !!parsed.draft.stay?.area || !!parsed.draft.stay?.hotel,
             messages: [
               ...current.messages,
               { id: request.requestId, role: "user", content: request.message },

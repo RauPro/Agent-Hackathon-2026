@@ -33,6 +33,17 @@ const server = createServer(async (request, response) => {
     return;
   }
   const body = JSON.parse(data);
+  if (body.text?.format?.name === "meeting_time_reply") {
+    const input = JSON.parse(body.input[0].content);
+    // Named, deterministic test cases only; this is not the product's date parser.
+    const clarification = input.message.includes("after lunch");
+    const blocked = input.message.includes("11 AM");
+    const result = clarification ? { windows: [], clarification: "time" } : {
+      windows: [{ date: input.trip.start, start: blocked ? "11:00" : "11:30", end: "13:00" }], clarification: "none",
+    };
+    response.end(JSON.stringify({ id: "resp_meeting_time_fixture", object: "response", status: "completed", output: [{ id: "msg_meeting_time_fixture", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: JSON.stringify(result), annotations: [] }] }] }));
+    return;
+  }
   if (body.text?.format?.name === "agent_dialogue_reply") {
     const input = JSON.parse(body.input[0].content);
     const turn = input.turnNumber;

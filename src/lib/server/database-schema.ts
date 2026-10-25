@@ -76,7 +76,12 @@ CREATE TABLE IF NOT EXISTS agent_dialogues (
 CREATE INDEX IF NOT EXISTS agent_dialogues_queue ON agent_dialogues(status, updated_at);
 CREATE TABLE IF NOT EXISTS network_jobs (
   user_id TEXT PRIMARY KEY REFERENCES users(id), version INTEGER NOT NULL,
-  updated_at TEXT NOT NULL, cursor TEXT NOT NULL DEFAULT ''
+  updated_at TEXT NOT NULL, cursor TEXT NOT NULL DEFAULT '', priority INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS network_pair_checks (
+  user_a TEXT NOT NULL REFERENCES users(id), user_b TEXT NOT NULL REFERENCES users(id),
+  fingerprint TEXT NOT NULL, checked_at TEXT NOT NULL,
+  PRIMARY KEY(user_a, user_b), CHECK(user_a < user_b)
 );
 CREATE TABLE IF NOT EXISTS network_events (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), event_json TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -111,4 +116,5 @@ export const additiveColumns = [
     sql: "INTEGER NOT NULL DEFAULT 1",
   },
   { table: "network_jobs", name: "cursor", sql: "TEXT NOT NULL DEFAULT ''" },
+  { table: "network_jobs", name: "priority", sql: "INTEGER NOT NULL DEFAULT 1" },
 ] as const;

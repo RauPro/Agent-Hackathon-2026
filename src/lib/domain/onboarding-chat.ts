@@ -3,6 +3,7 @@ import { basicProfileGaps, PROFILE_FIELDS, PROFILE_QUESTIONS, type ProfileField 
 import {
   contextSchema,
   emptyContext,
+  staySchema,
   type ContextState,
   type UserContext,
 } from "./context";
@@ -37,6 +38,7 @@ export const draftSchema = z
       .describe(
         "Interpret natural departure dates internally as YYYY-MM-DD. Leave empty when missing or ambiguous; never ask the user for this format.",
       ),
+    stay: staySchema.optional(),
     availability: z
       .object({
         status: z.enum(["unknown", "provided"]),
@@ -77,6 +79,10 @@ export const modelReplySchema = z
       ),
   })
   .strict();
+// New model replies include the private stay, while persisted older drafts remain valid.
+export const onboardingOutputSchema = modelReplySchema.extend({
+  draft: draftSchema.extend({ stay: staySchema }),
+});
 export type ProfileDraft = z.infer<typeof draftSchema>;
 export type ModelReply = z.infer<typeof modelReplySchema>;
 export type ChatMessage = {
@@ -91,6 +97,7 @@ export type ChatState = {
   draft: ProfileDraft;
   // Optional for conversations saved before profile quality checks were introduced.
   profileGaps?: ProfileField[];
+  stayQuestionAsked?: boolean;
   messages: ChatMessage[];
 };
 
@@ -118,6 +125,7 @@ export function draftFromContext(context: UserContext | null): ProfileDraft {
     goalText: value.goal.text,
     arrival: value.trip.start,
     departure: value.trip.end,
+    stay: value.stay ?? { status: "unknown", area: "", hotel: "" },
     availability: value.availability,
     commitments: value.commitments,
     preferences: value.preferences,
@@ -128,16 +136,29 @@ export function profileGaps(draft: ProfileDraft, assessed: ProfileField[] = []) 
   return [...new Set([...basicProfileGaps(draft), ...assessed])];
 }
 
-export function guardProfileReply(reply: ModelReply): ModelReply {
+export function isStayQuestion(reply: string) {
+  return reply.includes("?") && /\b(?:hotel|neighbou?rhood|accommodation)\b|\bwhere\b.{0,35}\bstay(?:ing)?\b/i.test(reply);
+}
+
+export function guardProfileReply(reply: ModelReply, current?: ChatState): ModelReply {
   const gaps = profileGaps(reply.draft, reply.profileGaps);
   const needsName = !reply.draft.name.trim() && reply.draft.goalType && !gaps.includes("goalText");
+  let content = needsName ? "What's your full name?" : gaps.length && !reply.reply.includes("?")
+    ? PROFILE_QUESTIONS[gaps[0]] : reply.reply;
+  const stay = reply.draft.stay;
+  const stayAnswered = stay?.status === "declined" || !!stay?.area || !!stay?.hotel;
+  if (current && validateDraft(reply.draft, gaps).success) {
+    if (!current.confirmed && !current.stayQuestionAsked && !stayAnswered) {
+      content = "Where will you stay in SF—a hotel or neighborhood? You can leave this for later.";
+    } else if ((current.stayQuestionAsked || stayAnswered) && isStayQuestion(content)) {
+      content = "Your profile is ready to review.";
+    }
+  }
   return {
     ...reply,
     profileGaps: gaps,
     // A provider cannot invite confirmation while a required detail is vague.
-    reply: needsName ? "What's your full name?" : gaps.length && !reply.reply.includes("?")
-      ? PROFILE_QUESTIONS[gaps[0]]
-      : reply.reply,
+    reply: content,
   };
 }
 
@@ -162,6 +183,7 @@ export function validateDraft(draft: ProfileDraft, assessed: ProfileField[] = []
     availability: draft.availability,
     commitments: draft.commitments,
     preferences: draft.preferences,
+    ...(draft.stay && { stay: draft.stay }),
   });
 }
 

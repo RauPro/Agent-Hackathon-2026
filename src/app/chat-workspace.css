@@ -135,3 +135,12 @@
     box-shadow: none;
   }
 }
+.meeting-chat-question .message-content { width: 100%; min-width: 0; }
+.meeting-chat-question .text-button { display: inline-flex; margin-top: 8px; }
+.meeting-context { color: var(--muted); font-size: 14px; }
+.meeting-time-preview { border-top: 1px solid var(--line, #deded8); margin-top: 16px; padding-top: 12px; }
+.meeting-time-preview ul { padding-left: 20px; }
+.meeting-composer-context { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 8px 0; font-size: 14px; }
+.meeting-composer-context span { flex: 1 1 180px; }
+.meeting-chat-question .message-content > .text-button,
+.discovery-chat-status .message-content > .text-button { display: inline-flex; align-items: center; min-height: 44px; margin: 8px 0 0 12px; }

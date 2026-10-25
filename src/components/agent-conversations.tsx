@@ -67,6 +67,7 @@ export function conversationThreads(
     const thread = ensure(other.userId, other.name);
     thread.meetings.push(meeting);
     if (
+      meeting.nextAction ||
       (meeting.status === "awaiting_permission" &&
         !meeting.consentedUserIds.includes(accountId)) ||
       (meeting.status === "options_ready" &&
@@ -171,6 +172,12 @@ const meetingLabels: Record<MeetingActivityEntry["kind"], string> = {
   stale: "Proposal needs review after a change",
   expired: "Meeting proposal expired",
   availability_failed: "Could not verify availability",
+  agent_slots_proposed: "Offered available times",
+  agent_slots_checked: "Checked the offered times",
+  agent_counterproposed: "Suggested other available times",
+  preferences_updated: "Updated meeting-time preferences",
+  escalated: "Asked for your help in the main chat",
+  location_updated: "Proposed a meeting place; previous approvals cleared",
 };
 
 export function AgentConversations({
@@ -326,8 +333,9 @@ export function AgentConversations({
                   [
                     "awaiting_permission",
                     "options_ready",
+                    "needs_user_input",
                     "confirmed",
-                  ].includes(meeting.status),
+                  ].includes(meeting.status) || !!meeting.calendarPublication,
                 )
                 .map(meetingAction)}
               {selected.connection?.status === "accepted" && compose(selected)}
@@ -490,7 +498,9 @@ function ThreadHistory({
             <div>
               <p>
                 <strong>
-                  {entry.actorUserId
+                  {entry.kind.startsWith("agent_") && entry.actorUserId
+                    ? agentName(entry.actorUserId)
+                    : entry.actorUserId
                     ? entry.actorUserId === accountId
                       ? "You"
                       : thread.name.split(" ")[0]
@@ -500,6 +510,8 @@ function ThreadHistory({
               </p>
               <time dateTime={entry.at}>{stamp(entry.at)} SF time</time>
               {entry.kind === "proposed" && <p>{meeting.purpose}</p>}
+              {entry.kind === "agent_slots_checked" && <p>{entry.optionCount ? `${entry.optionCount} of those times fit. The people still need to approve a final time.` : "Those times do not fit. Checking alternatives."}</p>}
+              {!!entry.slots?.length && <ul className="meeting-offered-times">{entry.slots.map((slot) => <li key={slot.start}>{new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Los_Angeles" }).format(new Date(slot.start))} SF time</li>)}</ul>}
             </div>
           </div>
         ),

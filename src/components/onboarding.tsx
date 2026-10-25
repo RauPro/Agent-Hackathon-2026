@@ -20,6 +20,8 @@ import { ChatAgentPanel, useAgentPanel } from "./chat-agent-panel";
 import "@/app/chat-workspace.css";
 import { EventRecommendations } from "./event-recommendations";
 import { useVoiceInput } from "./use-voice-input";
+import { MeetingChat, useMeetingChat } from "./meeting-chat";
+import { PeopleDiscoveryStatus } from "./people-discovery-status";
 import type { Account } from "@/lib/domain/auth";
 
 export function Onboarding({ account }: { account: Account }) {
@@ -27,6 +29,7 @@ export function Onboarding({ account }: { account: Account }) {
   const agents = useAgentPanel();
   const agentTrigger = useRef<HTMLButtonElement>(null);
   const [chat, setChat] = useState<ChatState | null>(null);
+  const meetingChat = useMeetingChat(account.id, !!chat?.baseRevision);
   const [configured, setConfigured] = useState(false);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState<ChatRequest["action"] | null>(null);
@@ -39,6 +42,7 @@ export function Onboarding({ account }: { account: Account }) {
   const lastMessage = useRef<HTMLDivElement>(null);
   const inFlight = useRef(false);
   const retry = useRef<{ signature: string; requestId: string } | null>(null);
+  const meetingMode = useRef<string | null>(null);
   const voice = useVoiceInput(account.id, (transcript) => {
     const previous = composer.current?.value ?? input;
     const value = previous ? `${previous.trimEnd()}\n${transcript}` : transcript;
@@ -52,6 +56,16 @@ export function Onboarding({ account }: { account: Account }) {
     composer.current.style.height = "auto";
     composer.current.style.height = `${Math.min(composer.current.scrollHeight, 160)}px`;
   }, [input]);
+
+  useEffect(() => {
+    const id = meetingChat.selected?.id ?? null;
+    if (meetingMode.current === id) return;
+    meetingMode.current = id;
+    queueMicrotask(() => {
+      try { setInput(sessionStorage.getItem(id ? `${inputKey}-meeting-${id}` : inputKey) || ""); }
+      catch { setInput(""); }
+    });
+  }, [meetingChat.selected?.id, inputKey]);
 
   const acceptState = useCallback(
     (state: { chat: ChatState; configured: boolean; account: Account }) => {
@@ -98,8 +112,9 @@ export function Onboarding({ account }: { account: Account }) {
 
   function preserveInput(value: string) {
     try {
-      if (value) sessionStorage.setItem(inputKey, value);
-      else sessionStorage.removeItem(inputKey);
+      const key = meetingChat.selected ? `${inputKey}-meeting-${meetingChat.selected.id}` : inputKey;
+      if (value) sessionStorage.setItem(key, value);
+      else sessionStorage.removeItem(key);
     } catch {
       // Keep the current draft in memory if storage is disabled or full.
     }
@@ -201,6 +216,13 @@ export function Onboarding({ account }: { account: Account }) {
 
   function send(event: FormEvent) {
     event.preventDefault();
+    if (meetingChat.selected) {
+      if (!input.trim() || busy || meetingChat.busy || voice.busy) return;
+      void meetingChat.send(input.trim()).then((sent) => {
+        if (sent) { setInput(""); preserveInput(""); voice.reset(); scrollToReply(); }
+      });
+      return;
+    }
     void act("message");
   }
   const blocked = [
@@ -216,7 +238,7 @@ export function Onboarding({ account }: { account: Account }) {
       <a className="skip-link" href="#conversation">
         Skip to conversation
       </a>
-      <AppHeader account={account} active="chat" disabled={!!busy || voice.busy} />
+      <AppHeader account={account} active="chat" disabled={!!busy || voice.busy || meetingChat.busy} />
       <main className="chat-layout chat-workspace" data-agents-open={agents.open}>
         <section
           className="conversation-column"
@@ -284,6 +306,11 @@ export function Onboarding({ account }: { account: Account }) {
                     </div>
                   </article>
                 ))}
+                <MeetingChat state={meetingChat} accountId={account.id} onReply={(meeting) => {
+                  meetingChat.select(meeting.id);
+                  requestAnimationFrame(() => composer.current?.focus());
+                }} />
+                {!!chat.baseRevision && <PeopleDiscoveryStatus accountId={account.id} revision={chat.baseRevision} />}
                 {pendingMessage && (
                   <article className="message user pending">
                     <div className="message-content">
@@ -399,6 +426,10 @@ export function Onboarding({ account }: { account: Account }) {
                 </div>
               </details>
               <div className={`composer-wrap${showReview ? " reviewing" : ""}${voice.busy || voice.error || voice.status ? " voice-active" : ""}`}>
+                {meetingChat.selected && <div className="meeting-composer-context">
+                  <span>Replying about your meeting with {meetingChat.selected.participants.find((person) => person.userId !== account.id)?.name}</span>
+                  <button type="button" className="text-button" disabled={meetingChat.busy} onClick={() => meetingChat.select(null)}>Back to profile chat</button>
+                </div>}
                 {!configured && (
                   <div className="connection-note">
                     <span className="connection-indicator" />
@@ -432,8 +463,8 @@ export function Onboarding({ account }: { account: Account }) {
                     rows={2}
                     value={input}
                     maxLength={3000}
-                    disabled={!!busy}
-                    placeholder="Message Sidekick…"
+                    disabled={!!busy || meetingChat.busy}
+                    placeholder={meetingChat.selected ? "What day and time work for you?" : "Message Sidekick…"}
                     onChange={(event) => {
                       setInput(event.target.value);
                       preserveInput(event.target.value);
@@ -489,6 +520,7 @@ export function Onboarding({ account }: { account: Account }) {
                         !input.trim() ||
                         input.length > 3000 ||
                         !!busy ||
+                        meetingChat.busy ||
                         voice.busy ||
                         blocked ||
                         problem === "chat_limit"

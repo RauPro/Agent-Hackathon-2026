@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { windowInstants } from "./context";
+import type { MeetingCalendarPublication } from "./calendar";
 
 export const meetingSlotSchema = z
   .object({
@@ -19,6 +20,10 @@ export const proposeMeetingSchema = z
     requestId: z.uuid(),
     purpose: z.string().trim().min(5).max(300),
     location: z.string().trim().min(2).max(240).optional(),
+    modality: z.enum(["in_person", "online"]).optional(),
+    sharedArea: z.string().trim().min(2).max(80).optional(),
+    eventId: z.string().trim().min(1).max(240).optional(),
+    authorizeAvailability: z.boolean().optional(),
   })
   .strict();
 export const meetingRevisionSchema = z
@@ -33,10 +38,19 @@ export const meetingOptInSchema = meetingRevisionSchema.extend({
 export const meetingApprovalSchema = meetingRevisionSchema.extend({
   optionId: z.string().min(1).max(100),
 });
+export const meetingPreferencesSchema = meetingRevisionSchema.extend({
+  preferredWindows: z.array(meetingSlotSchema).min(1).max(14),
+});
+export const meetingLocationSchema = meetingRevisionSchema.extend({
+  location: z.string().trim().min(2).max(240),
+});
 export const meetingActionSchema = z.discriminatedUnion("action", [
   proposeMeetingSchema.extend({ action: z.literal("propose") }),
   meetingOptInSchema.extend({ action: z.literal("opt_in") }),
   meetingApprovalSchema.extend({ action: z.literal("approve") }),
+  meetingPreferencesSchema.extend({ action: z.literal("suggest_times") }),
+  meetingLocationSchema.extend({ action: z.literal("set_location") }),
+  meetingRevisionSchema.extend({ action: z.literal("publish") }),
   meetingRevisionSchema.extend({ action: z.literal("withdraw") }),
 ]);
 
@@ -44,6 +58,7 @@ export type MeetingOption = MeetingSlot & { id: string };
 export type MeetingStatus =
   | "awaiting_permission"
   | "options_ready"
+  | "needs_user_input"
   | "confirmed"
   | "withdrawn"
   | "expired"
@@ -62,10 +77,17 @@ export type MeetingActivityEntry = {
     | "withdrawn"
     | "stale"
     | "expired"
-    | "availability_failed";
+    | "availability_failed"
+    | "agent_slots_proposed"
+    | "agent_slots_checked"
+    | "agent_counterproposed"
+    | "preferences_updated"
+    | "location_updated"
+    | "escalated";
   actorUserId?: string;
   optionId?: string;
   optionCount?: number;
+  slots?: MeetingSlot[];
 };
 export type MeetingView = {
   id: string;
@@ -76,6 +98,24 @@ export type MeetingView = {
   participants: { userId: string; name: string }[];
   purpose: string;
   location: string | null;
+  modality?: "in_person" | "online";
+  sharedArea?: string | null;
+  suggestedArea?: string | null;
+  ownPreferredWindows?: MeetingSlot[];
+  sharedEvent?: {
+    id: string;
+    title: string;
+    start: string;
+    end: string;
+  } | null;
+  nextAction?: {
+    kind:
+      | "authorize_availability"
+      | "provide_availability"
+      | "suggest_times"
+      | "reconnect_calendar";
+    prompt: string;
+  } | null;
   status: MeetingStatus;
   durationMinutes: 30;
   timezone: "America/Los_Angeles";
@@ -88,6 +128,10 @@ export type MeetingView = {
   checkedAt: string | null;
   expiresAt: string;
   calendarStatus: "not_ready" | "export_available";
+  calendarPublication?: Omit<
+    MeetingCalendarPublication,
+    "calendarId" | "conferenceRequestId"
+  > | null;
   error: string | null;
 };
 
