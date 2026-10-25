@@ -65,6 +65,8 @@ export async function GET(request: NextRequest) {
     });
     return json({
       accountId: account.id,
+      suggestedArea: (await store.network.profile(account.id)).context?.stay?.area || null,
+      matching: await discovery.matchingStatus(account.id),
       settings: await store.network.settings(account.id),
       connections: await store.network.connections(account.id),
       messages: await store.network.messages(account.id),

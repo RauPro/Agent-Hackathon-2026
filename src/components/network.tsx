@@ -26,6 +26,7 @@ import {
   type SharedEvent,
 } from "@/lib/domain/network";
 import { manualMeetingSlot, type MeetingView } from "@/lib/domain/meetings";
+import { MeetingCard, MeetingForm } from "./meeting-coordination";
 import { AppHeader } from "./app-header";
 import { QRScanner } from "./qr-scanner";
 import {
@@ -38,6 +39,8 @@ import "@/app/network.css";
 type NetworkState = {
   accountId: string;
   demo?: boolean;
+  suggestedArea?: string | null;
+  matching?: { pending: boolean; lastCheckedAt: string | null };
   settings: NetworkSettings;
   connections: ConnectionView[];
   messages: AgentMessage[];
@@ -194,6 +197,7 @@ export function Network({
         void refresh(controller.signal).catch(() => {});
     };
     window.addEventListener("focus", update);
+    window.addEventListener("sidekick-meeting-updated", update);
     const restoreView = () => {
       const parameters = new URLSearchParams(window.location.search),
         view = parameters.get("view");
@@ -210,6 +214,7 @@ export function Network({
       refreshSequence.current += 1;
       controller.abort();
       window.removeEventListener("focus", update);
+      window.removeEventListener("sidekick-meeting-updated", update);
       window.removeEventListener("popstate", restoreView);
     };
   }, [active, embedded, refresh]);
@@ -267,6 +272,7 @@ export function Network({
       }
       retry.current = null;
       await refresh();
+      if (endpoint === "/api/meetings") window.dispatchEvent(new Event("sidekick-meeting-updated"));
       if (
         activeRef.current &&
         (payload.action === "query" ||
@@ -456,6 +462,9 @@ export function Network({
             </nav>}
             {tab === "opportunities" && (
               <section aria-label="For you">
+                {!state.settings.discoverable ? <p className="notice">Discovery is off. New people cannot be matched with you. <button className="text-button" onClick={() => setSharing(true)}>Review sharing</button></p>
+                  : ["profile", "goal", "trip"].some((field) => state.settings.visibility[field as keyof typeof state.settings.visibility] !== "network") ? <p className="notice">Share your experience, goal, and SF dates with discoverable people to find new connections. <button className="text-button" onClick={() => setSharing(true)}>Review sharing</button></p>
+                  : <p className="network-muted">{state.matching?.pending ? "Checking for compatible people. Discovery continues while you’re away." : "Discovery is active, including when the app is closed."}</p>}
                 {pending > 0 && (
                   <button
                     className="agent-attention"
@@ -662,6 +671,7 @@ export function Network({
                         Coordinate a meeting <span aria-hidden="true">+</span>
                       </summary>
                       <MeetingForm
+                        suggestedArea={state.suggestedArea}
                         userId={thread.userId}
                         act={act}
                         busy={busy}
@@ -1455,308 +1465,6 @@ function MessageCard({
   );
 }
 
-function MeetingForm({
-  userId,
-  act,
-  busy,
-}: {
-  userId: string;
-  act: Action;
-  busy: boolean;
-}) {
-  const [purpose, setPurpose] = useState("");
-  const [location, setLocation] = useState("");
-  const [sent, setSent] = useState(false);
-  return (
-    <form
-      onSubmit={async (event) => {
-        event.preventDefault();
-        if (
-          await act(
-            { action: "propose", toUserId: userId, purpose, location },
-            "/api/meetings",
-          )
-        )
-          setSent(true);
-      }}
-    >
-      <label>
-        What would you like to discuss?
-        <textarea
-          required
-          minLength={5}
-          maxLength={300}
-          value={purpose}
-          onChange={(event) => {
-            setPurpose(event.target.value);
-            setSent(false);
-          }}
-        />
-      </label>
-      <label>
-        Proposed meeting place
-        <input
-          required
-          minLength={2}
-          maxLength={240}
-          value={location}
-          onChange={(event) => setLocation(event.target.value)}
-          placeholder="A public place or a video call"
-        />
-      </label>
-      <p className="network-muted">
-        A 30-minute meeting. Both people choose whether to share availability
-        and approve the final time and place.
-      </p>
-      <button className="primary-button" disabled={busy}>
-        Propose meeting
-      </button>
-      {sent && (
-        <p className="network-status" role="status">
-          Proposed. Availability and approvals appear in this conversation.
-        </p>
-      )}
-    </form>
-  );
-}
-
-function MeetingCard({
-  meeting,
-  accountId,
-  act,
-  busy,
-}: {
-  meeting: MeetingView;
-  accountId: string;
-  act: Action;
-  busy: boolean;
-}) {
-  const other = meeting.participants.find(
-    (participant) => participant.userId !== accountId,
-  );
-  const consented = meeting.consentedUserIds.includes(accountId);
-  const approved = meeting.approvedUserIds.includes(accountId);
-  const [date, setDate] = useState("");
-  const [start, setStart] = useState("09:00");
-  const [end, setEnd] = useState("17:00");
-  const [problem, setProblem] = useState("");
-  const active = ["awaiting_permission", "options_ready"].includes(
-    meeting.status,
-  );
-  const labels: Record<MeetingView["status"], string> = {
-    awaiting_permission: "Awaiting availability permission",
-    options_ready: "Choose a time",
-    confirmed: "Both people approved",
-    withdrawn: "Withdrawn",
-    expired: "Expired",
-    stale: "Needs a new proposal",
-  };
-  async function optIn(event: FormEvent) {
-    event.preventDefault();
-    setProblem("");
-    try {
-      await act(
-        {
-          action: "opt_in",
-          meetingId: meeting.id,
-          revision: meeting.revision,
-          ...(meeting.manualAvailabilityNeeded
-            ? { manualSlots: [manualMeetingSlot(date, start, end)] }
-            : {}),
-        },
-        "/api/meetings",
-      );
-    } catch {
-      setProblem(
-        "Choose a valid SF date and an end time after the start time.",
-      );
-    }
-  }
-  const chosen = meeting.options.find(
-    (option) => option.id === meeting.selectedOptionId,
-  );
-  return (
-    <article className="network-card">
-      <div className="network-card-heading">
-        <h2>Meet {other?.name || "your connection"}</h2>
-        <span className="network-badge">{labels[meeting.status]}</span>
-      </div>
-      <p>{meeting.purpose}</p>
-      <p>
-        <strong>Place:</strong> {meeting.location || "Not yet proposed"}
-      </p>
-      <p className="network-muted">30 minutes · San Francisco time</p>
-      {active && (
-        <p className="network-muted">
-          Checks weekdays, 9 AM–6 PM SF time, within the first 14 days of your
-          overlapping stays.
-        </p>
-      )}
-      {meeting.error && <p className="notice">{meeting.error}</p>}
-      {active && !consented && (
-        <form onSubmit={(event) => void optIn(event)}>
-          {meeting.manualAvailabilityNeeded ? (
-            <>
-              <p className="network-muted">
-                Your calendar is not connected. Add a window when you could
-                meet, or <a href="/onboarding">connect Google Calendar</a>.
-              </p>
-              <label>
-                Date in SF
-                <input
-                  type="date"
-                  required
-                  value={date}
-                  onChange={(event) => setDate(event.target.value)}
-                />
-              </label>
-              <div className="network-field-pair">
-                <label>
-                  Available from
-                  <input
-                    type="time"
-                    required
-                    value={start}
-                    onChange={(event) => setStart(event.target.value)}
-                  />
-                </label>
-                <label>
-                  Until
-                  <input
-                    type="time"
-                    required
-                    value={end}
-                    onChange={(event) => setEnd(event.target.value)}
-                  />
-                </label>
-              </div>
-            </>
-          ) : (
-            <p className="network-muted">
-              Allow Sidekick to check your calendar for this meeting. Your
-              connection will see possible meeting times, never event details.
-            </p>
-          )}
-          {problem && (
-            <p role="alert" className="field-error">
-              {problem}
-            </p>
-          )}
-          <button className="primary-button" disabled={busy}>
-            Find a time together
-          </button>
-        </form>
-      )}
-      {active &&
-        consented &&
-        !meeting.options.length &&
-        (meeting.consentedUserIds.length < 2 ? (
-          <p className="network-status">
-            Waiting for your connection to share availability.
-          </p>
-        ) : (
-          <div className="network-actions">
-            <button
-              className="secondary-button"
-              disabled={busy}
-              onClick={() =>
-                void act(
-                  {
-                    action: "opt_in",
-                    meetingId: meeting.id,
-                    revision: meeting.revision,
-                  },
-                  "/api/meetings",
-                )
-              }
-            >
-              Retry availability
-            </button>
-          </div>
-        ))}
-      {meeting.status === "options_ready" && chosen && !approved && (
-        <p className="network-status">
-          {other?.name || "Your connection"} proposed {timeLabel(chosen.start)}{" "}
-          SF time. Approve it or choose another option.
-        </p>
-      )}
-      {meeting.status === "options_ready" &&
-        meeting.options.map((option) => (
-          <div className="network-slot" key={option.id}>
-            <p>
-              {timeLabel(option.start)}–
-              {new Intl.DateTimeFormat("en-US", {
-                hour: "numeric",
-                minute: "2-digit",
-                timeZone: "America/Los_Angeles",
-              }).format(new Date(option.end))}
-            </p>
-            {approved && chosen?.id === option.id ? (
-              <p className="network-status">
-                You approved this time. Waiting for your connection.
-              </p>
-            ) : (
-              <button
-                className="primary-button"
-                disabled={busy}
-                onClick={() =>
-                  void act(
-                    {
-                      action: "approve",
-                      meetingId: meeting.id,
-                      revision: meeting.revision,
-                      optionId: option.id,
-                    },
-                    "/api/meetings",
-                  )
-                }
-              >
-                Approve this time and place
-              </button>
-            )}
-          </div>
-        ))}
-      {meeting.status === "confirmed" && chosen && (
-        <>
-          <p className="network-slot">
-            {timeLabel(chosen.start)} SF time · {meeting.location}
-          </p>
-          <p className="network-muted">
-            The meeting is agreed. Download and import the calendar file;
-            Sidekick has not added it to Google Calendar or sent an invitation.
-          </p>
-          <a
-            className="secondary-button"
-            href={`/api/meetings/${meeting.id}/invitation`}
-            download
-          >
-            Download calendar file
-          </a>
-        </>
-      )}
-      {active && (
-        <div className="network-actions">
-          <button
-            className="text-button"
-            disabled={busy}
-            onClick={() =>
-              void act(
-                {
-                  action: "withdraw",
-                  meetingId: meeting.id,
-                  revision: meeting.revision,
-                },
-                "/api/meetings",
-              )
-            }
-          >
-            Withdraw meeting proposal
-          </button>
-        </div>
-      )}
-    </article>
-  );
-}
 
 function EventList({
   events,
