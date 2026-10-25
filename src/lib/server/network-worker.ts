@@ -19,10 +19,9 @@ export async function enqueueDailyNetworkWork(network: NetworkStore) {
       // The day and jobs commit together. Cold starts do not enqueue the whole network again.
       await network.db
         .prepare(
-          `INSERT INTO network_jobs (user_id, version, updated_at, cursor)
-      SELECT id, 1, ?, '' FROM users WHERE 1
-      ON CONFLICT(user_id) DO UPDATE SET version = version + 1,
-        updated_at = excluded.updated_at, cursor = ''`,
+          `INSERT INTO network_jobs (user_id, version, updated_at, cursor, priority)
+      SELECT id, 1, ?, '', 0 FROM users WHERE 1
+      ON CONFLICT(user_id) DO NOTHING`,
         )
         .run(new Date().toISOString());
       await network.db
@@ -36,8 +35,7 @@ export async function enqueueDailyNetworkWork(network: NetworkStore) {
     .immediate();
 }
 
-export async function drainNetworkWork() {
-  const network = getStore().network;
+export async function drainNetworkWork(network = getStore().network) {
   await enqueueDailyNetworkWork(network);
   const comparisons = await new DiscoveryService(network).drain();
   // Two bounded model turns fit alongside discovery inside the function budget.

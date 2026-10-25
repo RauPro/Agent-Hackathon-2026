@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { ContextStore } from "../src/lib/server/store";
 import {
   enqueueDailyNetworkWork,
+  drainNetworkWork,
   startNetworkWorker,
 } from "../src/lib/server/network-worker";
 import { DiscoveryService } from "../src/lib/server/discovery-service";
@@ -790,5 +791,105 @@ describe("proactive discovery with authorized context", () => {
     } finally {
       secondStore.close();
     }
+  });
+
+  it("processes a newly confirmed discoverable user before a 30-person daily backlog without browser polling", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await discoverable(c);
+    for (let index = 0; index < 27; index++) await discoverable(await account(`Existing${index}`));
+    await network.db.prepare("DELETE FROM network_jobs").run();
+    await enqueueDailyNetworkWork(network);
+    const newcomer = await account("Newcomer");
+    await discoverable(newcomer);
+    expect((await discovery.matchingStatus(newcomer.id)).pending).toBe(true);
+    // This is the same worker invoked by the authenticated cron; no network GET occurs.
+    const processed = await drainNetworkWork(network);
+    expect(processed).toBe(80);
+    expect(await discovery.matchingStatus(newcomer.id)).toEqual({
+      pending: false, lastCheckedAt: new Date().toISOString(),
+    });
+    expect((await discovery.opportunities(newcomer.id))[0].userId).toBe(b.id);
+    const [first, second] = [newcomer.id, b.id].sort();
+    expect(await network.db.prepare(
+      "SELECT COUNT(*) AS count FROM network_opportunities WHERE user_a = ? AND user_b = ?",
+    ).get(first, second)).toEqual({ count: 1 });
+    expect((await queued()).length).toBeGreaterThan(0);
+    expect(await new AgentDialogueService(network).list(newcomer.id)).toEqual([]);
+  });
+
+  it("retains pending cursors and prioritizes new changes over daily work", async () => {
+    for (const person of [a, b, c]) await discoverable(person);
+    await network.db.prepare("DELETE FROM network_jobs").run();
+    await network.enqueue(a.id);
+    await discovery.drain(1);
+    const before = await network.db.prepare("SELECT * FROM network_jobs WHERE user_id = ?").get(a.id);
+    expect(before?.cursor).toBeTruthy();
+    await enqueueDailyNetworkWork(network);
+    expect(await network.db.prepare("SELECT * FROM network_jobs WHERE user_id = ?").get(a.id)).toEqual(before);
+    const statuses = await network.db.prepare("SELECT user_id, priority FROM network_jobs").all();
+    expect(statuses.find((row) => row.user_id === a.id)?.priority).toBe(1);
+    expect(statuses.find((row) => row.user_id === b.id)?.priority).toBe(0);
+    await preferences(b, { area: "SoMa" });
+    expect((await network.db.prepare("SELECT priority, cursor FROM network_jobs WHERE user_id = ?").get(b.id)))
+      .toEqual({ priority: 1, cursor: "" });
+  });
+
+  it("gives equally prioritized profiles a turn before continuing an earlier profile", async () => {
+    for (const person of [a, b, c]) await discoverable(person);
+    expect(await discovery.drain(3)).toBe(3);
+    const jobs = await network.db.prepare("SELECT cursor FROM network_jobs").all();
+    expect(jobs).toHaveLength(3);
+    expect(jobs.every((job) => !!job.cursor)).toBe(true);
+  });
+
+  it("deduplicates reverse and repeated checks including no-match results, then invalidates changed inputs", async () => {
+    await discoverable(a);
+    await discoverable(b);
+    await update(b, (context) => { context.goal.text = "Hire a marine biologist for coral conservation."; });
+    const project = vi.spyOn(network, "project");
+    await drainAll();
+    expect(project).toHaveBeenCalledTimes(2);
+    expect(await opportunityCount()).toBe(0);
+    await network.enqueue(b.id);
+    await drainAll();
+    expect(project).toHaveBeenCalledTimes(2);
+    await update(b, (context) => { context.goal.text = "Hire a founding engineer to build AI agents and infrastructure."; });
+    await drainAll();
+    expect(project).toHaveBeenCalledTimes(4);
+    expect(await opportunityCount()).toBe(1);
+    await discovery.saveEvent(a.id, event());
+    await drainAll();
+    expect(project).toHaveBeenCalledTimes(6);
+    const savedEvent = (await discovery.events(a.id))[0];
+    await discovery.saveEvent(a.id, { ...event(), id: savedEvent.id, title: "Updated AI meetup" });
+    await drainAll();
+    expect(project).toHaveBeenCalledTimes(8);
+    await discovery.removeEvent(a.id, savedEvent.id);
+    await drainAll();
+    expect(project).toHaveBeenCalledTimes(10);
+    await preferences(a, { area: "SoMa" });
+    await drainAll();
+    expect(project).toHaveBeenCalledTimes(12);
+    await connect();
+    await drainAll();
+    expect((await new AgentDialogueService(network).list(a.id))).toHaveLength(1);
+    const checks = await network.db.prepare("SELECT * FROM network_pair_checks").all();
+    expect(checks).toHaveLength(1);
+    expect(checks[0].fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(checks)).not.toMatch(/SoMa|meetup|marine|founding/);
+  });
+
+  it("stops the larger batch at its deadline and resumes on a later cron", async () => {
+    for (const person of [a, b, c]) await discoverable(person);
+    const original = network.project.bind(network);
+    vi.spyOn(network, "project").mockImplementationOnce(async (...args) => {
+      vi.setSystemTime(new Date(Date.now() + 21_000));
+      return original(...args);
+    });
+    expect(await discovery.drain()).toBe(1);
+    expect((await queued()).length).toBeGreaterThan(0);
+    await drainAll();
+    expect(await queued()).toEqual([]);
   });
 });

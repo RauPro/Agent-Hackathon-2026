@@ -512,8 +512,8 @@ export class NetworkStore {
     await this.requireUser(userId);
     await this.db
       .prepare(
-        `INSERT INTO network_jobs (user_id, version, updated_at, cursor) VALUES (?, 1, ?, '')
-      ON CONFLICT(user_id) DO UPDATE SET version = version + 1, updated_at = excluded.updated_at, cursor = ''`,
+        `INSERT INTO network_jobs (user_id, version, updated_at, cursor, priority) VALUES (?, 1, ?, '', 1)
+      ON CONFLICT(user_id) DO UPDATE SET version = version + 1, updated_at = excluded.updated_at, cursor = '', priority = 1`,
       )
       .run(userId, timestamp());
   }
