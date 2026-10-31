@@ -6,14 +6,21 @@ import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 import { authRequestSchema, LOGIN_MAX_AGE } from "../src/lib/domain/auth";
-import { authenticate } from "../src/lib/server/auth-service";
+import {
+  deleteAccount,
+  requestSignInCode,
+  SignInUnavailable,
+  verifySignIn,
+} from "../src/lib/server/auth-service";
 import * as storeModule from "../src/lib/server/store";
 import { POST } from "../src/app/api/auth/route";
 import { SESSION_COOKIE } from "../src/lib/server/http";
 import {
   AccountConflict,
+  AuthCodeInvalid,
   AuthRateLimit,
   ContextStore,
+  UsageLimit,
 } from "../src/lib/server/store";
 import { draftFromContext } from "../src/lib/domain/onboarding-chat";
 import { validContext } from "./fixtures";
@@ -22,6 +29,18 @@ import {
   sealCalendarData,
 } from "../src/lib/server/calendar-crypto";
 let folder: string, path: string, store: ContextStore;
+async function authenticate(
+  target: ContextStore,
+  input: { action: "continue"; email: string } | { action: "logout" },
+  previousToken?: string,
+) {
+  if (input.action === "logout") {
+    await target.logout(previousToken);
+    return null;
+  }
+  const { devCode } = await requestSignInCode(target, input.email, previousToken);
+  return verifySignIn(target, input.email, devCode!, previousToken);
+}
 beforeEach(() => {
   folder = mkdtempSync(join(tmpdir(), "sidekick-auth-"));
   path = join(folder, "test.sqlite");
@@ -38,13 +57,13 @@ describe("email accounts", () => {
   it("validates email, normalizes case, and rejects passwords or client-supplied ownership", () => {
     expect(
       authRequestSchema.parse({
-        action: "continue",
+        action: "request_code",
         email: " Alex@Example.Test ",
       }),
     ).toMatchObject({ email: "alex@example.test" });
     expect(
       authRequestSchema.safeParse({
-        action: "continue",
+        action: "request_code",
         email: "invalid",
       }).success,
     ).toBe(false);
@@ -56,7 +75,7 @@ describe("email accounts", () => {
     ])
       expect(
         authRequestSchema.safeParse({
-          action: "continue",
+          action: "request_code",
           email: "alex@example.test",
           ...extra,
         }).success,
@@ -96,7 +115,7 @@ describe("email accounts", () => {
     ))!;
     expect(result.account).toMatchObject({
       email: "alex@example.test",
-      emailVerified: false,
+      emailVerified: true,
     });
     expect(await store.read(previous)).toBeNull();
     expect(await store.account(previous)).toBeNull();
@@ -187,10 +206,9 @@ describe("email accounts", () => {
     const otherStore = new ContextStore(path);
     try {
       const results = await Promise.all(
-        Array.from({ length: 6 }, (_, index) => authenticate(
-          index % 2 ? otherStore : store,
-          { action: "continue", email: index % 2 ? "Alex@Example.Test" : "alex@example.test" },
-        )),
+        Array.from({ length: 6 }, (_, index) =>
+          (index % 2 ? otherStore : store).continueAccount("alex@example.test", undefined, true),
+        ),
       );
       expect(new Set(results.map((result) => result!.account.id)).size).toBe(1);
       expect(new Set(results.map((result) => result!.token)).size).toBe(6);
@@ -301,7 +319,7 @@ describe("email accounts", () => {
     expect(await store.db.prepare("SELECT COUNT(*) AS count FROM users").get())
       .toEqual({ count: 1 });
   });
-  it("enforces same-origin and strict payloads, sets a private cookie, and rejects stale account logout", async () => {
+  it("enforces same-origin and strict payloads, sets a private cookie only after a valid code, and rejects stale account logout", async () => {
     vi.spyOn(storeModule, "getStore").mockReturnValue(store);
     const request = (body: unknown, headers: Record<string, string> = {}) =>
       new NextRequest("https://sidekick.example.test/api/auth", {
@@ -314,20 +332,32 @@ describe("email accounts", () => {
         },
         body: JSON.stringify(body),
       });
-    const body = { action: "continue", email: "alex@example.test" };
+    const body = { action: "request_code", email: "alex@example.test" };
     expect((await POST(request(body, { origin: "https://foreign.example.test" }))).status).toBe(403);
     expect((await POST(request(body, { "content-type": "text/plain" }))).status).toBe(415);
     for (const extra of [{ userId: "other" }, { emailVerified: true }, { password: "unused" }])
       expect((await POST(request({ ...body, ...extra }))).status).toBe(400);
-    expect(await store.db.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 0 });
+    expect((await POST(request({ action: "continue", email: "alex@example.test" }))).status).toBe(400);
 
-    const response = await POST(request(body));
+    const sent = await POST(request(body));
+    expect(sent.status).toBe(200);
+    expect(sent.cookies.get(SESSION_COOKIE)).toBeUndefined();
+    const { devCode } = await sent.json();
+    expect(devCode).toMatch(/^\d{6}$/);
+    expect(await store.db.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 0 });
+    const wrong = String((Number(devCode) + 1) % 1_000_000).padStart(6, "0");
+    const rejected = await POST(request({ action: "verify", email: "alex@example.test", code: wrong }));
+    expect(rejected.status).toBe(400);
+    expect(rejected.cookies.get(SESSION_COOKIE)).toBeUndefined();
+
+    const response = await POST(request({ action: "verify", email: "ALEX@example.test", code: devCode }));
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     const cookie = response.cookies.get(SESSION_COOKIE)!;
     expect(cookie).toMatchObject({ httpOnly: true, secure: true, sameSite: "lax", path: "/", maxAge: LOGIN_MAX_AGE });
     const account = (await response.json()).account;
-    expect(account).toMatchObject({ email: "alex@example.test", emailVerified: false });
+    expect(account).toMatchObject({ email: "alex@example.test", emailVerified: true });
+    expect((await POST(request({ action: "verify", email: "alex@example.test", code: devCode }))).status).toBe(400);
     const sessionHeaders = { cookie: `${SESSION_COOKIE}=${cookie.value}` };
     expect((await POST(request({ ...body, email: "other@example.test" }, sessionHeaders))).status).toBe(409);
     expect((await POST(request({ action: "logout" }, { ...sessionHeaders, "x-sidekick-account": "stale-account" }))).status).toBe(401);
@@ -337,17 +367,88 @@ describe("email accounts", () => {
     expect(logout.cookies.get(SESSION_COOKIE)?.maxAge).toBe(0);
     expect(await store.account(cookie.value)).toBeNull();
   });
-  it("returns a retry window when successful email requests exhaust the limit", async () => {
+  it("returns a retry window when code requests exhaust the limit", async () => {
     vi.spyOn(storeModule, "getStore").mockReturnValue(store);
     for (let n = 0; n < 10; n++)
-      await authenticate(store, { action: "continue", email: "alex@example.test" });
+      await requestSignInCode(store, "alex@example.test");
     const response = await POST(new NextRequest("https://sidekick.example.test/api/auth", {
       method: "POST",
       headers: { host: "sidekick.example.test", origin: "https://sidekick.example.test", "content-type": "application/json" },
-      body: JSON.stringify({ action: "continue", email: "Alex@example.test" }),
+      body: JSON.stringify({ action: "request_code", email: "Alex@example.test" }),
     }));
     expect(response.status).toBe(429);
     expect(response.headers.get("retry-after")).toBe("900");
+  });
+  it("limits code requests per client IP", async () => {
+    for (let n = 0; n < 30; n++)
+      await requestSignInCode(store, `person-${n}@example.test`, undefined, "203.0.113.9");
+    await expect(requestSignInCode(store, "next@example.test", undefined, "203.0.113.9"))
+      .rejects.toBeInstanceOf(AuthRateLimit);
+    await expect(requestSignInCode(store, "next@example.test", undefined, "203.0.113.10"))
+      .resolves.toHaveProperty("devCode");
+  });
+  it("rejects expired codes and invalidates a code after five wrong attempts", async () => {
+    const now = Date.now();
+    const expired = await store.issueSignInCode("alex@example.test", now - 11 * 60 * 1000);
+    await expect(store.verifySignInCode("alex@example.test", expired, now)).rejects.toBeInstanceOf(AuthCodeInvalid);
+    const code = await store.issueSignInCode("alex@example.test", now);
+    const wrong = String((Number(code) + 1) % 1_000_000).padStart(6, "0");
+    for (let n = 0; n < 5; n++)
+      await expect(store.verifySignInCode("alex@example.test", wrong, now)).rejects.toBeInstanceOf(AuthCodeInvalid);
+    await expect(store.verifySignInCode("alex@example.test", code, now)).rejects.toBeInstanceOf(AuthCodeInvalid);
+    expect(await store.db.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 0 });
+  });
+  it("refuses to send codes in production without an email provider", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("RESEND_API_KEY", "");
+    await expect(requestSignInCode(store, "alex@example.test")).rejects.toBeInstanceOf(SignInUnavailable);
+    expect(await store.db.prepare("SELECT COUNT(*) AS count FROM auth_codes").get()).toEqual({ count: 0 });
+  });
+  it("sends production codes by email without returning them", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("RESEND_API_KEY", "re_test_not_a_secret");
+    vi.stubEnv("AUTH_EMAIL_FROM", "Sidekick <login@example.test>");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
+    expect(await requestSignInCode(store, "alex@example.test")).toEqual({});
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.resend.com/emails");
+    const payload = JSON.parse(String(init!.body));
+    expect(payload.to).toEqual(["alex@example.test"]);
+    const code = payload.subject.slice(0, 6);
+    expect((await verifySignIn(store, "alex@example.test", code)).account.emailVerified).toBe(true);
+  });
+  it("stops accepting sessions that were created before email verification existed", async () => {
+    const user = await store.registerAccount("alex@example.test", "unused-test-hash");
+    expect((await store.account(user.token))?.id).toBe(user.account.id);
+    await store.db.prepare("UPDATE auth_sessions SET verified = 0").run();
+    expect(await store.account(user.token)).toBeNull();
+    expect(await store.read(user.token)).toBeNull();
+  });
+  it("deletes an account and every relationship that references it", async () => {
+    const a = (await authenticate(store, { action: "continue", email: "a@example.test" }))!;
+    const b = (await authenticate(store, { action: "continue", email: "b@example.test" }))!;
+    await store.save(a.token, { context: validContext(), baseRevision: 0, requestId: randomUUID() });
+    await store.db.prepare(
+      "INSERT INTO network_connections (user_a, user_b, requester_id, status, context, source, created_at, updated_at) VALUES (?, ?, ?, 'accepted', '', 'qr', ?, ?)",
+    ).run(...[a.account.id, b.account.id].sort(), a.account.id, new Date().toISOString(), new Date().toISOString());
+    await deleteAccount(store, a.token);
+    expect(await store.account(a.token)).toBeNull();
+    for (const table of ["network_connections", "sessions", "auth_codes"])
+      expect(await store.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()).toEqual({ count: table === "sessions" ? 1 : 0 });
+    expect(await store.db.prepare("SELECT email FROM users").all()).toEqual([{ email: "b@example.test" }]);
+    expect((await store.account(b.token))?.id).toBe(b.account.id);
+    const again = (await authenticate(store, { action: "continue", email: "a@example.test" }))!;
+    expect(again.account.id).not.toBe(a.account.id);
+    expect((await store.read(again.token))?.context).toBeNull();
+  });
+  it("enforces daily usage caps, including zero to pause", async () => {
+    const now = new Date();
+    await store.reserveUsage([{ key: "voice:global", max: 1 }], now);
+    await expect(store.reserveUsage([{ key: "voice:global", max: 1 }], now)).rejects.toBeInstanceOf(UsageLimit);
+    await expect(store.reserveUsage([{ key: "paused", max: 0 }], now)).rejects.toBeInstanceOf(UsageLimit);
+    await expect(
+      store.reserveUsage([{ key: "voice:global", max: 1 }], new Date(now.getTime() + 25 * 60 * 60 * 1000)),
+    ).resolves.toBeUndefined();
   });
   it("adds account tables to the old database without deleting profile data", async () => {
     store.close();

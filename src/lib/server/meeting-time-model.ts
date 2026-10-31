@@ -4,6 +4,7 @@ import { z } from "zod";
 import { manualMeetingSlot, type MeetingView } from "@/lib/domain/meetings";
 import type { UserContext } from "@/lib/domain/context";
 import { AssistantError, assistantConfigured } from "./onboarding-model";
+import { openAIKey } from "./ai-config";
 
 const replySchema = z.object({
   windows: z.array(z.object({
@@ -27,7 +28,7 @@ export async function interpretMeetingTime(
   history: { role: "user" | "assistant"; content: string }[] = [],
 ) {
   if (!assistantConfigured()) throw new AssistantError("not_configured");
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 20000, maxRetries: 0 });
+  const client = new OpenAI({ apiKey: openAIKey(), timeout: 20000, maxRetries: 0 });
   try {
     const result = await client.responses.parse({
       model: process.env.OPENAI_MODEL || "gpt-5.4-mini",

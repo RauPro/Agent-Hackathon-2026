@@ -45,3 +45,12 @@ export async function readJson(request: Request): Promise<unknown> {
     throw new Error("invalid_json");
   }
 }
+
+// Vercel overwrites x-forwarded-for with the connecting client; locally it is absent.
+export function clientIp(request: Request) {
+  return (
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-real-ip")?.trim() ||
+    undefined
+  );
+}

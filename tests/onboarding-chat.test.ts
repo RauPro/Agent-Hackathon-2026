@@ -327,11 +327,18 @@ describe("conversational onboarding", () => {
       });
       return reply;
     });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
     await expect(
       handleChat(store, token, request(), async () => reply),
     ).rejects.toThrow(ChatBusy);
     release();
     await pending;
+  });
+  it("stops at the daily onboarding cap without calling the model", async () => {
+    vi.stubEnv("ONBOARDING_ACCOUNT_DAILY_LIMIT", "0");
+    const model = vi.fn(async () => reply);
+    await expect(handleChat(store, token, request(), model)).rejects.toThrow();
+    expect(model).not.toHaveBeenCalled();
   });
   it("does not accept client-supplied profile state or model confirmation", () => {
     expect(

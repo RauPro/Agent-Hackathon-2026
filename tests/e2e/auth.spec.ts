@@ -6,6 +6,12 @@ const origin = "http://127.0.0.1:3100";
 async function fill(page: Page, email: string) {
   await page.getByRole("textbox", { name: "Email", exact: true }).fill(email);
 }
+async function signIn(page: Page, email: string) {
+  await fill(page, email);
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await expect(page.getByLabel("Sign-in code", { exact: true })).toHaveValue(/^\d{6}$/);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+}
 async function shot(page: Page, name: string) {
   if (process.env.PREVIEW_DIR)
     await page.screenshot({
@@ -18,7 +24,9 @@ test("email entry comes first, including old URLs, and private APIs require a se
   page,
   request,
 }) => {
-  for (const path of ["/", "/es", "/?onboarding=1", "/onboarding"]) {
+  await page.goto("/");
+  await expect(page.getByRole("link", { name: "Get started" }).first()).toHaveAttribute("href", "/register");
+  for (const path of ["/onboarding"]) {
     await page.goto(path);
     await expect(page).toHaveURL(/\/register$/);
     await expect(
@@ -64,14 +72,13 @@ test("email entry leads to chat and returning by email restores the saved profil
 }) => {
   const email = `alex-${crypto.randomUUID()}@example.test`;
   await page.goto("/");
-  await fill(page, email);
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await signIn(page, email);
   await expect(page).toHaveURL(/\/onboarding$/);
   await page.getByLabel("Account menu", { exact: true }).click();
   await expect(page.getByText(email, { exact: true })).toBeVisible();
   await expect(
     page.getByText("Email unverified", { exact: true }),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await page.getByLabel("Account menu", { exact: true }).click();
   await page
     .getByLabel("Your message", { exact: true })
@@ -89,8 +96,7 @@ test("email entry leads to chat and returning by email restores the saved profil
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/login$/);
   expect((await page.request.get("/api/onboarding")).status()).toBe(401);
-  await fill(page, email.toUpperCase());
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await signIn(page, email.toUpperCase());
   await expect(page).toHaveURL(/\/onboarding$/);
   await expect(page.getByText("Profile saved", { exact: true })).toBeVisible();
   expect((await (await page.request.get("/api/auth")).json()).account.id).toBe(
@@ -117,8 +123,7 @@ test("profile and calendar persist across browsers while different emails have s
   const other = await browser.newContext({ baseURL: origin });
   const second = await other.newPage();
   await second.goto(origin + "/login");
-  await fill(second, email);
-  await second.getByRole("button", { name: "Continue", exact: true }).click();
+  await signIn(second, email);
   await expect(
     second.getByText("alex.calendar@example.test", { exact: true }),
   ).toBeVisible();
@@ -153,7 +158,7 @@ test("invalid email creates no session and normalized email reopens the same pro
   const { email, account } = await register(request);
   const bad = await page.request.post("/api/auth", {
     headers: { origin },
-    data: { action: "continue", email: "bad-address" },
+    data: { action: "request_code", email: "bad-address" },
   });
   expect(bad.status()).toBe(400);
   expect((await bad.json()).errors).toHaveProperty("email");
@@ -161,8 +166,7 @@ test("invalid email creates no session and normalized email reopens the same pro
     (await (await page.request.get("/api/auth")).json()).account,
   ).toBeNull();
   await page.goto("/register");
-  await fill(page, `  ${email.toUpperCase()}  `);
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await signIn(page, `  ${email.toUpperCase()}  `);
   await expect(page).toHaveURL(/\/onboarding$/);
   const restored = (await (await page.request.get("/api/auth")).json()).account;
   expect(restored.id).toBe(account.id);
@@ -204,6 +208,8 @@ test("email input survives a failed request and retry prevents duplicate submiss
   } finally {
     release();
   }
+  await expect(page.getByLabel("Sign-in code", { exact: true })).toHaveValue(/^\d{6}$/);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page).toHaveURL(/\/onboarding$/);
 });
 
@@ -276,6 +282,31 @@ test("email entry reflows at mobile and desktop widths and supports autofill and
   }
 });
 
+test("a wrong code creates no session", async ({ page }) => {
+  const email = `wrong-${crypto.randomUUID()}@example.test`;
+  await page.goto("/register");
+  await fill(page, email);
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  const code = page.getByLabel("Sign-in code", { exact: true });
+  const value = await code.inputValue();
+  await code.fill(String((Number(value) + 1) % 1_000_000).padStart(6, "0"));
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByText("Enter the latest 6-digit code from your email.")).toBeVisible();
+  expect((await (await page.request.get("/api/auth")).json()).account).toBeNull();
+});
+
+test("account deletion removes the account and signs out", async ({ page }) => {
+  const { email, account } = await register(page.request);
+  await page.goto("/onboarding");
+  await page.getByLabel("Account menu", { exact: true }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete account", exact: true }).click();
+  await expect(page).toHaveURL(/\/$/);
+  expect((await (await page.request.get("/api/auth")).json()).account).toBeNull();
+  const again = await register(page.request, email);
+  expect(again.account.id).not.toBe(account.id);
+});
+
 test("account API rejects cross-origin and forged payloads and rate limits repeated entry", async ({
   request,
 }) => {
@@ -284,7 +315,7 @@ test("account API rejects cross-origin and forged payloads and rate limits repea
     (
       await request.post("/api/auth", {
         headers: { origin: "https://untrusted.example" },
-        data: { action: "continue", email },
+        data: { action: "request_code", email },
       })
     ).status(),
   ).toBe(403);
@@ -293,32 +324,25 @@ test("account API rejects cross-origin and forged payloads and rate limits repea
       await request.post("/api/auth", {
         headers: { origin },
         data: {
-          action: "continue",
+          action: "request_code",
           email,
           userId: "forged",
         },
       })
     ).status(),
   ).toBe(400);
-  for (let n = 0; n < 10; n++) {
+  for (let n = 0; n < 10; n++)
     expect(
       (
         await request.post("/api/auth", {
           headers: { origin },
-          data: { action: "continue", email },
+          data: { action: "request_code", email },
         })
       ).status(),
     ).toBe(200);
-    expect(
-      (await request.post("/api/auth", {
-        headers: { origin },
-        data: { action: "logout" },
-      })).status(),
-    ).toBe(200);
-  }
   const blocked = await request.post("/api/auth", {
     headers: { origin },
-    data: { action: "continue", email: email.toUpperCase() },
+    data: { action: "request_code", email: email.toUpperCase() },
   });
   expect(blocked.status()).toBe(429);
   expect(blocked.headers()["retry-after"]).toBe("900");

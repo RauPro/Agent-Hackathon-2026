@@ -9,6 +9,7 @@ import {
   type DialogueReply,
 } from "@/lib/domain/agent-dialogue";
 import type { SharedProfile } from "@/lib/domain/network";
+import { openAIKey } from "./ai-config";
 
 const DEADLINE_MS = 12_000;
 const englishTextSchema = dialogueReplySchema.omit({ next: true });
@@ -183,7 +184,7 @@ function checkResponse(response: {
 }
 
 export async function completeAgentDialogue(input: DialogueModelInput): Promise<DialogueReply> {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+  const apiKey = openAIKey();
   if (!apiKey) throw new DialogueModelError("not_configured");
   const client = new OpenAI({ apiKey, timeout: DEADLINE_MS, maxRetries: 0 });
   const signal = AbortSignal.timeout(DEADLINE_MS);
