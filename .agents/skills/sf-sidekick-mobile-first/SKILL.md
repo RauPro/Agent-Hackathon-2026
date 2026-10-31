@@ -7,7 +7,7 @@ description: Build or refine SF Sidekick's mobile web onboarding, opportunity ca
 
 Help a visitor in SF choose a useful conversation and take the next step from their phone. Keep the interface quiet, compact, and readable while walking between commitments.
 
-Use the [implementation plan](../../../SF-Sidekick-Implementation-Plan.md) as the product contract. Read sections 3–5 for scope and screens; consult section 2.2 only for the step being implemented. These mobile defaults supplement the plan and yield to explicit user choices or an established design system.
+Use the [implementation plan](../../../docs/implementation-plan.md) as the product contract. Read sections 3–5 for scope and screens; consult section 2.2 only for the step being implemented. These mobile defaults supplement the plan and yield to explicit user choices or an established design system.
 
 ## Shape the flow
 

@@ -76,3 +76,13 @@ Calendar writing remains outside the current feature set. Bilaterally approved m
 The iterative conversation release (`dac6d88`) passed 182 unit/service checks, 30 browser checks, lint and the production build. Ten paid-provider tests are opt-in; the new dialogue live evaluation was run separately and passed with four actual OpenAI turns between fictional peers with the same goal and non-overlapping trips.
 
 The [deployed verification](verification/deployed-agent-dialogue-2026-10-24.json) used the two existing fictional connected accounts. Their conversation automatically started, completed four alternating turns, and returned identical persisted text and message IDs in both sessions after reload. All 12 HTTP checks succeeded, discovery remained off, and the temporary test logins were signed out. No meeting, calendar or profile mutation was made by that verification. The real connected-user UI also displayed the new alternating conversation; its private transcript is not stored in this repository.
+
+## Public launch checklist
+
+These steps need account access and are not automated by the repository:
+
+- **Sign-in email:** create a Resend API key, verify the sending domain and set `RESEND_API_KEY` and `AUTH_EMAIL_FROM` in Production. Without them, production refuses to issue sign-in codes. Existing sessions created before code verification stop working; users sign in again with a code.
+- **Spend controls:** review `ONBOARDING_DAILY_LIMIT`, `ONBOARDING_ACCOUNT_DAILY_LIMIT`, `VOICE_DAILY_LIMIT`, `VOICE_ACCOUNT_DAILY_LIMIT`, `SIGN_IN_EMAIL_DAILY_LIMIT` and `DISCOVERY_DAILY_RUN_LIMIT`. Set `SIDEKICK_AI_PAUSED=1` to stop every OpenAI and Exa call immediately. Configure billing alerts and hard limits in OpenAI, Exa and Vercel.
+- **Google OAuth:** while the consent screen is in testing, only listed test users can connect a calendar and their tokens expire after seven days. Publish the app and complete Google verification for the Calendar scopes, using `/privacy` as the privacy policy URL, before expecting calendar connections from the public.
+- **Cron:** the network cron runs every minute, which requires a paid Vercel plan.
+- **Observability:** enable Vercel Web Analytics and log drains or an error tracker for the launch window.

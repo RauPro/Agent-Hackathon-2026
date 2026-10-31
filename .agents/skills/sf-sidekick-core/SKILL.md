@@ -7,7 +7,7 @@ description: Implement SF Sidekick's event and person discovery, goal-based matc
 
 Deliver the smallest working path from a confirmed goal to relevant people, useful preparation, and a saved next step. People discovery is part of P0, not an optional embellishment to an events calendar.
 
-Read only the relevant parts of the [implementation plan](../../../SF-Sidekick-Implementation-Plan.md): sections 2–3 for acceptance/scope; 7–8 for architecture/contracts; 9 for matching; 10–11 for tools and changes; 18 for verification. Use those contracts directly rather than maintaining a second schema in this skill.
+Read only the relevant parts of the [implementation plan](../../../docs/implementation-plan.md): sections 2–3 for acceptance/scope; 7–8 for architecture/contracts; 9 for matching; 10–11 for tools and changes; 18 for verification. Use those contracts directly rather than maintaining a second schema in this skill.
 
 ## Keep implementation small
 
