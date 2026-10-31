@@ -4,7 +4,7 @@ Detailed product behavior, contracts and verification notes. Start with the [REA
 
 A mobile-first web app that turns a visitor's goal in San Francisco into relevant people, useful conversations, and a daily plan. See the [product and implementation plan](implementation-plan.md) for the full scope.
 
-Live app: **[sf-sidekick-raupro.vercel.app](https://sf-sidekick-raupro.vercel.app)**. Vercel hosts the application with durable Turso storage; production tracks `main`. See the [deployment guide](vercel-deployment.md) for configuration and verified release behavior. Production uses a separate database, so local accounts are not automatically available there.
+There is no hosted deployment; run the app locally as described in the README. Serverless hosting needs durable Turso/libSQL storage instead of a local SQLite file.
 
 ## Current phase: onboarding and an agent-powered social graph
 
@@ -106,7 +106,7 @@ There are at most five attempts per owner/revision and fifteen per owner in a ro
 
 ### Quiet suggestions and reported registrations
 
-A separate authenticated `/api/cron/events` check runs every 15 minutes in Vercel. Each invocation checks up to 20 due profiles within an eight-second metadata budget and starts at most one paid pipeline. Cached results are reused; automatic source refresh is no more frequent than six hours and still respects all spend caps. Profiles rotate fairly, so larger queues take multiple ticks. Automatic checks run during 8 AM–9 PM San Francisco time. Local hosting still supports confirmation/manual discovery; the periodic event check requires a scheduler calling this endpoint with `CRON_SECRET`.
+A separate authenticated `/api/cron/events` check is meant to be called every 15 minutes by a scheduler. Each invocation checks up to 20 due profiles within an eight-second metadata budget and starts at most one paid pipeline. Cached results are reused; automatic source refresh is no more frequent than six hours and still respects all spend caps. Profiles rotate fairly, so larger queues take multiple ticks. Automatic checks run during 8 AM–9 PM San Francisco time. Local hosting still supports confirmation/manual discovery; the periodic event check requires a scheduler calling this endpoint with `CRON_SECRET`.
 
 The chat shows one contextual **One to consider** suggestion, with other results under **Browse events**. It does not append periodic messages to the conversation. Suggestions have a six-hour cooldown and a maximum of two per SF day. Canonical source/date identities prevent repeated suggestions across result reordering, refreshes and cross-listed platforms. Dismissal persists, registered events are excluded, and missing sources or failed calls never create a fabricated suggestion. The browser polls saved state; polling does not start paid searches.
 
@@ -154,7 +154,7 @@ Requested scopes are `openid`, `email`, `calendar.events.freebusy`, and `calenda
 
 Access/refresh tokens and temporary PKCE verifiers are encrypted with AES-256-GCM, bound to the session owner. OAuth state is session-bound, single-use, and expires after ten minutes. Successful connection rotates the browser session and preserves its profile and chat. Refresh tokens renew expired access; revoked access requires reconnection. Disconnect immediately deletes local tokens and availability, then attempts Google revocation. If that cannot be verified, the UI says so. Personal responses are never shared-cacheable.
 
-For deployment, use HTTPS, update the registered redirect and environment value, preserve the encryption key and durable database, and complete any Google consent-screen verification required for your audience and scopes. The current Vercel callback is `https://sf-sidekick-raupro.vercel.app/api/calendar/callback`; the local callback remains registered. While the OAuth app is in testing, Google authorizations and refresh tokens expire after seven days; see [Google's audience rules](https://support.google.com/cloud/answer/15549945?hl=en).
+For deployment, use HTTPS, update the registered redirect and environment value, preserve the encryption key and durable database, and complete any Google consent-screen verification required for your audience and scopes. While the OAuth app is in testing, Google authorizations and refresh tokens expire after seven days; see [Google's audience rules](https://support.google.com/cloud/answer/15549945?hl=en).
 
 Live Google authorization and availability retrieval were verified locally with one account on October 24, 2026. The app's primary-calendar result matched an independent Google free/busy check, including the SF daylight-saving boundary, and survived manual refresh and reload. That live date range had no busy blocks; occupied intervals and provider failures remain covered by the automated fixtures. The production callback is configured, but a Google connection in the deployed application has not yet been tested. Private account details and calendar results are kept out of the repository.
 

@@ -3,11 +3,10 @@ import "./globals.css";
 
 const description =
   "Your AI agent finds the SF events worth attending and coordinates meetings with other people's agents. You approve every step.";
-const productionHost =
-  process.env.VERCEL_PROJECT_PRODUCTION_URL || "sf-sidekick-raupro.vercel.app";
+const siteUrl = process.env.SITE_URL || "http://localhost:3000";
 
 export const metadata: Metadata = {
-  metadataBase: new URL(`https://${productionHost}`),
+  metadataBase: new URL(siteUrl),
   title: "SF Sidekick · Meet the people who matter in SF",
   description,
   openGraph: {
