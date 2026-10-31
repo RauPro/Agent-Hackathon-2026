@@ -72,6 +72,7 @@ test("email entry leads to chat and returning by email restores the saved profil
 }) => {
   const email = `alex-${crypto.randomUUID()}@example.test`;
   await page.goto("/");
+  await page.getByRole("link", { name: "Get started" }).first().click();
   await signIn(page, email);
   await expect(page).toHaveURL(/\/onboarding$/);
   await page.getByLabel("Account menu", { exact: true }).click();

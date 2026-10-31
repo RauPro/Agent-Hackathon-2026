@@ -544,6 +544,8 @@ test("sign-in returns to the scanned connection and foreign links are rejected",
       .getByRole("textbox", { name: "Email", exact: true })
       .fill(alex.email);
     await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await expect(page.getByLabel("Sign-in code", { exact: true })).toHaveValue(/^\d{6}$/);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
     await expect(page).toHaveURL(`${origin}${path}`);
     await expect(
       page.getByRole("heading", { name: "Connect with Pedro Chen" }),

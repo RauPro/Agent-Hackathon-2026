@@ -130,10 +130,13 @@ async function verify(mode) {
       cookie = response.headers.get("set-cookie").split(";")[0];
     return { status: response.status, body: await response.json() };
   }
+  const email = `runtime-${mode}@example.test`;
+  const sent = await api("/api/auth", { action: "request_code", email });
+  assert.equal(sent.status, 200, "runtime sign-in needs inline codes (next dev or SIDEKICK_DEMO)");
   const account = await api("/api/auth", {
-    action: "register",
-    email: `runtime-${mode}@example.test`,
-    password: "A synthetic runtime passphrase!",
+    action: "verify",
+    email,
+    code: sent.body.devCode,
   });
   assert.equal(account.status, 200);
   accountId = account.body.account.id;
