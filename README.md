@@ -4,7 +4,7 @@
 
 **Meet the people who matter while you're in San Francisco.** SF Sidekick learns your goal in a short chat, finds the SF events worth attending, and lets your AI agent coordinate meetings with other people's agents. You approve every step.
 
-Live app: **[sf-sidekick-raupro.vercel.app](https://sf-sidekick-raupro.vercel.app)** · Built for Agent Hackathon 2026.
+Built for Agent Hackathon 2026.
 
 ## How it works
 
@@ -21,7 +21,7 @@ Next.js 16 (App Router, server routes)
 ├── Google Calendar        OAuth, encrypted tokens, free/busy, optional invitations
 ├── Resend                 email sign-in codes
 └── SQLite / Turso         accounts, profiles, network, meetings, daily usage caps
-Vercel cron                background agent matching and event refresh
+/api/cron routes           background agent matching and event refresh
 ```
 
 Security and cost controls:
@@ -29,7 +29,7 @@ Security and cost controls:
 - Email one-time-code sign-in (hashed, single-use, 10-minute expiry, attempt and IP limits).
 - Same-origin checks, stale-account headers and revocable HTTP-only sessions on every write.
 - Daily caps for onboarding, voice, discovery and sign-in email, plus `SIDEKICK_AI_PAUSED=1` to stop all paid AI calls.
-- Account deletion and a [privacy notice](https://sf-sidekick-raupro.vercel.app/privacy).
+- Account deletion and a privacy notice at `/privacy`.
 
 ## Run locally
 
@@ -61,7 +61,6 @@ node scripts/demo-network.mjs
 
 - [Architecture and behavior](docs/architecture.md): detailed contracts, data model and verification notes
 - [Agent social graph](docs/agent-social-graph.md)
-- [Vercel deployment and launch checklist](docs/vercel-deployment.md)
 - [Implementation plan](docs/implementation-plan.md) and [codebase review](docs/codebase-review.md)
 
 ## License

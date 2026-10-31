@@ -39,8 +39,8 @@ export default function Page() {
         <p>
           Chat messages and profile details are sent to OpenAI to generate
           replies and match events. Event searches are sent to Exa. Sign-in
-          emails are delivered by Resend. The app and database are hosted on
-          Vercel and Turso. Google Calendar is used only after you connect it.
+          emails are delivered by Resend. The app and database are run by
+          whoever hosts this instance. Google Calendar is used only after you connect it.
         </p>
         <h2>What other people see</h2>
         <p>
