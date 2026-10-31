@@ -138,6 +138,15 @@ export async function POST(request: NextRequest) {
         },
         429,
       );
+    if (isStoreError(error, "usage_limit"))
+      return json(
+        {
+          code: "daily_limit",
+          message:
+            "Sidekick reached today's conversation limit. Your message is still here; try again tomorrow.",
+        },
+        429,
+      );
     if (error instanceof ChatLimit)
       return json(
         {

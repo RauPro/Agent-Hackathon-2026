@@ -45,3 +45,12 @@ export async function readJson(request: Request): Promise<unknown> {
     throw new Error("invalid_json");
   }
 }
+
+// Vercel overwrites x-forwarded-for with the connecting client. Loopback means a local
+// proxy or dev server, where every visitor would share one address, so it is not limited.
+export function clientIp(request: Request) {
+  const ip =
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-real-ip")?.trim();
+  return ip && !/^(127\.|::1$|::ffff:127\.)/.test(ip) ? ip : undefined;
+}

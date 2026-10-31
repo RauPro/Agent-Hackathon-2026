@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS auth_sessions_user ON auth_sessions(user_id);
+CREATE TABLE IF NOT EXISTS auth_codes (
+  email_hash TEXT PRIMARY KEY, code_hash TEXT NOT NULL, salt TEXT NOT NULL,
+  expires_at INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS auth_limits (
   key TEXT PRIMARY KEY, attempts INTEGER NOT NULL, expires_at INTEGER NOT NULL
 );
@@ -117,4 +121,6 @@ export const additiveColumns = [
   },
   { table: "network_jobs", name: "cursor", sql: "TEXT NOT NULL DEFAULT ''" },
   { table: "network_jobs", name: "priority", sql: "INTEGER NOT NULL DEFAULT 1" },
+  // Sessions created before email codes existed stay unverified and stop working.
+  { table: "auth_sessions", name: "verified", sql: "INTEGER NOT NULL DEFAULT 0" },
 ] as const;

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DISCOVERY_LIMITS } from "@/lib/domain/event-discovery";
+import { exaKey } from "./ai-config";
 
 export class ExaError extends Error {
   constructor(
@@ -38,7 +39,7 @@ function endpoint() {
 export function exaConfigured() {
   try {
     endpoint();
-    return !!process.env.EXA_API_KEY?.trim();
+    return !!exaKey();
   } catch {
     return false;
   }
@@ -135,7 +136,7 @@ async function call(
         signal: requestSignal,
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": process.env.EXA_API_KEY!,
+          "x-api-key": exaKey()!,
         },
         body: JSON.stringify(body),
       });

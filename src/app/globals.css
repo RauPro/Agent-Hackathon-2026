@@ -915,3 +915,26 @@ h1 {
     scroll-behavior: auto !important;
   }
 }
+.field-hint {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 8px 0 0;
+}
+.auth-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+.auth-legal {
+  margin-top: 28px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.auth-legal a {
+  color: var(--ink);
+}
+.danger-text {
+  color: var(--danger);
+}

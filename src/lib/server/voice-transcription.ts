@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { audioExtension, VOICE_MAX_BYTES } from "@/lib/domain/voice";
+import { openAIKey } from "./ai-config";
 
 export class VoiceError extends Error {
   constructor(public code: string, public status: number, message: string) {
@@ -37,9 +38,10 @@ export async function readVoiceRecording(request: Request): Promise<File> {
 }
 
 export async function transcribeVoice(file: File, signal?: AbortSignal): Promise<string> {
-  if (!process.env.OPENAI_API_KEY?.trim())
+  const apiKey = openAIKey();
+  if (!apiKey)
     throw new VoiceError("not_configured", 503, "Voice transcription is not connected. You can still type your message.");
-  const client = new OpenAI({ timeout: 25000, maxRetries: 0 });
+  const client = new OpenAI({ apiKey, timeout: 25000, maxRetries: 0 });
   try {
     const result = await client.audio.transcriptions.create({
       file,

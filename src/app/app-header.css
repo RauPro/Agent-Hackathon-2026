@@ -152,3 +152,11 @@
     font-size: 15px;
   }
 }
+
+.app-header .account-menu > a {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  text-decoration: none;
+}

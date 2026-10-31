@@ -5,6 +5,7 @@ import type {
 } from "@/lib/domain/onboarding-chat";
 import { ContextStore } from "./store";
 import { completeOnboarding } from "./onboarding-model";
+import { onboardingLimits } from "./usage-limits";
 
 export class ChatBusy extends Error {}
 export class ChatLimit extends Error {}
@@ -26,6 +27,7 @@ export async function handleChat(
   const lease = await store.network.db.acquireLease(key, 35_000);
   if (!lease) throw new ChatBusy();
   try {
+    await store.reserveUsage(onboardingLimits(owner));
     const reply = await complete(current, request.message);
     // Re-check both revisions after the external request, before any mutation.
     return await store.commitChat(token, request, reply);

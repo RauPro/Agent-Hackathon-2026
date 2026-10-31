@@ -291,4 +291,4 @@ The remaining immediate decisions are:
 
 The proposed starting choices are **user-selected profile fields, date-limited availability sharing, Exa as the first event source, and a persistent plan with coordination between two people**.
 
-The broader requirements remain available in [SF-Sidekick-Requirements.md](SF-Sidekick-Requirements.md), and the detailed future design remains in [SF-Sidekick-Implementation-Plan.md](SF-Sidekick-Implementation-Plan.md). Neither document should be interpreted as evidence that unimplemented features already exist.
+The broader requirements remain available in [SF-Sidekick-Requirements.md](SF-Sidekick-Requirements.md), and the detailed future design remains in [SF-Sidekick-Implementation-Plan.md](implementation-plan.md). Neither document should be interpreted as evidence that unimplemented features already exist.

@@ -74,7 +74,15 @@ for (const person of people) {
       throw new Error(`${path}: ${body.message || response.status}`);
     return body;
   };
-  await call("/api/auth", { action: "continue", email: person.email });
+  const { devCode } = await call("/api/auth", {
+    action: "request_code",
+    email: person.email,
+  });
+  await call("/api/auth", {
+    action: "verify",
+    email: person.email,
+    code: devCode,
+  });
   const state = await call("/api/state");
   await call("/api/context", {
     confirmed: true,

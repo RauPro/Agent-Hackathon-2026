@@ -15,10 +15,16 @@ import {
 } from "@/lib/domain/event-discovery";
 import { canonicalEventUrl } from "@/lib/domain/discovery";
 import { AsyncDatabase, type RemoteDatabaseOptions } from "./database";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import { NetworkStore } from "./network-store";
 import type { CalendarConnection, CalendarRecord } from "@/lib/domain/calendar";
-import { emailSchema, LOGIN_MAX_AGE, type Account } from "@/lib/domain/auth";
+import {
+  emailSchema,
+  LOGIN_MAX_AGE,
+  SIGN_IN_CODE_MAX_ATTEMPTS,
+  SIGN_IN_CODE_TTL_MS,
+  type Account,
+} from "@/lib/domain/auth";
 import {
   contextSchema,
   type ContextState,
@@ -72,6 +78,12 @@ export class AccountConflict extends Error {
 export class AuthRateLimit extends Error {
   readonly kind = "auth_rate_limit";
 }
+export class AuthCodeInvalid extends Error {
+  readonly kind = "auth_code_invalid";
+}
+export class UsageLimit extends Error {
+  readonly kind = "usage_limit";
+}
 export class CalendarConflict extends Error {
   readonly kind = "calendar_conflict";
   constructor(public code: "invalid_state" | "calendar_changed") {
@@ -83,6 +95,8 @@ type StoreErrors = {
   session_missing: SessionMissing;
   account_conflict: AccountConflict;
   auth_rate_limit: AuthRateLimit;
+  auth_code_invalid: AuthCodeInvalid;
+  usage_limit: UsageLimit;
   calendar_conflict: CalendarConflict;
 };
 // Next's page and route bundles can hold different class constructors while
@@ -119,7 +133,7 @@ export class ContextStore {
     return (await this.db
       .prepare(
         `SELECT s.* FROM sessions s
-      WHERE s.token_hash = (SELECT u.profile_id FROM users u JOIN auth_sessions a ON a.user_id = u.id WHERE a.token_hash = ? AND a.expires_at > ?)
+      WHERE s.token_hash = (SELECT u.profile_id FROM users u JOIN auth_sessions a ON a.user_id = u.id WHERE a.token_hash = ? AND a.expires_at > ? AND a.verified = 1)
       OR (s.token_hash = ? AND NOT EXISTS (SELECT 1 FROM users u WHERE u.profile_id = s.token_hash))`,
       )
       .get(hash(token), Date.now(), hash(token))) as SessionRow | undefined;
@@ -131,7 +145,7 @@ export class ContextStore {
     if (!token || !/^[a-f0-9]{64}$/.test(token)) return null;
     const row = (await this.db
       .prepare(
-        "SELECT u.id, u.email, u.email_verified_at FROM users u JOIN auth_sessions a ON a.user_id = u.id WHERE a.token_hash = ? AND a.expires_at > ?",
+        "SELECT u.id, u.email, u.email_verified_at FROM users u JOIN auth_sessions a ON a.user_id = u.id WHERE a.token_hash = ? AND a.expires_at > ? AND a.verified = 1",
       )
       .get(hash(token), now)) as
       | {
@@ -169,23 +183,148 @@ export class ContextStore {
       .run(now);
     await this.db
       .prepare(
-        "INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
+        "INSERT INTO auth_sessions (token_hash, user_id, expires_at, verified) VALUES (?, ?, ?, 1)",
       )
       .run(hash(token), userId, now + LOGIN_MAX_AGE * 1000);
     return token;
   }
-  async continueAccount(email: string, previousToken?: string) {
+  // Callers must have verified email ownership first (see verifySignInCode).
+  async continueAccount(
+    email: string,
+    previousToken?: string,
+    verified = false,
+  ) {
     email = emailSchema.parse(email);
     return await this.db
       .transaction(async () => {
         if (await this.account(previousToken)) throw new AccountConflict();
         const existing = await this.userForEmail(email);
+        if (verified)
+          await this.db
+            .prepare(
+              "UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?) WHERE email = ?",
+            )
+            .run(new Date().toISOString(), email);
         if (existing) {
           const token = await this.createLogin(existing.id);
           return { token, account: await this.requireAccount(token) };
         }
         // Retain the legacy column without storing a usable password credential.
-        return this.registerAccount(email, "email-only", previousToken);
+        const created = await this.registerAccount(
+          email,
+          "email-code",
+          previousToken,
+        );
+        if (!verified) return created;
+        await this.db
+          .prepare("UPDATE users SET email_verified_at = ? WHERE id = ?")
+          .run(new Date().toISOString(), created.account.id);
+        return {
+          token: created.token,
+          account: await this.requireAccount(created.token),
+        };
+      })
+      .immediate();
+  }
+  async issueSignInCode(email: string, now = Date.now()) {
+    email = emailSchema.parse(email);
+    const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+    const salt = randomBytes(16).toString("hex");
+    await this.db
+      .prepare(
+        `INSERT INTO auth_codes (email_hash, code_hash, salt, expires_at, attempts) VALUES (?, ?, ?, ?, 0)
+         ON CONFLICT(email_hash) DO UPDATE SET code_hash = excluded.code_hash, salt = excluded.salt,
+         expires_at = excluded.expires_at, attempts = 0`,
+      )
+      .run(hash(email), hash(`${salt}:${code}`), salt, now + SIGN_IN_CODE_TTL_MS);
+    return code;
+  }
+  async verifySignInCode(email: string, code: string, now = Date.now()) {
+    email = emailSchema.parse(email);
+    const valid = await this.db
+      .transaction(async () => {
+        const key = hash(email);
+        const row = (await this.db
+          .prepare(
+            "SELECT code_hash, salt, expires_at, attempts FROM auth_codes WHERE email_hash = ?",
+          )
+          .get(key)) as
+          | { code_hash: string; salt: string; expires_at: number; attempts: number }
+          | undefined;
+        if (!row || row.expires_at <= now || row.attempts >= SIGN_IN_CODE_MAX_ATTEMPTS) {
+          if (row)
+            await this.db.prepare("DELETE FROM auth_codes WHERE email_hash = ?").run(key);
+          return false;
+        }
+        const matches = timingSafeEqual(
+          Buffer.from(row.code_hash, "hex"),
+          Buffer.from(hash(`${row.salt}:${code}`), "hex"),
+        );
+        if (matches)
+          await this.db.prepare("DELETE FROM auth_codes WHERE email_hash = ?").run(key);
+        else
+          await this.db
+            .prepare("UPDATE auth_codes SET attempts = attempts + 1 WHERE email_hash = ?")
+            .run(key);
+        return matches;
+      })
+      .immediate();
+    if (!valid) throw new AuthCodeInvalid();
+  }
+  // Counts paid or abusable work per SF day. Limits of 0 pause that work entirely.
+  async reserveUsage(
+    limits: { key: string; max: number }[],
+    now = new Date(),
+  ) {
+    const day = suggestionDay(now).toPlainDate().toString();
+    const expires = now.getTime() + 2 * 24 * 60 * 60 * 1000;
+    await this.db
+      .transaction(async () => {
+        for (const limit of limits) {
+          const row = (await this.db
+            .prepare("SELECT attempts FROM auth_limits WHERE key = ?")
+            .get(`usage:${day}:${limit.key}`)) as { attempts: number } | undefined;
+          if ((row?.attempts ?? 0) >= limit.max) throw new UsageLimit();
+        }
+        for (const limit of limits)
+          await this.db
+            .prepare(
+              "INSERT INTO auth_limits (key, attempts, expires_at) VALUES (?, 1, ?) ON CONFLICT(key) DO UPDATE SET attempts = attempts + 1",
+            )
+            .run(`usage:${day}:${limit.key}`, expires);
+      })
+      .immediate();
+  }
+  async deleteAccount(userId: string) {
+    await this.db
+      .transaction(async () => {
+        const user = (await this.db
+          .prepare("SELECT profile_id FROM users WHERE id = ?")
+          .get(userId)) as { profile_id: string } | undefined;
+        if (!user) return;
+        const profile = user.profile_id;
+        const statements: [string, unknown[]][] = [
+          ["DELETE FROM meetings WHERE initiator_id = ? OR first_user_id = ? OR second_user_id = ?", [userId, userId, userId]],
+          ["DELETE FROM network_opportunities WHERE user_a = ? OR user_b = ?", [userId, userId]],
+          ["DELETE FROM network_events WHERE user_id = ?", [userId]],
+          ["DELETE FROM network_pair_checks WHERE user_a = ? OR user_b = ?", [userId, userId]],
+          ["DELETE FROM network_jobs WHERE user_id = ?", [userId]],
+          ["DELETE FROM agent_dialogues WHERE user_a = ? OR user_b = ?", [userId, userId]],
+          ["DELETE FROM agent_messages WHERE from_user_id = ? OR to_user_id = ?", [userId, userId]],
+          ["DELETE FROM network_blocks WHERE user_id = ? OR blocked_user_id = ?", [userId, userId]],
+          ["DELETE FROM network_connections WHERE user_a = ? OR user_b = ? OR requester_id = ?", [userId, userId, userId]],
+          ["DELETE FROM network_settings WHERE user_id = ?", [userId]],
+          ["DELETE FROM auth_sessions WHERE user_id = ?", [userId]],
+          ["DELETE FROM users WHERE id = ?", [userId]],
+          ["DELETE FROM calendar_oauth_states WHERE session_id = ?", [profile]],
+          ["DELETE FROM calendar_connections WHERE session_id = ?", [profile]],
+          ["DELETE FROM onboarding_chats WHERE session_id = ?", [profile]],
+          ["DELETE FROM event_discoveries WHERE owner_id = ?", [profile]],
+          ["DELETE FROM runs WHERE session_id = ?", [profile]],
+          ["DELETE FROM sessions WHERE token_hash = ?", [profile]],
+        ];
+        for (const [sql, args] of statements)
+          await this.db.prepare(sql).run(...args);
       })
       .immediate();
   }
@@ -233,7 +372,7 @@ export class ContextStore {
       })
       .immediate();
   }
-  async reserveAuthAttempt(email: string, now = Date.now()) {
+  async reserveAuthAttempt(email: string, now = Date.now(), ip?: string) {
     await this.db
       .transaction(async () => {
         await this.db
@@ -242,6 +381,7 @@ export class ContextStore {
         const limits = [
           { key: `email:${hash(emailSchema.parse(email))}`, max: 10 },
           { key: "global", max: 200 },
+          ...(ip ? [{ key: `ip:${hash(ip)}`, max: 30 }] : []),
         ];
         for (const limit of limits) {
           const row = (await this.db

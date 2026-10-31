@@ -269,6 +269,11 @@ export function CalendarConnect({
               <p className="calendar-detail">
                 Reads calendar names and busy times. Event details stay private.
               </p>
+              <p className="calendar-detail">
+                Google is still reviewing Sidekick&apos;s calendar access. If
+                Google shows an access-blocked screen, you can keep chatting,
+                discover events and save your profile without it.
+              </p>
             </>
           ) : (
             <p className="calendar-pending">

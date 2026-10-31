@@ -10,6 +10,7 @@ import {
   type ChatState,
   type ModelReply,
 } from "@/lib/domain/onboarding-chat";
+import { openAIKey } from "./ai-config";
 
 const englishReplySchema = z
   .object({ reply: z.string().min(1).max(1200) })
@@ -23,7 +24,7 @@ export class AssistantError extends Error {
   }
 }
 export function assistantConfigured() {
-  return !!process.env.OPENAI_API_KEY?.trim();
+  return !!openAIKey();
 }
 
 export function onboardingInstructions(now = new Date()) {
@@ -174,7 +175,7 @@ export async function completeOnboarding(
 ): Promise<ModelReply> {
   if (!assistantConfigured()) throw new AssistantError("not_configured");
   const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
+    apiKey: openAIKey(),
     timeout: 25000,
     maxRetries: 0,
   });
