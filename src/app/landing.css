@@ -1,0 +1,132 @@
+.landing {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 24px calc(48px + env(safe-area-inset-bottom));
+  display: grid;
+  gap: 56px;
+}
+.landing h1 {
+  margin: 12px 0 18px;
+}
+.landing h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 26px;
+  margin: 0 0 16px;
+}
+.landing h3 {
+  font-size: 16px;
+  margin: 8px 0 6px;
+}
+.landing-lead {
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin: 0 0 28px;
+}
+.landing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.landing-actions a,
+.landing-control .primary-button {
+  text-decoration: none;
+  min-height: 46px;
+}
+.landing-muted {
+  color: var(--muted);
+  font-size: 13px;
+  margin: -8px 0 16px;
+}
+.landing-sample {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  padding: 20px;
+}
+.landing-sample ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 14px;
+}
+.landing-sample li {
+  display: grid;
+  gap: 4px;
+  font-size: 15px;
+  line-height: 1.5;
+}
+.landing-sample strong {
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+}
+.landing-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 24px;
+}
+.landing-steps p,
+.landing-control li {
+  color: var(--muted);
+  line-height: 1.6;
+  margin: 0;
+}
+.landing-step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  font-size: 13px;
+}
+.landing-control ul {
+  margin: 0 0 24px;
+  padding-left: 20px;
+  display: grid;
+  gap: 8px;
+}
+.landing-control a:not(.primary-button) {
+  color: var(--ink);
+}
+.landing-footer {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 24px calc(24px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 20px;
+  font-size: 14px;
+}
+.landing-footer a {
+  color: var(--muted);
+}
+.site-header > .text-button {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+@media (min-width: 720px) {
+  .landing-steps {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+.privacy {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 24px 24px calc(48px + env(safe-area-inset-bottom));
+  line-height: 1.65;
+}
+.privacy h2 {
+  font-size: 18px;
+  margin-top: 32px;
+}
+.privacy a {
+  color: var(--ink);
+}
