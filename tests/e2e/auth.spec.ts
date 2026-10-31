@@ -302,7 +302,7 @@ test("account deletion removes the account and signs out", async ({ page }) => {
   await page.getByLabel("Account menu", { exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Delete account", exact: true }).click();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\/login$/);
   expect((await (await page.request.get("/api/auth")).json()).account).toBeNull();
   const again = await register(page.request, email);
   expect(again.account.id).not.toBe(account.id);

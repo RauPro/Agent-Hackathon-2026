@@ -53,7 +53,7 @@ export function AccountMenu({
       });
       if (!response.ok) throw new Error();
       sessionStorage.removeItem(`onboarding-unsent-${account.id}`);
-      window.location.replace("/");
+      window.location.replace("/login");
     } catch {
       setError("Could not delete your account. Try again.");
       setBusy(false);
